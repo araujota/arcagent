@@ -1,0 +1,74 @@
+version: "3.8"
+
+# ---------------------------------------------------------------------------
+# SonarQube Community Edition for arcagent verification pipeline
+#
+# Usage:
+#   docker compose -f sonarqube/docker-compose.yml up -d
+#
+# After startup, SonarQube is available at http://localhost:9000
+# Default credentials: admin / admin (change on first login)
+# ---------------------------------------------------------------------------
+
+services:
+  sonarqube:
+    image: sonarqube:10-community
+    container_name: arcagent-sonarqube
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonarqube-db:5432/sonarqube
+      SONAR_JDBC_USERNAME: sonarqube
+      SONAR_JDBC_PASSWORD: sonarqube
+      # Increase JVM heap for scanning large projects
+      SONAR_CE_JAVAOPTS: "-Xmx1G -Xms256m"
+      SONAR_WEB_JAVAOPTS: "-Xmx512m -Xms128m"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_logs:/opt/sonarqube/logs
+      - sonarqube_extensions:/opt/sonarqube/extensions
+    depends_on:
+      sonarqube-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/api/system/status | grep -q UP"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    networks:
+      - arcagent-sonar
+
+  sonarqube-db:
+    image: postgres:16-alpine
+    container_name: arcagent-sonarqube-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sonarqube
+      POSTGRES_USER: sonarqube
+      POSTGRES_PASSWORD: sonarqube
+    volumes:
+      - sonarqube_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonarqube -d sonarqube"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - arcagent-sonar
+
+volumes:
+  sonarqube_data:
+    driver: local
+  sonarqube_logs:
+    driver: local
+  sonarqube_extensions:
+    driver: local
+  sonarqube_pgdata:
+    driver: local
+
+networks:
+  arcagent-sonar:
+    name: arcagent-sonar
+    driver: bridge
