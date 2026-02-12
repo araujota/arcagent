@@ -19,6 +19,13 @@ export type SupportedLanguage =
   | "rust"
   | "go"
   | "java"
+  | "ruby"
+  | "php"
+  | "csharp"
+  | "c"
+  | "cpp"
+  | "swift"
+  | "kotlin"
   | "unknown";
 
 /** Indicator file and its associated language. */
@@ -62,6 +69,45 @@ const INDICATORS: LanguageIndicator[] = [
   { file: "pom.xml", language: "java", weight: 100 },
   { file: "build.gradle", language: "java", weight: 100 },
   { file: "build.gradle.kts", language: "java", weight: 100 },
+
+  // Ruby
+  { file: "Gemfile", language: "ruby", weight: 100 },
+  { file: "Gemfile.lock", language: "ruby", weight: 90 },
+  { file: "Rakefile", language: "ruby", weight: 70 },
+
+  // PHP
+  { file: "composer.json", language: "php", weight: 100 },
+  { file: "composer.lock", language: "php", weight: 90 },
+
+  // C#
+  // Note: .csproj/.sln files are detected via extension matching below
+  { file: "global.json", language: "csharp", weight: 80 },
+
+  // C/C++
+  { file: "CMakeLists.txt", language: "cpp", weight: 100 },
+  { file: "Makefile", language: "c", weight: 60 },
+  { file: "configure.ac", language: "c", weight: 70 },
+  { file: "meson.build", language: "cpp", weight: 80 },
+
+  // Swift
+  { file: "Package.swift", language: "swift", weight: 100 },
+
+  // Kotlin (distinguished from Java by specific Kotlin files)
+  { file: "build.gradle.kts", language: "kotlin", weight: 95 },
+  { file: "settings.gradle.kts", language: "kotlin", weight: 85 },
+];
+
+/**
+ * Extension-based indicators for files that may have varying names.
+ * Used in detectLanguageFromFiles for more thorough detection.
+ */
+const EXTENSION_INDICATORS: { ext: string; language: SupportedLanguage; weight: number }[] = [
+  { ext: ".csproj", language: "csharp", weight: 100 },
+  { ext: ".sln", language: "csharp", weight: 90 },
+  { ext: ".fsproj", language: "csharp", weight: 95 },
+  { ext: ".swift", language: "swift", weight: 80 },
+  { ext: ".kt", language: "kotlin", weight: 80 },
+  { ext: ".kts", language: "kotlin", weight: 75 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -99,6 +145,11 @@ export async function detectLanguage(repoUrl: string): Promise<SupportedLanguage
   if (urlLower.includes("python") || urlLower.includes("-py")) return "python";
   if (urlLower.includes("rust") || urlLower.includes("-rs")) return "rust";
   if (urlLower.includes("golang") || urlLower.includes("-go")) return "go";
+  if (urlLower.includes("ruby") || urlLower.includes("-rb")) return "ruby";
+  if (urlLower.includes("csharp") || urlLower.includes("dotnet")) return "csharp";
+  if (urlLower.includes("swift")) return "swift";
+  if (urlLower.includes("kotlin")) return "kotlin";
+  if (urlLower.includes("php")) return "php";
 
   logger.warn("Could not detect language; defaulting to unknown", { repoUrl });
   return "unknown";
@@ -123,10 +174,22 @@ function matchIndicators(files: string[]): SupportedLanguage {
     weight: -1,
   };
 
+  // Check exact file name indicators
   for (const indicator of INDICATORS) {
     if (fileSet.has(indicator.file.toLowerCase())) {
       if (indicator.weight > best.weight) {
         best = { language: indicator.language, weight: indicator.weight };
+      }
+    }
+  }
+
+  // Check extension-based indicators
+  for (const file of files) {
+    for (const extInd of EXTENSION_INDICATORS) {
+      if (file.toLowerCase().endsWith(extInd.ext)) {
+        if (extInd.weight > best.weight) {
+          best = { language: extInd.language, weight: extInd.weight };
+        }
       }
     }
   }

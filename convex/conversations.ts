@@ -1,10 +1,13 @@
 import { query, mutation, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
-import { getCurrentUser, requireAuth, requireRole } from "./lib/utils";
+import { getCurrentUser, requireAuth, requireRole, requireBountyAccess } from "./lib/utils";
 
 export const getByBountyId = query({
   args: { bountyId: v.id("bounties") },
   handler: async (ctx, args) => {
+    // Conversations contain full NL→BDD dialogue — creators and admins only
+    await requireBountyAccess(ctx, args.bountyId);
+
     return await ctx.db
       .query("conversations")
       .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
@@ -23,7 +26,13 @@ export const getById = internalQuery({
 export const getByIdPublic = query({
   args: { conversationId: v.id("conversations") },
   handler: async (ctx, args) => {
-    return await ctx.db.get(args.conversationId);
+    const conversation = await ctx.db.get(args.conversationId);
+    if (!conversation) return null;
+
+    // Conversations contain full NL→BDD dialogue — creators and admins only
+    await requireBountyAccess(ctx, conversation.bountyId);
+
+    return conversation;
   },
 });
 
@@ -46,6 +55,32 @@ export const create = mutation({
       status: "gathering",
       messages: [],
     });
+  },
+});
+
+export const createInternal = internalMutation({
+  args: {
+    bountyId: v.id("bounties"),
+    autonomous: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db.insert("conversations", {
+      bountyId: args.bountyId,
+      status: "gathering",
+      messages: [],
+      autonomous: args.autonomous,
+    });
+  },
+});
+
+export const getByBountyIdInternal = internalQuery({
+  args: { bountyId: v.id("bounties") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("conversations")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .order("desc")
+      .first();
   },
 });
 

@@ -28,12 +28,13 @@ export type BountyStatus =
   | "active"
   | "in_progress"
   | "completed"
-  | "disputed";
+  | "disputed"
+  | "cancelled";
 
 export type SubmissionStatus = "pending" | "running" | "passed" | "failed";
 export type VerificationStatus = "pending" | "running" | "passed" | "failed";
 export type StepStatus = "pass" | "fail" | "skip" | "error";
-export type GateType = "lint" | "typecheck" | "security" | "build" | "sonarqube";
+export type GateType = "lint" | "typecheck" | "security" | "build" | "sonarqube" | "snyk" | "memory";
 export type GateStatus = "passed" | "failed" | "warning";
 export type UserRole = "creator" | "agent" | "admin";
 export type PaymentMethod = "stripe" | "web3";

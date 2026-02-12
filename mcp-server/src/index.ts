@@ -6,6 +6,7 @@ import { initConvexClient, callConvex } from "./convex/client";
 import { generateApiKey } from "./lib/crypto";
 import { validateApiKey, extractApiKey } from "./auth/apiKeyAuth";
 import { checkRateLimit, startCleanupInterval } from "./lib/rateLimit";
+import { runWithAuth } from "./lib/context";
 import { randomUUID } from "crypto";
 
 // ---------------------------------------------------------------------------
@@ -135,37 +136,34 @@ async function startHttp() {
       return;
     }
 
-    // Store authenticated user in request context for tool handlers
-    (req as unknown as Record<string, unknown>).__mcpUser = user;
+    // SECURITY (C1): Populate AsyncLocalStorage auth context so tool
+    // handlers can read the authenticated user without accepting agentId params.
+    await runWithAuth(user, async () => {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      if (sessionId && sessions.has(sessionId)) {
+        // Existing session
+        const transport = sessions.get(sessionId)!;
+        await transport.handleRequest(req, res, req.body);
+      } else {
+        // New session
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (newSessionId) => {
+            sessions.set(newSessionId, transport);
+          },
+        });
 
-    if (sessionId && sessions.has(sessionId)) {
-      // Existing session
-      const transport = sessions.get(sessionId)!;
-      await transport.handleRequest(req, res, req.body);
-    } else {
-      // New session
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (newSessionId) => {
-          sessions.set(newSessionId, transport);
-        },
-      });
+        transport.onclose = () => {
+          const sid = (transport as unknown as Record<string, unknown>).sessionId as string;
+          if (sid) sessions.delete(sid);
+        };
 
-      transport.onclose = () => {
-        const sid = (transport as unknown as Record<string, unknown>).sessionId as string;
-        if (sid) sessions.delete(sid);
-      };
-
-      const server = createMcpServer();
-
-      // Attach user to the server's context
-      (server as unknown as Record<string, unknown>).__mcpUser = user;
-
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
-    }
+        const server = createMcpServer();
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      }
+    });
   });
 
   // Handle GET for SSE streams

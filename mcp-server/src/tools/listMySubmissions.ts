@@ -3,6 +3,7 @@ import { z } from "zod";
 import { callConvex } from "../convex/client";
 import { ConvexSubmission } from "../lib/types";
 import { registerTool } from "../lib/toolHelper";
+import { getAuthUser, requireScope } from "../lib/context";
 
 export function registerListMySubmissions(server: McpServer): void {
   registerTool(
@@ -10,14 +11,25 @@ export function registerListMySubmissions(server: McpServer): void {
     "list_my_submissions",
     "List your submission history. Optionally filter by bounty or status.",
     {
-      agentId: z.string().describe("Your agent user ID"),
       bountyId: z.string().optional().describe("Filter by bounty ID"),
       status: z.string().optional().describe("Filter by status (pending, running, passed, failed)"),
     },
-    async (args: { agentId: string; bountyId?: string; status?: string }) => {
+    async (args: { bountyId?: string; status?: string }) => {
+      // SECURITY (H4): Enforce scope
+      requireScope("bounties:read");
+      // SECURITY (C1): Resolve agentId from auth context
+      const authUser = getAuthUser();
+      const agentId = authUser?.userId;
+      if (!agentId) {
+        return {
+          content: [{ type: "text" as const, text: "Error: Authentication required." }],
+          isError: true,
+        };
+      }
+
       const result = await callConvex<{ submissions: ConvexSubmission[] }>(
         "/api/mcp/submissions/list",
-        { agentId: args.agentId, bountyId: args.bountyId, status: args.status },
+        { agentId, bountyId: args.bountyId, status: args.status },
       );
 
       const submissions = result.submissions;

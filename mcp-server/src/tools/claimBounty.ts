@@ -1,9 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { callConvex } from "../convex/client";
-import { createFork, generateForkAccessToken } from "../github/forkManager";
+import { createFork } from "../github/forkManager";
 import { ConvexBountyDetails } from "../lib/types";
 import { registerTool } from "../lib/toolHelper";
+import { getAuthUser, requireScope } from "../lib/context";
 
 export function registerClaimBounty(server: McpServer): void {
   registerTool(
@@ -12,10 +13,21 @@ export function registerClaimBounty(server: McpServer): void {
     "Claim an exclusive lock on a bounty. Optionally forks the repository. Only one agent can claim a bounty at a time. Claims expire after the bounty's claim duration (default 4 hours).",
     {
       bountyId: z.string().describe("The bounty ID to claim"),
-      agentId: z.string().describe("Your agent user ID (from registration)"),
       forkRepo: z.string().optional().describe("Set to 'false' to skip forking (default: fork)"),
     },
-    async (args: { bountyId: string; agentId: string; forkRepo?: string }) => {
+    async (args: { bountyId: string; forkRepo?: string }) => {
+      // SECURITY (H4): Enforce scope
+      requireScope("bounties:claim");
+      // SECURITY (C1): Resolve agentId from auth context, not from params
+      const authUser = getAuthUser();
+      const agentId = authUser?.userId;
+      if (!agentId) {
+        return {
+          content: [{ type: "text" as const, text: "Error: Authentication required. No agent ID available." }],
+          isError: true,
+        };
+      }
+
       const bountyResult = await callConvex<{
         bounty: ConvexBountyDetails & { repositoryUrl?: string };
       }>("/api/mcp/bounties/get", { bountyId: args.bountyId });
@@ -26,7 +38,7 @@ export function registerClaimBounty(server: McpServer): void {
       try {
         claimResult = await callConvex<{ claimId: string }>(
           "/api/mcp/claims/create",
-          { bountyId: args.bountyId, agentId: args.agentId },
+          { bountyId: args.bountyId, agentId },
         );
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to claim bounty";
@@ -49,26 +61,23 @@ export function registerClaimBounty(server: McpServer): void {
           if (match) {
             const [, owner, repo] = match;
             const bountyIdSuffix = args.bountyId.slice(-6);
-            const agentIdSuffix = args.agentId.slice(-6);
+            const agentIdSuffix = agentId.slice(-6);
 
             const fork = await createFork(
               owner!, repo!.replace(/\.git$/, ""), bountyIdSuffix, agentIdSuffix,
             );
 
-            const expiresAt = Date.now() + (bounty.claimDurationHours ?? 4) * 60 * 60 * 1000;
-            const access = await generateForkAccessToken(fork.forkFullName, expiresAt);
-
             await callConvex("/api/mcp/claims/update-fork", {
               claimId,
               forkRepositoryUrl: fork.forkUrl,
-              forkAccessToken: access.accessToken,
-              forkTokenExpiresAt: access.tokenExpiresAt,
+              forkAccessToken: "", // No token shared with agents
+              forkTokenExpiresAt: 0,
             });
 
             text += `## Repository Fork\n\n`;
             text += `**Fork URL:** ${fork.forkUrl}\n`;
-            text += `**Clone:** \`${access.cloneCommand}\`\n`;
-            text += `**Token Expires:** ${new Date(access.tokenExpiresAt).toISOString()}\n\n`;
+            text += `**Clone:** \`${fork.cloneCommand}\`\n\n`;
+            text += `> **Note:** Push your changes to your own public repository, then submit that URL + commit hash.\n\n`;
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : "Fork creation failed";

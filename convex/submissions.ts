@@ -10,9 +10,25 @@ export const listByBounty = query({
       .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
       .collect();
 
+    // SECURITY: Determine if the viewer is the bounty creator.
+    // If so, redact repositoryUrl and commitHash on non-terminal submissions
+    // to prevent creators from inspecting agent work before verification completes.
+    const user = await getCurrentUser(ctx);
+    const bounty = await ctx.db.get(args.bountyId);
+    const isCreator =
+      user && bounty && bounty.creatorId === user._id && user.role !== "admin";
+
     return await Promise.all(
       submissions.map(async (sub) => {
         const agent = await ctx.db.get(sub.agentId);
+        if (isCreator && sub.status !== "passed" && sub.status !== "failed") {
+          return {
+            ...sub,
+            repositoryUrl: "[redacted until verification completes]",
+            commitHash: "[redacted until verification completes]",
+            agent,
+          };
+        }
         return { ...sub, agent };
       })
     );
@@ -64,8 +80,46 @@ export const create = mutation({
 
     const bounty = await ctx.db.get(args.bountyId);
     if (!bounty) throw new Error("Bounty not found");
-    if (bounty.status !== "active") {
+    if (bounty.status !== "active" && bounty.status !== "in_progress") {
       throw new Error("Bounty is not accepting submissions");
+    }
+
+    // SECURITY (P2-6): Reject submissions after bounty deadline
+    if (bounty.deadline && bounty.deadline < Date.now()) {
+      throw new Error("Bounty deadline has passed");
+    }
+
+    // Verify agent has active claim on this bounty
+    const activeClaim = await ctx.db
+      .query("bountyClaims")
+      .withIndex("by_bountyId_and_status", (q) =>
+        q.eq("bountyId", args.bountyId).eq("status", "active")
+      )
+      .first();
+
+    if (!activeClaim || activeClaim.agentId !== user._id) {
+      throw new Error("You must have an active claim on this bounty to submit");
+    }
+
+    // Rate limit: only 1 pending/running submission per agent per bounty
+    const pendingSubmissions = await ctx.db
+      .query("submissions")
+      .withIndex("by_bountyId_and_status", (q) =>
+        q.eq("bountyId", args.bountyId).eq("status", "pending")
+      )
+      .collect();
+    if (pendingSubmissions.some((s) => s.agentId === user._id)) {
+      throw new Error("You already have a pending submission for this bounty");
+    }
+
+    const runningSubmissions = await ctx.db
+      .query("submissions")
+      .withIndex("by_bountyId_and_status", (q) =>
+        q.eq("bountyId", args.bountyId).eq("status", "running")
+      )
+      .collect();
+    if (runningSubmissions.some((s) => s.agentId === user._id)) {
+      throw new Error("You already have a running verification for this bounty");
     }
 
     return await ctx.db.insert("submissions", {
@@ -101,6 +155,9 @@ export const updateStatus = internalMutation({
   },
 });
 
+// SECURITY (H7): Maximum total submissions per agent per bounty (across all statuses)
+const MAX_SUBMISSIONS_PER_BOUNTY = 5;
+
 export const createFromMcp = internalMutation({
   args: {
     bountyId: v.id("bounties"),
@@ -114,6 +171,63 @@ export const createFromMcp = internalMutation({
     if (!bounty) throw new Error("Bounty not found");
     if (bounty.status !== "active" && bounty.status !== "in_progress") {
       throw new Error("Bounty is not accepting submissions");
+    }
+
+    // SECURITY (P2-6): Reject submissions after bounty deadline
+    if (bounty.deadline && bounty.deadline < Date.now()) {
+      throw new Error("Bounty deadline has passed");
+    }
+
+    // Validate commit hash format
+    if (!/^[a-f0-9]{7,40}$/i.test(args.commitHash)) {
+      throw new Error("Invalid commit hash");
+    }
+
+    // Verify agent has active claim on this bounty
+    const activeClaim = await ctx.db
+      .query("bountyClaims")
+      .withIndex("by_bountyId_and_status", (q) =>
+        q.eq("bountyId", args.bountyId).eq("status", "active")
+      )
+      .first();
+
+    if (!activeClaim || activeClaim.agentId !== args.agentId) {
+      throw new Error("You must have an active claim on this bounty to submit");
+    }
+
+    // SECURITY (H7): Limit total submissions per agent per bounty
+    const allSubmissions = await ctx.db
+      .query("submissions")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .collect();
+    const agentSubmissionCount = allSubmissions.filter(
+      (s) => s.agentId === args.agentId
+    ).length;
+    if (agentSubmissionCount >= MAX_SUBMISSIONS_PER_BOUNTY) {
+      throw new Error(
+        `Maximum attempts reached (${MAX_SUBMISSIONS_PER_BOUNTY} per bounty). No more submissions allowed.`
+      );
+    }
+
+    // Rate limit: only 1 pending/running submission per agent per bounty
+    const pendingSubmissions = await ctx.db
+      .query("submissions")
+      .withIndex("by_bountyId_and_status", (q) =>
+        q.eq("bountyId", args.bountyId).eq("status", "pending")
+      )
+      .collect();
+    if (pendingSubmissions.some((s) => s.agentId === args.agentId)) {
+      throw new Error("You already have a pending submission for this bounty");
+    }
+
+    const runningSubmissions = await ctx.db
+      .query("submissions")
+      .withIndex("by_bountyId_and_status", (q) =>
+        q.eq("bountyId", args.bountyId).eq("status", "running")
+      )
+      .collect();
+    if (runningSubmissions.some((s) => s.agentId === args.agentId)) {
+      throw new Error("You already have a running verification for this bounty");
     }
 
     return await ctx.db.insert("submissions", {

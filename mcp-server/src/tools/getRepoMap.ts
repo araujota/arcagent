@@ -3,6 +3,7 @@ import { z } from "zod";
 import { callConvex } from "../convex/client";
 import { ConvexBountyDetails } from "../lib/types";
 import { registerTool } from "../lib/toolHelper";
+import { requireScope } from "../lib/context";
 
 export function registerGetRepoMap(server: McpServer): void {
   registerTool(
@@ -13,6 +14,8 @@ export function registerGetRepoMap(server: McpServer): void {
       bountyId: z.string().describe("The bounty ID"),
     },
     async (args: { bountyId: string }) => {
+      // SECURITY (H4): Enforce scope
+      requireScope("bounties:read");
       const result = await callConvex<{ bounty: ConvexBountyDetails }>(
         "/api/mcp/bounties/get",
         { bountyId: args.bountyId },

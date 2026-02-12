@@ -1,20 +1,28 @@
 import { VMHandle } from "../vm/firecracker";
 import { GateResult } from "../queue/jobQueue";
+import { DiffContext } from "../lib/diffContext";
+import { filterToChangedFiles } from "../lib/diffFilter";
 
 /**
  * Type-check gate -- runs the static type checker for the project language.
  *
+ * Type checkers need full project context to resolve types, so they always run
+ * on the entire project. When DiffContext is available, the output is post-hoc
+ * filtered to only report errors in files the agent changed.
+ *
  * Supported:
  *  - TypeScript: tsc --noEmit
  *  - Python: pyright or mypy
- *  - Rust: (covered by cargo build)
  *  - Go: go vet
- *  - Java: (covered by compilation)
+ *  - PHP: PHPStan
+ *  - Ruby: Sorbet (if available)
+ *  - Rust/Java/C/C++/Swift/Kotlin/C#: covered by build
  */
 export async function runTypecheckGate(
   vm: VMHandle,
   language: string,
   timeoutMs: number,
+  diff: DiffContext | null,
 ): Promise<GateResult> {
   const start = Date.now();
 
@@ -45,10 +53,37 @@ export async function runTypecheckGate(
     };
   }
 
-  // Count diagnostic lines (TypeScript format: "file(line,col): error TS...")
-  const errorLines = result.stdout
+  // Parse error lines
+  let errorLines = result.stdout
     .split("\n")
     .filter((line) => /error\s+(TS\d+|E\d+|:)/.test(line));
+
+  // Post-hoc filter to changed files when diff is available
+  if (diff && diff.changedFiles.length > 0) {
+    const allErrorLines = errorLines;
+
+    errorLines = filterToChangedFiles(
+      errorLines,
+      (line) => extractFilePath(line),
+      diff.changedFiles,
+    );
+
+    const filteredOut = allErrorLines.length - errorLines.length;
+
+    if (errorLines.length === 0) {
+      return {
+        gate: "typecheck",
+        status: "pass",
+        durationMs,
+        summary: `Type check passed (${filteredOut} pre-existing error(s) filtered out)`,
+        details: {
+          totalErrors: allErrorLines.length,
+          filteredErrors: filteredOut,
+          diffScoped: true,
+        },
+      };
+    }
+  }
 
   return {
     gate: "typecheck",
@@ -60,6 +95,7 @@ export async function runTypecheckGate(
       errorCount: errorLines.length,
       errors: errorLines.slice(0, 20).map((line) => line.trim()),
       rawOutput: truncate(result.stdout, 5_000),
+      diffScoped: diff !== null,
     },
   };
 }
@@ -81,15 +117,47 @@ function getTypecheckCommand(language: string): string | null {
       );
     case "go":
       return "go vet ./... 2>&1";
+    case "php":
+      return (
+        "if command -v phpstan &>/dev/null; then phpstan analyse --error-format=raw 2>&1; " +
+        "else echo 'PHPStan not available' && exit 0; fi"
+      );
+    case "ruby":
+      return (
+        "if command -v srb &>/dev/null; then srb tc 2>&1; " +
+        "else echo 'Sorbet not available' && exit 0; fi"
+      );
     case "rust":
-      // Type checking is part of the build step for Rust
-      return null;
     case "java":
-      // Type checking is part of the compilation step for Java
+    case "csharp":
+    case "c":
+    case "cpp":
+    case "swift":
+    case "kotlin":
+      // Type checking is part of the build step for these languages
       return null;
     default:
       return null;
   }
+}
+
+/**
+ * Extract the file path from a type checker error line.
+ * Handles formats like:
+ *  - TypeScript: "src/foo.ts(10,5): error TS2345: ..."
+ *  - Python: "src/foo.py:10: error: ..."
+ *  - Go: "src/foo.go:10:5: ..."
+ */
+function extractFilePath(line: string): string | undefined {
+  // TypeScript format: file(line,col): error
+  const tsMatch = line.match(/^(.+?)\(\d+,\d+\):/);
+  if (tsMatch) return tsMatch[1];
+
+  // Python/Go format: file:line: error
+  const pyMatch = line.match(/^(.+?):\d+:/);
+  if (pyMatch) return pyMatch[1];
+
+  return undefined;
 }
 
 function truncate(text: string, maxLen: number): string {

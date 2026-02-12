@@ -1,6 +1,6 @@
-import { query, mutation, internalQuery } from "./_generated/server";
+import { query, mutation, internalQuery, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
-import { getCurrentUser, requireAuth, requireRole } from "./lib/utils";
+import { getCurrentUser, requireAuth, requireRole, requireBountyAccess } from "./lib/utils";
 
 export const listByBounty = query({
   args: {
@@ -49,7 +49,41 @@ export const listAllByBounty = internalQuery({
 export const getById = query({
   args: { testSuiteId: v.id("testSuites") },
   handler: async (ctx, args) => {
-    return await ctx.db.get(args.testSuiteId);
+    const suite = await ctx.db.get(args.testSuiteId);
+    if (!suite) return null;
+
+    const { role } = await requireBountyAccess(ctx, suite.bountyId, { allowAgent: true });
+
+    // Block agents from viewing hidden test suites
+    if (role === "agent" && suite.visibility === "hidden") {
+      throw new Error("Unauthorized");
+    }
+
+    return suite;
+  },
+});
+
+export const createInternal = internalMutation({
+  args: {
+    bountyId: v.id("bounties"),
+    title: v.string(),
+    gherkinContent: v.string(),
+    visibility: v.union(v.literal("public"), v.literal("hidden")),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("testSuites")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .collect();
+    const maxVersion = existing.reduce((max, s) => Math.max(max, s.version), 0);
+
+    return await ctx.db.insert("testSuites", {
+      bountyId: args.bountyId,
+      title: args.title,
+      version: maxVersion + 1,
+      gherkinContent: args.gherkinContent,
+      visibility: args.visibility,
+    });
   },
 });
 
@@ -105,6 +139,13 @@ export const update = mutation({
     if (!bounty) throw new Error("Bounty not found");
     if (bounty.creatorId !== user._id && user.role !== "admin") {
       throw new Error("Unauthorized");
+    }
+
+    // SECURITY: Freeze tests once an agent has claimed the bounty
+    if (bounty.status !== "draft" && bounty.status !== "active") {
+      throw new Error(
+        "Tests cannot be modified after an agent has claimed the bounty"
+      );
     }
 
     const updates: Record<string, unknown> = {};

@@ -1,14 +1,27 @@
-import { query, mutation, internalMutation, internalQuery } from "./_generated/server";
+import { query, mutation, internalMutation, internalQuery, internalAction } from "./_generated/server";
 import { v } from "convex/values";
-import { getCurrentUser, requireAuth, requireRole } from "./lib/utils";
+import { getCurrentUser, requireAuth, requireRole, requireBountyAccess } from "./lib/utils";
+import { internal } from "./_generated/api";
 
 export const getByBountyId = query({
   args: { bountyId: v.id("bounties") },
   handler: async (ctx, args) => {
-    return await ctx.db
+    const { role } = await requireBountyAccess(ctx, args.bountyId, { allowAgent: true });
+
+    const conn = await ctx.db
       .query("repoConnections")
       .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
       .first();
+
+    if (!conn) return null;
+
+    // Redact repositoryUrl for agents
+    if (role === "agent") {
+      const { repositoryUrl: _url, ...rest } = conn;
+      return { ...rest, repositoryUrl: "[redacted]" };
+    }
+
+    return conn;
   },
 });
 
@@ -39,6 +52,11 @@ export const create = mutation({
       throw new Error("Unauthorized");
     }
 
+    // Validate repository URL format
+    if (!/^https?:\/\/(github\.com|gitlab\.com|bitbucket\.org)\/[\w.-]+\/[\w.-]+/.test(args.repositoryUrl)) {
+      throw new Error("Invalid repository URL. Please use a GitHub, GitLab, or Bitbucket URL.");
+    }
+
     // Check for existing connection
     const existing = await ctx.db
       .query("repoConnections")
@@ -66,6 +84,27 @@ export const create = mutation({
   },
 });
 
+export const createInternal = internalMutation({
+  args: {
+    bountyId: v.id("bounties"),
+    repositoryUrl: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const id = await ctx.db.insert("repoConnections", {
+      bountyId: args.bountyId,
+      repositoryUrl: args.repositoryUrl,
+      owner: "",
+      repo: "",
+      defaultBranch: "main",
+      commitSha: "",
+      status: "pending",
+    });
+
+    await ctx.db.patch(args.bountyId, { repoConnectionId: id });
+    return id;
+  },
+});
+
 export const updateStatus = internalMutation({
   args: {
     repoConnectionId: v.id("repoConnections"),
@@ -75,7 +114,8 @@ export const updateStatus = internalMutation({
       v.literal("parsing"),
       v.literal("indexing"),
       v.literal("ready"),
-      v.literal("failed")
+      v.literal("failed"),
+      v.literal("cleaned")
     ),
     errorMessage: v.optional(v.string()),
   },
@@ -168,6 +208,21 @@ export const markIndexed = internalMutation({
     await ctx.db.patch(args.repoConnectionId, {
       lastIndexedAt: Date.now(),
     });
+
+    // Auto-save repo for the bounty creator
+    const repoConnection = await ctx.db.get(args.repoConnectionId);
+    if (repoConnection) {
+      const bounty = await ctx.db.get(repoConnection.bountyId);
+      if (bounty) {
+        await ctx.runMutation(internal.savedRepos.upsert, {
+          userId: bounty.creatorId,
+          repositoryUrl: repoConnection.repositoryUrl,
+          owner: repoConnection.owner,
+          repo: repoConnection.repo,
+          languages: repoConnection.languages,
+        });
+      }
+    }
   },
 });
 
@@ -197,5 +252,115 @@ export const updateDockerfileContent = mutation({
       dockerfileContent: args.dockerfileContent,
       dockerfileSource: args.dockerfileSource,
     });
+  },
+});
+
+/**
+ * Trigger a re-index of a repo connection with a new commit SHA.
+ * Called by the GitHub webhook handler or the cron fallback.
+ */
+export const triggerReIndex = internalMutation({
+  args: {
+    repoConnectionId: v.id("repoConnections"),
+    newCommitSha: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const conn = await ctx.db.get(args.repoConnectionId);
+    if (!conn) throw new Error("Repo connection not found");
+
+    await ctx.db.patch(args.repoConnectionId, {
+      status: "fetching",
+      commitSha: args.newCommitSha,
+      errorMessage: undefined,
+    });
+
+    await ctx.scheduler.runAfter(0, internal.pipelines.fetchRepo.fetchRepo, {
+      repoConnectionId: args.repoConnectionId,
+      bountyId: conn.bountyId,
+      repositoryUrl: conn.repositoryUrl,
+    });
+  },
+});
+
+/**
+ * Cron-driven check for tracked repos that may have new commits.
+ * Polls GitHub API for HEAD commit on the tracked branch.
+ */
+export const checkForUpdates = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    const token = process.env.GITHUB_API_TOKEN;
+    if (!token) {
+      console.warn("[checkForUpdates] GITHUB_API_TOKEN not set, skipping");
+      return;
+    }
+
+    const readyConnections = await ctx.runQuery(
+      internal.repoConnections.listReady
+    );
+
+    for (const conn of readyConnections) {
+      if (!conn.owner || !conn.repo) continue;
+
+      const branch = conn.trackedBranch || conn.defaultBranch;
+      try {
+        const response = await fetch(
+          `https://api.github.com/repos/${conn.owner}/${conn.repo}/commits/${branch}`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github.v3+json",
+              "User-Agent": "arcagent",
+            },
+          }
+        );
+
+        if (!response.ok) continue;
+
+        const data = await response.json();
+        const headSha = data.sha as string;
+
+        if (headSha && headSha !== conn.commitSha) {
+          console.log(
+            `[checkForUpdates] New commit on ${conn.owner}/${conn.repo}@${branch}: ${headSha}`
+          );
+          await ctx.runMutation(internal.repoConnections.triggerReIndex, {
+            repoConnectionId: conn._id,
+            newCommitSha: headSha,
+          });
+        }
+      } catch (error) {
+        console.warn(
+          `[checkForUpdates] Failed to check ${conn.owner}/${conn.repo}: ${error}`
+        );
+      }
+    }
+  },
+});
+
+/** List all ready repo connections (used by cron) */
+export const listReady = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    return await ctx.db
+      .query("repoConnections")
+      .withIndex("by_status", (q) => q.eq("status", "ready"))
+      .collect();
+  },
+});
+
+/** Store webhook ID on a repo connection */
+export const updateWebhookId = internalMutation({
+  args: {
+    repoConnectionId: v.id("repoConnections"),
+    webhookId: v.string(),
+    trackedBranch: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const updates: Record<string, unknown> = { webhookId: args.webhookId };
+    if (args.trackedBranch !== undefined) {
+      updates.trackedBranch = args.trackedBranch;
+    }
+    await ctx.db.patch(args.repoConnectionId, updates);
   },
 });

@@ -4,9 +4,13 @@ import {
   VerificationJobData,
   VerificationResult,
   GateResult,
+  StepResult,
 } from "./jobQueue";
 import { runGates } from "../gates/gateRunner";
 import { detectLanguage } from "../lib/languageDetector";
+import { computeDiff } from "../lib/diffComputer";
+import { DiffContext } from "../lib/diffContext";
+import { sanitizeShellArg, validateShellArg } from "../lib/shellSanitize";
 import { createFirecrackerVM, destroyFirecrackerVM, VMHandle } from "../vm/firecracker";
 import { getVMConfig } from "../vm/vmConfig";
 import { withTimeout } from "../lib/timeout";
@@ -19,9 +23,10 @@ import { postVerificationResult } from "../convex/client";
  *  1. Detect the project language (from hint or heuristic).
  *  2. Spin up a Firecracker microVM with the appropriate rootfs image.
  *  3. Clone the repo at the specified commit inside the VM.
- *  4. Run the gate pipeline (build -> lint -> typecheck -> security -> sonarqube -> test).
- *  5. Tear down the VM.
- *  6. Report the results back to Convex.
+ *  4. Compute diff context (if baseCommitSha available).
+ *  5. Run the gate pipeline (build -> lint -> typecheck -> security -> memory -> snyk -> sonarqube -> test).
+ *  6. Tear down the VM.
+ *  7. Report the results back to Convex.
  */
 export async function processVerificationJob(
   job: Job<VerificationJobData, VerificationResult>,
@@ -31,6 +36,13 @@ export async function processVerificationJob(
   let vm: VMHandle | null = null;
 
   try {
+    // 0. Validate all shell-interpolated inputs upfront
+    const safeRepoUrl = sanitizeShellArg(data.repoUrl, "repoUrl", "repoUrl");
+    const safeCommitSha = sanitizeShellArg(data.commitSha, "commitSha", "commitSha");
+    if (data.baseCommitSha) {
+      validateShellArg(data.baseCommitSha, "commitSha", "baseCommitSha");
+    }
+
     // 1. Language detection
     const language = data.language ?? (await detectLanguage(data.repoUrl));
     logger.info("Detected language", { jobId: data.jobId, language });
@@ -51,25 +63,51 @@ export async function processVerificationJob(
 
     await job.updateProgress(15);
 
-    // 4. Clone repo inside VM
-    await vm.exec(
-      `git clone --depth 1 ${data.repoUrl} /workspace && ` +
-      `cd /workspace && git checkout ${data.commitSha}`,
-    );
+    // 4. Clone repo inside VM (using sanitized values)
+    const safeBaseCommitSha = data.baseCommitSha
+      ? sanitizeShellArg(data.baseCommitSha, "commitSha", "baseCommitSha")
+      : null;
+    const cloneCmd = safeBaseCommitSha
+      ? `git clone ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`
+      : `git clone --depth 1 ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`;
+
+    await vm.exec(cloneCmd);
+
+    await job.updateProgress(20);
+
+    // 5. Compute diff context (if baseCommitSha available)
+    let diffContext: DiffContext | null = null;
+    if (data.baseCommitSha) {
+      diffContext = await computeDiff(vm, data.baseCommitSha, data.commitSha);
+      if (diffContext) {
+        logger.info("Diff context computed", {
+          jobId: data.jobId,
+          changedFiles: diffContext.changedFiles.length,
+        });
+      }
+    }
 
     await job.updateProgress(25);
 
-    // 5. Run gate pipeline with overall timeout
+    // 6. Run gate pipeline with overall timeout
     const gateResults: GateResult[] = await withTimeout(
-      () => runGates(vm!, language, job),
+      () => runGates(vm!, language, job, diffContext),
       data.timeoutSeconds * 1_000,
       `Verification timed out after ${data.timeoutSeconds}s`,
     );
 
     await job.updateProgress(95);
 
-    // 6. Compute overall status
+    // 7. Compute overall status
     const overallStatus = computeOverallStatus(gateResults);
+
+    // Collect visibility-tagged steps from gate results (test gate)
+    const allSteps: StepResult[] = [];
+    for (const gate of gateResults) {
+      if (gate.steps) {
+        allSteps.push(...gate.steps);
+      }
+    }
 
     const result: VerificationResult = {
       jobId: data.jobId,
@@ -78,9 +116,10 @@ export async function processVerificationJob(
       overallStatus,
       gates: gateResults,
       totalDurationMs: Date.now() - startTime,
+      steps: allSteps.length > 0 ? allSteps : undefined,
     };
 
-    // 7. Report back to Convex
+    // 8. Report back to Convex
     if (data.convexUrl) {
       await postVerificationResult(data.convexUrl, result).catch((err) => {
         logger.error("Failed to post result to Convex", {
@@ -117,7 +156,7 @@ export async function processVerificationJob(
 
     throw error;
   } finally {
-    // 8. Always tear down the VM
+    // 9. Always tear down the VM
     if (vm) {
       await destroyFirecrackerVM(vm).catch((cleanupErr) => {
         logger.error("Failed to destroy microVM", {

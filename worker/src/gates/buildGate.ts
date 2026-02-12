@@ -1,21 +1,31 @@
 import { VMHandle } from "../vm/firecracker";
 import { GateResult } from "../queue/jobQueue";
+import { DiffContext } from "../lib/diffContext";
 import { parseCommandOutput } from "../lib/resultParser";
 
 /**
  * Build gate -- installs dependencies and compiles the project.
  *
+ * Always runs on the full project (builds need all dependencies to resolve).
+ *
  * Supported languages:
- *  - TypeScript / JavaScript: `npm ci` (or `yarn install --frozen-lockfile`)
- *  - Python: `pip install -r requirements.txt` (or `poetry install`)
- *  - Rust: `cargo build --release`
- *  - Go: `go build ./...`
- *  - Java: `mvn compile` or `gradle build`
+ *  - TypeScript / JavaScript: npm ci / yarn / pnpm
+ *  - Python: pip / poetry / pipenv
+ *  - Rust: cargo build --release
+ *  - Go: go build ./...
+ *  - Java: mvn compile / gradle build
+ *  - Ruby: bundle install
+ *  - PHP: composer install
+ *  - C#: dotnet build
+ *  - C/C++: cmake / make / gcc
+ *  - Swift: swift build
+ *  - Kotlin: gradle build
  */
 export async function runBuildGate(
   vm: VMHandle,
   language: string,
   timeoutMs: number,
+  _diff: DiffContext | null,
 ): Promise<GateResult> {
   const start = Date.now();
 
@@ -85,6 +95,37 @@ function getBuildCommand(language: string): string | null {
       return (
         "if [ -f pom.xml ]; then mvn compile -q; " +
         "elif [ -f build.gradle ] || [ -f build.gradle.kts ]; then gradle build -x test; " +
+        "else echo 'No build file found'; fi"
+      );
+    case "ruby":
+      return (
+        "if [ -f Gemfile ]; then bundle install; " +
+        "else echo 'No Gemfile found'; fi"
+      );
+    case "php":
+      return (
+        "if [ -f composer.json ]; then composer install --no-interaction; " +
+        "else echo 'No composer.json found'; fi"
+      );
+    case "csharp":
+      return "dotnet build 2>&1";
+    case "c":
+      return (
+        "if [ -f CMakeLists.txt ]; then cmake -B build && cmake --build build; " +
+        "elif [ -f Makefile ]; then make; " +
+        "else gcc -o main *.c 2>&1; fi"
+      );
+    case "cpp":
+      return (
+        "if [ -f CMakeLists.txt ]; then cmake -B build && cmake --build build; " +
+        "elif [ -f Makefile ]; then make; " +
+        "else g++ -o main *.cpp 2>&1; fi"
+      );
+    case "swift":
+      return "swift build 2>&1";
+    case "kotlin":
+      return (
+        "if [ -f build.gradle.kts ] || [ -f build.gradle ]; then gradle build -x test; " +
         "else echo 'No build file found'; fi"
       );
     default:

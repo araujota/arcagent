@@ -19,8 +19,9 @@ export function StepTests({ data, onChange }: StepTestsProps) {
       <div className="space-y-2">
         <Label>Public Test Suite</Label>
         <p className="text-sm text-muted-foreground">
-          These tests are visible to agents before they submit. Write Gherkin
-          scenarios that describe the expected behavior.
+          These Gherkin scenarios are visible to agents before they start coding.
+          They serve as the specification that guides implementation. Write
+          Given/When/Then scenarios describing the expected behavior.
         </p>
         <GherkinEditor
           value={data.publicTests}
@@ -31,8 +32,9 @@ export function StepTests({ data, onChange }: StepTestsProps) {
       <div className="space-y-2">
         <Label>Hidden Test Suite (Optional)</Label>
         <p className="text-sm text-muted-foreground">
-          These tests are only revealed during verification. Use them to test
-          edge cases and prevent gaming.
+          These scenarios are kept secret until verification runs inside the
+          microVM. Use them for edge cases, boundary conditions, and anti-gaming
+          checks. Agents see only pass/fail results, never the test content.
         </p>
         <GherkinEditor
           value={data.hiddenTests}

@@ -44,6 +44,9 @@ export function StepConfig({ data, onChange }: StepConfigProps) {
             onChange({ ...data, deadline: e.target.value || undefined })
           }
         />
+        <p className="text-sm text-muted-foreground">
+          The date by which a solution must be submitted. After this date, unclaimed bounties can be cancelled for a full escrow refund.
+        </p>
       </div>
 
       <div className="space-y-2">
@@ -110,9 +113,12 @@ export function StepConfig({ data, onChange }: StepConfigProps) {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="stripe">Stripe (Credit Card)</SelectItem>
-            <SelectItem value="web3">Web3 (Crypto)</SelectItem>
+            <SelectItem value="web3" disabled>Web3 (Crypto) — Coming Soon</SelectItem>
           </SelectContent>
         </Select>
+        <p className="text-sm text-muted-foreground">
+          How the bounty reward is escrowed. Stripe charges your card when the bounty is published. Funds are held until verification passes or the bounty is cancelled.
+        </p>
       </div>
 
       <div className="space-y-2">
@@ -123,6 +129,9 @@ export function StepConfig({ data, onChange }: StepConfigProps) {
           value={data.tags}
           onChange={(e) => onChange({ ...data, tags: e.target.value })}
         />
+        <p className="text-sm text-muted-foreground">
+          Labels that help agents find your bounty. Tags are searchable via the MCP server&apos;s list_bounties tool.
+        </p>
       </div>
     </div>
   );

@@ -1,12 +1,15 @@
 import { Job } from "bullmq";
 import { logger } from "../index";
-import { VerificationJobData, GateResult, GateStatus } from "../queue/jobQueue";
+import { VerificationJobData, GateResult, GateStatus, TestSuiteInput } from "../queue/jobQueue";
 import { VMHandle } from "../vm/firecracker";
 import { getVMConfig } from "../vm/vmConfig";
+import { DiffContext } from "../lib/diffContext";
 import { runBuildGate } from "./buildGate";
 import { runLintGate } from "./lintGate";
 import { runTypecheckGate } from "./typecheckGate";
 import { runSecurityGate } from "./securityGate";
+import { runMemoryGate } from "./memoryGate";
+import { runSnykGate } from "./snykGate";
 import { runSonarQubeGate } from "./sonarqubeGate";
 import { runTestGate } from "./testGate";
 
@@ -14,11 +17,12 @@ import { runTestGate } from "./testGate";
 // Types
 // ---------------------------------------------------------------------------
 
-/** A gate function receives the VM handle, language, and returns a result. */
+/** A gate function receives the VM handle, language, timeout, and diff context. */
 export type GateFn = (
   vm: VMHandle,
   language: string,
   timeoutMs: number,
+  diff: DiffContext | null,
 ) => Promise<GateResult>;
 
 /** Descriptor for a single gate in the pipeline. */
@@ -41,8 +45,10 @@ interface GateDescriptor {
 const GATE_PIPELINE: GateDescriptor[] = [
   { name: "build", fn: runBuildGate, failFast: true },
   { name: "lint", fn: runLintGate, failFast: false },
-  { name: "typecheck", fn: runTypecheckGate, failFast: true },
+  { name: "typecheck", fn: runTypecheckGate, failFast: false },
   { name: "security", fn: runSecurityGate, failFast: false },
+  { name: "memory", fn: runMemoryGate, failFast: false },
+  { name: "snyk", fn: runSnykGate, failFast: false },
   { name: "sonarqube", fn: runSonarQubeGate, failFast: false },
   { name: "test", fn: runTestGate, failFast: true },
 ];
@@ -61,10 +67,12 @@ export async function runGates(
   vm: VMHandle,
   language: string,
   job: Job<VerificationJobData>,
+  diff: DiffContext | null,
 ): Promise<GateResult[]> {
   const results: GateResult[] = [];
   const vmConfig = getVMConfig(language);
   let pipelineAborted = false;
+  const testSuites: TestSuiteInput[] | undefined = job.data.testSuites;
 
   // Progress spans from 25 (after repo clone) to 95 (before result posting).
   // Distribute evenly across gates.
@@ -73,8 +81,30 @@ export async function runGates(
   const progressPerGate =
     (progressEnd - progressStart) / GATE_PIPELINE.length;
 
+  const gateSettings = job.data.gateSettings ?? {};
+
   for (let i = 0; i < GATE_PIPELINE.length; i++) {
     const gate = GATE_PIPELINE[i]!;
+
+    // Skip gates disabled by the bounty creator
+    if (gate.name === "snyk" && gateSettings.snykEnabled === false) {
+      results.push({
+        gate: gate.name,
+        status: "skipped",
+        durationMs: 0,
+        summary: "Snyk disabled by bounty creator",
+      });
+      continue;
+    }
+    if (gate.name === "sonarqube" && gateSettings.sonarqubeEnabled === false) {
+      results.push({
+        gate: gate.name,
+        status: "skipped",
+        durationMs: 0,
+        summary: "SonarQube disabled by bounty creator",
+      });
+      continue;
+    }
 
     if (pipelineAborted) {
       results.push({
@@ -92,7 +122,10 @@ export async function runGates(
     });
 
     try {
-      const result = await gate.fn(vm, language, vmConfig.defaultGateTimeoutMs);
+      // Test gate receives testSuites for visibility-tagged BDD execution
+      const result = gate.name === "test"
+        ? await runTestGate(vm, language, vmConfig.defaultGateTimeoutMs, diff, testSuites)
+        : await gate.fn(vm, language, vmConfig.defaultGateTimeoutMs, diff);
       results.push(result);
 
       logger.info(`Gate completed: ${gate.name}`, {

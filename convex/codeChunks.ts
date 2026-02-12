@@ -1,9 +1,12 @@
 import { query, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
+import { requireBountyAccess } from "./lib/utils";
 
 export const listByBounty = query({
   args: { bountyId: v.id("bounties") },
   handler: async (ctx, args) => {
+    await requireBountyAccess(ctx, args.bountyId, { allowAgent: true });
+
     return await ctx.db
       .query("codeChunks")
       .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
@@ -86,5 +89,22 @@ export const updateQdrantId = internalMutation({
     await ctx.db.patch(args.chunkId, {
       qdrantPointId: args.qdrantPointId,
     });
+  },
+});
+
+/** Delete all code chunks for a bounty (used by cleanup pipeline) */
+export const deleteByBountyId = internalMutation({
+  args: { bountyId: v.id("bounties") },
+  handler: async (ctx, args) => {
+    const chunks = await ctx.db
+      .query("codeChunks")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .collect();
+
+    for (const chunk of chunks) {
+      await ctx.db.delete(chunk._id);
+    }
+
+    return chunks.length;
   },
 });

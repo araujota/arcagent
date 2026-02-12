@@ -61,6 +61,48 @@ const configs: Record<string, VMResourceConfig> = {
     memSizeMib: 2048,
     defaultGateTimeoutMs: 180_000,
   },
+  ruby: {
+    rootfsImage: "ruby-33.ext4",
+    vcpuCount: 2,
+    memSizeMib: 1024,
+    defaultGateTimeoutMs: 120_000,
+  },
+  php: {
+    rootfsImage: "php-84.ext4",
+    vcpuCount: 2,
+    memSizeMib: 1024,
+    defaultGateTimeoutMs: 120_000,
+  },
+  csharp: {
+    rootfsImage: "dotnet-9.ext4",
+    vcpuCount: 4,
+    memSizeMib: 2048,
+    defaultGateTimeoutMs: 180_000,
+  },
+  c: {
+    rootfsImage: "cpp-gcc14.ext4",
+    vcpuCount: 2,
+    memSizeMib: 1024,
+    defaultGateTimeoutMs: 180_000,
+  },
+  cpp: {
+    rootfsImage: "cpp-gcc14.ext4",
+    vcpuCount: 4,
+    memSizeMib: 2048,
+    defaultGateTimeoutMs: 300_000,
+  },
+  swift: {
+    rootfsImage: "swift-6.ext4",
+    vcpuCount: 4,
+    memSizeMib: 2048,
+    defaultGateTimeoutMs: 180_000,
+  },
+  kotlin: {
+    rootfsImage: "kotlin-jvm21.ext4",
+    vcpuCount: 4,
+    memSizeMib: 2048,
+    defaultGateTimeoutMs: 180_000,
+  },
 };
 
 /** Fallback configuration used when the language is unrecognised. */

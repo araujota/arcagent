@@ -233,3 +233,292 @@ export const connectAndIndexRepo = action({
     });
   },
 });
+
+// ---------------------------------------------------------------------------
+// Autonomous Pipeline (MCP bounty creation → full NL→BDD→TDD in one shot)
+// ---------------------------------------------------------------------------
+
+/**
+ * Entry point for the autonomous pipeline.
+ * Triggers repo fetching then schedules polling for repo readiness.
+ */
+export const runAutonomousPipeline = internalAction({
+  args: {
+    bountyId: v.id("bounties"),
+    repoConnectionId: v.id("repoConnections"),
+    conversationId: v.id("conversations"),
+    repositoryUrl: v.string(),
+  },
+  handler: async (ctx, args) => {
+    // Kick off the repo fetch pipeline
+    await ctx.scheduler.runAfter(0, internal.pipelines.fetchRepo.fetchRepo, {
+      repoConnectionId: args.repoConnectionId,
+      bountyId: args.bountyId,
+      repositoryUrl: args.repositoryUrl,
+    });
+
+    // Schedule polling for repo readiness
+    await ctx.scheduler.runAfter(
+      5000,
+      internal.orchestrator.checkRepoAndStartGeneration,
+      {
+        bountyId: args.bountyId,
+        repoConnectionId: args.repoConnectionId,
+        conversationId: args.conversationId,
+        attempt: 0,
+      }
+    );
+  },
+});
+
+/**
+ * Polls repoConnection status every 5s. When "ready", triggers generation.
+ * Times out after 60 attempts (5 min).
+ */
+export const checkRepoAndStartGeneration = internalAction({
+  args: {
+    bountyId: v.id("bounties"),
+    repoConnectionId: v.id("repoConnections"),
+    conversationId: v.id("conversations"),
+    attempt: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const maxAttempts = 60; // 5 min at 5s intervals
+
+    const repoConnection = await ctx.runQuery(
+      internal.repoConnections.getByBountyIdInternal,
+      { bountyId: args.bountyId }
+    );
+
+    if (!repoConnection) {
+      console.error(
+        `[autonomous] Repo connection not found for bounty ${args.bountyId}`
+      );
+      return;
+    }
+
+    if (repoConnection.status === "ready") {
+      // Repo is ready — start generation
+      await ctx.scheduler.runAfter(
+        0,
+        internal.orchestrator.runAutonomousGeneration,
+        {
+          bountyId: args.bountyId,
+          conversationId: args.conversationId,
+        }
+      );
+      return;
+    }
+
+    if (repoConnection.status === "failed") {
+      console.error(
+        `[autonomous] Repo indexing failed for bounty ${args.bountyId}: ${repoConnection.errorMessage}`
+      );
+      await ctx.runMutation(internal.conversations.addMessage, {
+        conversationId: args.conversationId,
+        role: "system",
+        content: `Repo indexing failed: ${repoConnection.errorMessage || "Unknown error"}`,
+      });
+      return;
+    }
+
+    if (args.attempt >= maxAttempts) {
+      console.error(
+        `[autonomous] Repo indexing timed out for bounty ${args.bountyId}`
+      );
+      await ctx.runMutation(internal.conversations.addMessage, {
+        conversationId: args.conversationId,
+        role: "system",
+        content: "Repo indexing timed out after 5 minutes",
+      });
+      return;
+    }
+
+    // Still in progress — poll again in 5s
+    await ctx.scheduler.runAfter(
+      5000,
+      internal.orchestrator.checkRepoAndStartGeneration,
+      {
+        bountyId: args.bountyId,
+        repoConnectionId: args.repoConnectionId,
+        conversationId: args.conversationId,
+        attempt: args.attempt + 1,
+      }
+    );
+  },
+});
+
+/**
+ * Runs the full NL→BDD→TDD chain in one shot (autonomous mode).
+ * No human interaction or clarification rounds.
+ */
+export const runAutonomousGeneration = internalAction({
+  args: {
+    bountyId: v.id("bounties"),
+    conversationId: v.id("conversations"),
+  },
+  handler: async (ctx, args) => {
+    try {
+      const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+        bountyId: args.bountyId,
+      });
+      if (!bounty) throw new Error("Bounty not found");
+
+      // 1. Retrieve repo context
+      let repoContext: string | undefined;
+      try {
+        const context = await ctx.runAction(
+          internal.pipelines.retrieveContext.retrieveContext,
+          {
+            bountyId: args.bountyId,
+            query: `${bounty.title}\n${bounty.description}`,
+          }
+        );
+        repoContext = JSON.stringify(context);
+
+        await ctx.runMutation(internal.conversations.updateRepoContext, {
+          conversationId: args.conversationId,
+          repoContextSnapshot: repoContext,
+        });
+      } catch (error) {
+        console.warn("[autonomous] Failed to retrieve repo context:", error);
+      }
+
+      // 2. Generate BDD (creates the generatedTests record internally)
+      await ctx.runAction(internal.pipelines.generateBDD.generateBDD, {
+        bountyId: args.bountyId,
+        conversationId: args.conversationId,
+        description: bounty.description,
+        repoContext,
+      });
+
+      // 3. Get the generated test record
+      const generatedTest = await ctx.runQuery(
+        internal.generatedTests.getByConversationIdInternal,
+        { conversationId: args.conversationId }
+      );
+      if (!generatedTest) throw new Error("Generated test record not found after BDD generation");
+
+      // 4. Auto-approve
+      await ctx.runMutation(internal.generatedTests.updateStatus, {
+        generatedTestId: generatedTest._id,
+        status: "approved",
+      });
+
+      // 5. Generate TDD
+      const conversation = await ctx.runQuery(
+        internal.conversations.getById,
+        { conversationId: args.conversationId }
+      );
+
+      // Detect primary language from repo connection
+      const repoConnection = await ctx.runQuery(
+        internal.repoConnections.getByBountyIdInternal,
+        { bountyId: args.bountyId }
+      );
+      const primaryLanguage = repoConnection?.languages?.[0] || "typescript";
+
+      await ctx.runAction(internal.pipelines.generateTDD.generateTDD, {
+        bountyId: args.bountyId,
+        conversationId: args.conversationId,
+        generatedTestId: generatedTest._id,
+        gherkinPublic: generatedTest.gherkinPublic,
+        gherkinHidden: generatedTest.gherkinHidden,
+        repoContext: conversation?.repoContextSnapshot || undefined,
+        primaryLanguage,
+      });
+
+      // 6. Mark as published
+      await ctx.runMutation(internal.generatedTests.updateStatus, {
+        generatedTestId: generatedTest._id,
+        status: "published",
+      });
+
+      // 7. Create test suites (public + hidden)
+      // Re-fetch to get updated step definitions
+      const updatedTest = await ctx.runQuery(
+        internal.generatedTests.getByConversationIdInternal,
+        { conversationId: args.conversationId }
+      );
+
+      if (updatedTest) {
+        await ctx.runMutation(internal.testSuites.createInternal, {
+          bountyId: args.bountyId,
+          title: `${bounty.title} - Public Tests`,
+          gherkinContent: updatedTest.gherkinPublic,
+          visibility: "public",
+        });
+
+        await ctx.runMutation(internal.testSuites.createInternal, {
+          bountyId: args.bountyId,
+          title: `${bounty.title} - Hidden Tests`,
+          gherkinContent: updatedTest.gherkinHidden,
+          visibility: "hidden",
+        });
+      }
+
+      // 8. Finalize conversation
+      await ctx.runMutation(internal.conversations.updateStatus, {
+        conversationId: args.conversationId,
+        status: "finalized",
+      });
+
+      console.log(
+        `[autonomous] Pipeline completed for bounty ${args.bountyId}`
+      );
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      console.error(
+        `[autonomous] Pipeline failed for bounty ${args.bountyId}: ${errorMessage}`
+      );
+
+      await ctx.runMutation(internal.conversations.addMessage, {
+        conversationId: args.conversationId,
+        role: "system",
+        content: `Autonomous pipeline failed: ${errorMessage}`,
+      });
+
+      // Reset conversation status to allow retry
+      await ctx.runMutation(internal.conversations.updateStatus, {
+        conversationId: args.conversationId,
+        status: "gathering",
+      });
+    }
+  },
+});
+
+/**
+ * Retry a failed autonomous pipeline.
+ * Can be called from MCP to re-trigger generation after a failure.
+ */
+export const retryAutonomousPipeline = internalAction({
+  args: {
+    bountyId: v.id("bounties"),
+    conversationId: v.id("conversations"),
+  },
+  handler: async (ctx, args) => {
+    const conversation = await ctx.runQuery(internal.conversations.getById, {
+      conversationId: args.conversationId,
+    });
+
+    if (!conversation) {
+      throw new Error("Conversation not found");
+    }
+
+    if (conversation.status !== "gathering") {
+      throw new Error(
+        `Cannot retry: conversation is in "${conversation.status}" state, expected "gathering"`
+      );
+    }
+
+    await ctx.scheduler.runAfter(
+      0,
+      internal.orchestrator.runAutonomousGeneration,
+      {
+        bountyId: args.bountyId,
+        conversationId: args.conversationId,
+      }
+    );
+  },
+});

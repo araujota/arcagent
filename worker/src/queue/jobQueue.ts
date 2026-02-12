@@ -7,6 +7,14 @@ import { processVerificationJob } from "./jobProcessor";
 // Types
 // ---------------------------------------------------------------------------
 
+/** Test suite input from Convex with visibility metadata. */
+export interface TestSuiteInput {
+  id: string;
+  title: string;
+  gherkinContent: string;
+  visibility: "public" | "hidden";
+}
+
 /** Shape of the data stored in each BullMQ job. */
 export interface VerificationJobData {
   jobId: string;
@@ -14,13 +22,33 @@ export interface VerificationJobData {
   bountyId: string;
   repoUrl: string;
   commitSha: string;
+  /** Base commit SHA from the bounty's repoConnection for diff-scoped analysis. */
+  baseCommitSha?: string;
   language?: string;
   timeoutSeconds: number;
   convexUrl?: string;
+  /** Test suites with visibility, sent from Convex dispatchVerification. */
+  testSuites?: TestSuiteInput[];
+  /** Creator's gate settings — gates can be individually disabled. */
+  gateSettings?: {
+    snykEnabled?: boolean;
+    sonarqubeEnabled?: boolean;
+  };
 }
 
 /** Possible outcome of a single gate. */
 export type GateStatus = "pass" | "fail" | "error" | "skipped";
+
+/** An individual BDD scenario result with visibility tagging. */
+export interface StepResult {
+  scenarioName: string;
+  featureName: string;
+  status: "pass" | "fail" | "skip" | "error";
+  executionTimeMs: number;
+  output?: string;
+  stepNumber: number;
+  visibility: "public" | "hidden";
+}
 
 /** Result reported by an individual gate. */
 export interface GateResult {
@@ -29,6 +57,8 @@ export interface GateResult {
   durationMs: number;
   summary: string;
   details?: Record<string, unknown>;
+  /** Individual BDD scenario results with visibility tagging (test gate only). */
+  steps?: StepResult[];
 }
 
 /** Top-level verification result returned as the job's return value. */
@@ -39,6 +69,8 @@ export interface VerificationResult {
   overallStatus: "pass" | "fail" | "error";
   gates: GateResult[];
   totalDurationMs: number;
+  /** Aggregated BDD scenario steps with visibility tagging. */
+  steps?: StepResult[];
 }
 
 // ---------------------------------------------------------------------------

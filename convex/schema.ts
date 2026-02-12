@@ -11,10 +11,20 @@ export default defineSchema({
     avatarUrl: v.optional(v.string()),
     githubUsername: v.optional(v.string()),
     isApiAgent: v.optional(v.boolean()),
+    stripeCustomerId: v.optional(v.string()),
+    stripeConnectAccountId: v.optional(v.string()),
+    stripeConnectOnboardingComplete: v.optional(v.boolean()),
+    isTechnical: v.optional(v.boolean()),
+    onboardingComplete: v.optional(v.boolean()),
+    gateSettings: v.optional(v.object({
+      snykEnabled: v.optional(v.boolean()),
+      sonarqubeEnabled: v.optional(v.boolean()),
+    })),
   })
     .index("by_clerkId", ["clerkId"])
     .index("by_email", ["email"])
-    .index("by_role", ["role"]),
+    .index("by_role", ["role"])
+    .index("by_stripeConnectAccountId", ["stripeConnectAccountId"]),
 
   bounties: defineTable({
     title: v.string(),
@@ -25,7 +35,8 @@ export default defineSchema({
       v.literal("active"),
       v.literal("in_progress"),
       v.literal("completed"),
-      v.literal("disputed")
+      v.literal("disputed"),
+      v.literal("cancelled")
     ),
     reward: v.number(),
     rewardCurrency: v.string(),
@@ -35,6 +46,15 @@ export default defineSchema({
     tags: v.optional(v.array(v.string())),
     repoConnectionId: v.optional(v.id("repoConnections")),
     claimDurationHours: v.optional(v.number()),
+    stripePaymentIntentId: v.optional(v.string()),
+    escrowStatus: v.optional(
+      v.union(
+        v.literal("unfunded"),
+        v.literal("funded"),
+        v.literal("released"),
+        v.literal("refunded")
+      )
+    ),
   })
     .index("by_status", ["status"])
     .index("by_creatorId", ["creatorId"])
@@ -93,7 +113,9 @@ export default defineSchema({
       v.literal("typecheck"),
       v.literal("security"),
       v.literal("build"),
-      v.literal("sonarqube")
+      v.literal("sonarqube"),
+      v.literal("snyk"),
+      v.literal("memory")
     ),
     tool: v.string(),
     status: v.union(
@@ -117,6 +139,7 @@ export default defineSchema({
     executionTimeMs: v.number(),
     output: v.optional(v.string()),
     stepNumber: v.number(),
+    visibility: v.optional(v.union(v.literal("public"), v.literal("hidden"))),
   })
     .index("by_verificationId", ["verificationId"])
     .index("by_verificationId_and_stepNumber", [
@@ -137,6 +160,8 @@ export default defineSchema({
       v.literal("failed")
     ),
     transactionId: v.optional(v.string()),
+    stripePaymentIntentId: v.optional(v.string()),
+    stripeTransferId: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_bountyId", ["bountyId"])
@@ -158,7 +183,8 @@ export default defineSchema({
       v.literal("parsing"),
       v.literal("indexing"),
       v.literal("ready"),
-      v.literal("failed")
+      v.literal("failed"),
+      v.literal("cleaned")
     ),
     totalFiles: v.optional(v.number()),
     totalSymbols: v.optional(v.number()),
@@ -174,6 +200,8 @@ export default defineSchema({
         v.literal("manual")
       )
     ),
+    trackedBranch: v.optional(v.string()),
+    webhookId: v.optional(v.string()),
   })
     .index("by_bountyId", ["bountyId"])
     .index("by_status", ["status"]),
@@ -237,6 +265,7 @@ export default defineSchema({
       })
     ),
     repoContextSnapshot: v.optional(v.string()),
+    autonomous: v.optional(v.boolean()),
   }).index("by_bountyId", ["bountyId"]),
 
   generatedTests: defineTable({
@@ -328,4 +357,59 @@ export default defineSchema({
     .index("by_bountyId_and_status", ["bountyId", "status"])
     .index("by_agentId_and_status", ["agentId", "status"])
     .index("by_expiresAt", ["expiresAt"]),
+
+  savedRepos: defineTable({
+    userId: v.id("users"),
+    repositoryUrl: v.string(),
+    owner: v.string(),
+    repo: v.string(),
+    languages: v.optional(v.array(v.string())),
+    hidden: v.optional(v.boolean()),
+    lastUsedAt: v.number(),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_userId_and_repositoryUrl", ["userId", "repositoryUrl"]),
+
+  platformStats: defineTable({
+    avgTimeToClaimMs: v.number(),
+    avgTimeToSolveMs: v.number(),
+    totalBountiesProcessed: v.number(),
+    totalUsers: v.number(),
+    totalRepos: v.number(),
+    computedAt: v.number(),
+  }),
+
+  activityFeed: defineTable({
+    type: v.union(
+      v.literal("bounty_posted"),
+      v.literal("bounty_claimed"),
+      v.literal("bounty_resolved"),
+      v.literal("payout_sent")
+    ),
+    bountyId: v.id("bounties"),
+    bountyTitle: v.string(),
+    amount: v.optional(v.number()),
+    currency: v.optional(v.string()),
+    actorName: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_createdAt", ["createdAt"]),
+
+  notifications: defineTable({
+    userId: v.id("users"),
+    type: v.literal("new_bounty"),
+    bountyId: v.id("bounties"),
+    title: v.string(),
+    message: v.string(),
+    read: v.boolean(),
+    createdAt: v.number(),
+  })
+    .index("by_userId_and_read", ["userId", "read"])
+    .index("by_userId", ["userId"]),
+
+  waitlist: defineTable({
+    email: v.string(),
+    source: v.optional(v.string()),
+    joinedAt: v.number(),
+  }).index("by_email", ["email"]),
 });

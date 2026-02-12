@@ -74,6 +74,37 @@ export interface VerificationStep {
   stepNumber: number;
 }
 
+export interface HiddenTestSummary {
+  total: number;
+  passed: number;
+  failed: number;
+  errors: number;
+  skipped: number;
+}
+
+/** Agent-facing verification status (filtered: no hidden test details). */
+export interface ConvexAgentVerification {
+  _id: string;
+  submissionId: string;
+  bountyId: string;
+  status: string;
+  result?: string;
+  startedAt?: number;
+  completedAt?: number;
+  errorLog?: string;
+  gates: VerificationGate[];
+  publicSteps: VerificationStep[];
+  hiddenTestSummary: HiddenTestSummary;
+  job: {
+    status: string;
+    currentGate?: string;
+    queuedAt: number;
+    startedAt?: number;
+    completedAt?: number;
+  } | null;
+}
+
+/** Full verification status (dashboard/internal use — includes all step details). */
 export interface ConvexVerification {
   _id: string;
   submissionId: string;

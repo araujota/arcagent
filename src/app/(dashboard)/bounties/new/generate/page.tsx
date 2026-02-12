@@ -12,9 +12,12 @@ import { ChatInterface } from "@/components/bounties/conversation/chat-interface
 import { QuestionCard } from "@/components/bounties/conversation/question-card";
 import { GherkinReview } from "@/components/bounties/conversation/gherkin-review";
 import { TddReview } from "@/components/bounties/conversation/tdd-review";
+import { ScenarioSummaryReview } from "@/components/bounties/conversation/scenario-summary-review";
+import { TddReviewEditable } from "@/components/bounties/conversation/tdd-review-editable";
 import { RepoStatusBadge } from "@/components/bounties/repo-status-badge";
 import { RepoMapViewer } from "@/components/bounties/repo-map-viewer";
-import { Loader2, Sparkles, ArrowLeft } from "lucide-react";
+import { useCurrentUser } from "@/hooks/use-current-user";
+import { Loader2, Sparkles, ArrowLeft, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 
@@ -58,6 +61,11 @@ export default function GeneratePage() {
   const generateTDD = useAction(api.orchestrator.generateTDDFromBDD);
   const publishTests = useMutation(api.generatedTests.publish);
   const updateGherkin = useMutation(api.generatedTests.updateGherkin);
+  const approveTests = useMutation(api.generatedTests.approve);
+  const updateStepDefs = useMutation(
+    api.generatedTests.updateStepDefinitionsPublic
+  );
+  const { isTechnical } = useCurrentUser();
 
   if (!bountyId) {
     return (
@@ -185,7 +193,32 @@ export default function GeneratePage() {
       toast.success("Tests published!");
       router.push(`/bounties/${bountyId}`);
     } catch (error) {
-      toast.error("Failed to publish");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to publish"
+      );
+    }
+  };
+
+  const handleApprove = async () => {
+    if (!generatedTests) return;
+    try {
+      await approveTests({ generatedTestId: generatedTests._id });
+      toast.success("Tests approved");
+    } catch (error) {
+      toast.error("Failed to approve tests");
+    }
+  };
+
+  const handleEditStepDefinitions = async (stepDefinitions: string) => {
+    if (!generatedTests) return;
+    try {
+      await updateStepDefs({
+        generatedTestId: generatedTests._id,
+        stepDefinitions,
+      });
+      toast.success("Step definitions updated");
+    } catch (error) {
+      toast.error("Failed to update step definitions");
     }
   };
 
@@ -298,9 +331,10 @@ export default function GeneratePage() {
         </Card>
       )}
 
-      {/* Gherkin Review */}
+      {/* Gherkin Review — Technical: full GherkinReview, Non-technical: ScenarioSummaryReview */}
       {generatedTests &&
-        (generatedTests.gherkinPublic || generatedTests.gherkinHidden) && (
+        (generatedTests.gherkinPublic || generatedTests.gherkinHidden) &&
+        (isTechnical ? (
           <GherkinReview
             gherkinPublic={generatedTests.gherkinPublic}
             gherkinHidden={generatedTests.gherkinHidden}
@@ -308,18 +342,28 @@ export default function GeneratePage() {
             onApprove={handleGenerateTDD}
             isEditable={generatedTests.status === "draft"}
           />
+        ) : (
+          <ScenarioSummaryReview
+            gherkinPublic={generatedTests.gherkinPublic}
+            gherkinHidden={generatedTests.gherkinHidden}
+            onContinue={handleGenerateTDD}
+          />
+        ))}
+
+      {/* TDD Review — Technical: editable, Non-technical: hidden */}
+      {isTechnical &&
+        generatedTests &&
+        generatedTests.stepDefinitions && (
+          <TddReviewEditable
+            stepDefinitions={generatedTests.stepDefinitions}
+            framework={generatedTests.testFramework}
+            language={generatedTests.testLanguage}
+            isEditable={generatedTests.status !== "published"}
+            onSave={handleEditStepDefinitions}
+          />
         )}
 
-      {/* TDD Review */}
-      {generatedTests && generatedTests.stepDefinitions && (
-        <TddReview
-          stepDefinitions={generatedTests.stepDefinitions}
-          framework={generatedTests.testFramework}
-          language={generatedTests.testLanguage}
-        />
-      )}
-
-      {/* Generate TDD / Publish Actions */}
+      {/* Generate TDD / Approve / Publish Actions */}
       {generatedTests && conversation?.status === "review" && (
         <div className="flex justify-end gap-3">
           {!generatedTests.stepDefinitions && (
@@ -338,8 +382,18 @@ export default function GeneratePage() {
             </Button>
           )}
 
+          {generatedTests.stepDefinitions && isTechnical && generatedTests.status === "draft" && (
+            <Button variant="outline" onClick={handleApprove} className="gap-1">
+              <ShieldCheck className="h-4 w-4" />
+              Approve All Tests
+            </Button>
+          )}
+
           {generatedTests.stepDefinitions && (
-            <Button onClick={handlePublish}>
+            <Button
+              onClick={handlePublish}
+              disabled={isTechnical && generatedTests.status !== "approved"}
+            >
               Publish Tests
             </Button>
           )}

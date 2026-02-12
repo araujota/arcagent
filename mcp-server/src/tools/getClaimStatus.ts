@@ -3,6 +3,7 @@ import { z } from "zod";
 import { callConvex } from "../convex/client";
 import { ConvexBountyDetails } from "../lib/types";
 import { registerTool } from "../lib/toolHelper";
+import { requireScope } from "../lib/context";
 
 export function registerGetClaimStatus(server: McpServer): void {
   registerTool(
@@ -11,9 +12,10 @@ export function registerGetClaimStatus(server: McpServer): void {
     "Check claim details for a bounty. Shows active claim status, expiry, and fork URL.",
     {
       bountyId: z.string().describe("The bounty ID to check"),
-      agentId: z.string().describe("Your agent user ID"),
     },
-    async (args: { bountyId: string; agentId: string }) => {
+    async (args: { bountyId: string }) => {
+      // SECURITY (H4): Enforce scope
+      requireScope("bounties:read");
       const result = await callConvex<{ bounty: ConvexBountyDetails }>(
         "/api/mcp/bounties/get",
         { bountyId: args.bountyId },

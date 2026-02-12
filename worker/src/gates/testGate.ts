@@ -1,24 +1,42 @@
 import { VMHandle } from "../vm/firecracker";
-import { GateResult } from "../queue/jobQueue";
+import { GateResult, StepResult, TestSuiteInput } from "../queue/jobQueue";
+import { DiffContext } from "../lib/diffContext";
 import { parseJsonSafe } from "../lib/resultParser";
 
 /**
  * Test gate -- executes the project's test suite.
  *
+ * Always runs on the full project (not diff-scoped) to catch regressions.
+ *
  * Supports BDD and TDD frameworks:
- *  - TypeScript / JavaScript: jest, vitest, mocha (with JSON reporter)
- *  - Python: pytest (with JSON output)
- *  - Rust: cargo test (with JSON messages)
- *  - Go: go test (with JSON output)
+ *  - TypeScript / JavaScript: jest, vitest, mocha
+ *  - Python: pytest, unittest
+ *  - Rust: cargo test
+ *  - Go: go test
  *  - Java: mvn test / gradle test
+ *  - Ruby: rspec / minitest
+ *  - PHP: PHPUnit
+ *  - C#: dotnet test
+ *  - C/C++: ctest
+ *  - Swift: swift test
+ *  - Kotlin: gradle test
  */
 export async function runTestGate(
   vm: VMHandle,
   language: string,
   timeoutMs: number,
+  _diff: DiffContext | null,
+  testSuites?: TestSuiteInput[],
 ): Promise<GateResult> {
   const start = Date.now();
 
+  // If test suites with visibility are provided, run them separately
+  // to tag each result with public/hidden visibility.
+  if (testSuites && testSuites.length > 0) {
+    return runTaggedBddTests(vm, language, timeoutMs, testSuites, start);
+  }
+
+  // Fallback: run the project's own test suite (no visibility tagging)
   const command = getTestCommand(language);
 
   if (!command) {
@@ -70,6 +88,148 @@ export async function runTestGate(
   };
 }
 
+/**
+ * Run BDD test suites separately by visibility (public first, then hidden),
+ * tagging each step result with its source visibility.
+ */
+async function runTaggedBddTests(
+  vm: VMHandle,
+  language: string,
+  timeoutMs: number,
+  testSuites: TestSuiteInput[],
+  start: number,
+): Promise<GateResult> {
+  const allSteps: StepResult[] = [];
+  let stepCounter = 0;
+  let overallFailed = false;
+
+  const publicSuites = testSuites.filter((ts) => ts.visibility === "public");
+  const hiddenSuites = testSuites.filter((ts) => ts.visibility === "hidden");
+
+  // Run public suites first, then hidden
+  for (const group of [
+    { suites: publicSuites, visibility: "public" as const },
+    { suites: hiddenSuites, visibility: "hidden" as const },
+  ]) {
+    for (const suite of group.suites) {
+      // Write feature file to the VM using base64 to prevent injection.
+      // SECURITY (P1-4): Heredoc delimiter could be injected if gherkin
+      // content contains "FEATURE_EOF" on its own line.
+      const featurePath = `/tmp/bdd_${group.visibility}_${stepCounter}.feature`;
+      const b64 = Buffer.from(suite.gherkinContent).toString("base64");
+      await vm.exec(
+        `echo '${b64}' | base64 -d > ${featurePath}`,
+        5_000,
+      );
+
+      // Run the test for this feature
+      const command = getBddTestCommand(language, featurePath);
+      if (!command) continue;
+
+      const result = await vm.exec(
+        `cd /workspace && ${command} 2>&1`,
+        timeoutMs,
+      );
+
+      const featureName = suite.title;
+      const scenarios = parseScenarios(suite.gherkinContent);
+
+      if (result.exitCode === 0) {
+        // All scenarios in this suite passed
+        for (const scenario of scenarios) {
+          allSteps.push({
+            scenarioName: scenario,
+            featureName,
+            status: "pass",
+            executionTimeMs: 0,
+            stepNumber: stepCounter++,
+            visibility: group.visibility,
+          });
+        }
+      } else {
+        overallFailed = true;
+        // Record a failure for the suite — output only included for traceability
+        for (const scenario of scenarios) {
+          allSteps.push({
+            scenarioName: scenario,
+            featureName,
+            status: "fail",
+            executionTimeMs: 0,
+            output: truncate(result.stdout, 500),
+            stepNumber: stepCounter++,
+            visibility: group.visibility,
+          });
+        }
+      }
+    }
+  }
+
+  const durationMs = Date.now() - start;
+  const passed = allSteps.filter((s) => s.status === "pass").length;
+  const failed = allSteps.filter((s) => s.status === "fail").length;
+
+  return {
+    gate: "test",
+    status: overallFailed ? "fail" : "pass",
+    durationMs,
+    summary: overallFailed
+      ? `Tests failed: ${failed} of ${allSteps.length} scenario(s) failed`
+      : `All tests passed (${passed} passed, ${allSteps.length} total)`,
+    details: {
+      total: allSteps.length,
+      passed,
+      failed,
+      exitCode: overallFailed ? 1 : 0,
+    },
+    steps: allSteps,
+  };
+}
+
+/**
+ * Get the BDD test runner command for a specific feature file.
+ */
+function getBddTestCommand(language: string, featurePath: string): string | null {
+  switch (language.toLowerCase()) {
+    case "typescript":
+    case "javascript":
+      return (
+        `if npx cucumber-js --version &>/dev/null; then ` +
+        `  npx cucumber-js ${featurePath} --format json 2>&1; ` +
+        `elif npx jest --version &>/dev/null; then ` +
+        `  npx jest --testPathPattern='.*' --json 2>&1; ` +
+        `else npm test 2>&1; fi`
+      );
+    case "python":
+      return `if command -v behave &>/dev/null; then behave ${featurePath} --format json 2>&1; else pytest -v 2>&1; fi`;
+    case "ruby":
+      return `bundle exec cucumber ${featurePath} --format json 2>&1`;
+    case "java":
+      return `mvn test -Dcucumber.features=${featurePath} 2>&1`;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Parse scenario names from Gherkin content.
+ */
+function parseScenarios(gherkinContent: string): string[] {
+  const scenarios: string[] = [];
+  const lines = gherkinContent.split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const match = trimmed.match(/^(?:Scenario|Scenario Outline):\s*(.+)$/);
+    if (match) {
+      scenarios.push(match[1]);
+    }
+  }
+  // If no scenarios found, use a generic name
+  if (scenarios.length === 0) {
+    scenarios.push("(unnamed scenario)");
+  }
+  return scenarios;
+}
+
 // ---------------------------------------------------------------------------
 // Test commands
 // ---------------------------------------------------------------------------
@@ -111,6 +271,41 @@ function getTestCommand(language: string): string | null {
         "elif [ -f build.gradle ] || [ -f build.gradle.kts ]; then gradle test 2>&1; " +
         "else echo 'No test runner found' && exit 0; fi"
       );
+    case "ruby":
+      return (
+        "if [ -f Gemfile ] && bundle list 2>/dev/null | grep -q rspec; then " +
+        "  bundle exec rspec --format json 2>&1; " +
+        "elif [ -d test ]; then " +
+        "  ruby -Itest -e 'Dir.glob(\"test/**/*_test.rb\").each { |f| require \"./#{f}\" }' 2>&1; " +
+        "else " +
+        "  echo 'No test runner found' && exit 0; fi"
+      );
+    case "php":
+      return (
+        "if [ -f vendor/bin/phpunit ]; then " +
+        "  vendor/bin/phpunit --log-junit /tmp/test-result.xml 2>&1; " +
+        "elif command -v phpunit &>/dev/null; then " +
+        "  phpunit --log-junit /tmp/test-result.xml 2>&1; " +
+        "else echo 'PHPUnit not found' && exit 0; fi"
+      );
+    case "csharp":
+      return "dotnet test --logger 'console;verbosity=detailed' 2>&1";
+    case "c":
+    case "cpp":
+      return (
+        "if [ -d build ]; then " +
+        "  ctest --test-dir build --output-on-failure 2>&1; " +
+        "elif [ -f Makefile ]; then " +
+        "  make test 2>&1; " +
+        "else echo 'No test runner found' && exit 0; fi"
+      );
+    case "swift":
+      return "swift test 2>&1";
+    case "kotlin":
+      return (
+        "if [ -f build.gradle.kts ] || [ -f build.gradle ]; then gradle test 2>&1; " +
+        "else echo 'No test runner found' && exit 0; fi"
+      );
     default:
       return null;
   }
@@ -147,6 +342,8 @@ function parseTestOutput(
       return parsePytest(output);
     case "go":
       return parseGoTest(output);
+    case "ruby":
+      return parseRspec(output);
     default:
       return null;
   }
@@ -255,6 +452,29 @@ interface GoTestEvent {
   Test?: string;
   Package?: string;
   Elapsed?: number;
+}
+
+/** Parse RSpec JSON output. */
+function parseRspec(output: string): TestSummary | null {
+  const parsed = parseJsonSafe<RspecOutput>(output);
+  if (!parsed?.summary) return null;
+
+  return {
+    total: parsed.summary.example_count ?? 0,
+    passed: (parsed.summary.example_count ?? 0) - (parsed.summary.failure_count ?? 0) - (parsed.summary.pending_count ?? 0),
+    failed: parsed.summary.failure_count ?? 0,
+    skipped: parsed.summary.pending_count ?? 0,
+    duration: parsed.summary.duration,
+  };
+}
+
+interface RspecOutput {
+  summary?: {
+    example_count?: number;
+    failure_count?: number;
+    pending_count?: number;
+    duration?: number;
+  };
 }
 
 function truncate(text: string, maxLen: number): string {

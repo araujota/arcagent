@@ -257,6 +257,52 @@ export function checkRateLimit(headers: Headers): {
 }
 
 /**
+ * Register a push webhook on a GitHub repository.
+ * Returns the created webhook ID.
+ */
+export async function registerPushWebhook(
+  owner: string,
+  repo: string,
+  webhookUrl: string,
+  secret: string,
+  token: string
+): Promise<string> {
+  const response = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/hooks`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github.v3+json",
+        "Content-Type": "application/json",
+        "User-Agent": "arcagent",
+      },
+      body: JSON.stringify({
+        name: "web",
+        active: true,
+        events: ["push"],
+        config: {
+          url: webhookUrl,
+          content_type: "json",
+          secret,
+          insecure_ssl: "0",
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      `Failed to register webhook: ${response.status} ${response.statusText} - ${text}`
+    );
+  }
+
+  const data = await response.json();
+  return String(data.id);
+}
+
+/**
  * Determine if a file path should be indexed as source code.
  */
 export function isSourceFile(path: string): boolean {

@@ -4,6 +4,7 @@ export const BOUNTY_STATUS_LABELS = {
   in_progress: "In Progress",
   completed: "Completed",
   disputed: "Disputed",
+  cancelled: "Cancelled",
 } as const;
 
 export const BOUNTY_STATUS_COLORS = {
@@ -12,6 +13,7 @@ export const BOUNTY_STATUS_COLORS = {
   in_progress: "outline",
   completed: "default",
   disputed: "destructive",
+  cancelled: "secondary",
 } as const;
 
 export const SUBMISSION_STATUS_LABELS = {
@@ -41,6 +43,8 @@ export const GATE_TYPE_LABELS = {
   security: "Security",
   build: "Build",
   sonarqube: "SonarQube",
+  snyk: "Snyk",
+  memory: "Memory",
 } as const;
 
 export const PAYMENT_METHOD_LABELS = {

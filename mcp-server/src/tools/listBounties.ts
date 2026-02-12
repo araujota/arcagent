@@ -3,6 +3,7 @@ import { z } from "zod";
 import { callConvex } from "../convex/client";
 import { ConvexBounty } from "../lib/types";
 import { registerTool } from "../lib/toolHelper";
+import { requireScope } from "../lib/context";
 
 export function registerListBounties(server: McpServer): void {
   registerTool(
@@ -15,6 +16,8 @@ export function registerListBounties(server: McpServer): void {
       limit: z.string().optional().describe("Max results (default: 50)"),
     },
     async (args: { status?: string; search?: string; limit?: string }) => {
+      // SECURITY (H4): Enforce scope
+      requireScope("bounties:read");
       const result = await callConvex<{ bounties: ConvexBounty[] }>(
         "/api/mcp/bounties/list",
         {

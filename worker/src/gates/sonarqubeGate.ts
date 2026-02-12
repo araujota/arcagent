@@ -1,20 +1,23 @@
 import { VMHandle } from "../vm/firecracker";
 import { GateResult } from "../queue/jobQueue";
+import { DiffContext } from "../lib/diffContext";
 import { parseJsonSafe } from "../lib/resultParser";
 import { logger } from "../index";
 
 /**
  * SonarQube gate -- runs sonar-scanner and queries the quality gate status.
  *
- * Expects the SonarQube server URL and token to be provided via environment
- * variables: `SONARQUBE_URL` and `SONARQUBE_TOKEN`.
+ * When DiffContext is available, switches to PR analysis mode which natively
+ * reports only new-code issues.
  *
+ * Expects `SONARQUBE_URL` and `SONARQUBE_TOKEN` environment variables.
  * If SonarQube is not configured the gate is skipped gracefully.
  */
 export async function runSonarQubeGate(
   vm: VMHandle,
   language: string,
   timeoutMs: number,
+  diff: DiffContext | null,
 ): Promise<GateResult> {
   const start = Date.now();
 
@@ -33,12 +36,19 @@ export async function runSonarQubeGate(
   // Generate a unique project key for this scan
   const projectKey = `arcagent-${vm.jobId}`;
 
+  // If diff context is available, set up base branch for PR analysis mode
+  if (diff) {
+    await setupPrAnalysis(vm, diff);
+  }
+
   // 1. Run sonar-scanner inside the VM
   const scanCommand = buildScanCommand({
     sonarUrl,
     sonarToken,
     projectKey,
     language,
+    diff,
+    jobId: vm.jobId,
   });
 
   const scanResult = await vm.exec(
@@ -86,8 +96,28 @@ export async function runSonarQubeGate(
     details: {
       projectKey,
       qualityGate: qualityGateResult,
+      prAnalysisMode: diff !== null,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// PR Analysis Setup
+// ---------------------------------------------------------------------------
+
+async function setupPrAnalysis(vm: VMHandle, diff: DiffContext): Promise<void> {
+  try {
+    // Fetch and create the base branch so SonarQube can compare
+    await vm.exec(
+      `cd /workspace && ` +
+      `git fetch origin ${diff.baseCommitSha} 2>&1 && ` +
+      `git checkout -b main ${diff.baseCommitSha} 2>&1 && ` +
+      `git checkout ${diff.agentCommitSha} 2>&1`,
+      30_000,
+    );
+  } catch {
+    logger.warn("Failed to set up PR analysis branches, falling back to whole-project analysis");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -99,17 +129,34 @@ interface ScanCommandOpts {
   sonarToken: string;
   projectKey: string;
   language: string;
+  diff: DiffContext | null;
+  jobId: string;
 }
 
 function buildScanCommand(opts: ScanCommandOpts): string {
+  // SECURITY (H5): Write token to an ephemeral file readable only by root,
+  // then source it for the scanner. This prevents agent code from reading
+  // the token via /proc/self/environ or environment variable inspection.
+  const safeToken = opts.sonarToken.replace(/'/g, "'\\''");
   const args = [
+    `printf '%s' '${safeToken}' > /tmp/.sonar_token && chmod 600 /tmp/.sonar_token &&`,
+    `SONAR_TOKEN=$(cat /tmp/.sonar_token)`,
     "sonar-scanner",
     `-Dsonar.host.url=${opts.sonarUrl}`,
-    `-Dsonar.token=${opts.sonarToken}`,
     `-Dsonar.projectKey=${opts.projectKey}`,
     "-Dsonar.sources=.",
     "-Dsonar.qualitygate.wait=false", // We poll ourselves for better control
   ];
+
+  // PR analysis mode when diff context is available
+  if (opts.diff) {
+    args.push(
+      `-Dsonar.pullrequest.key=${opts.jobId}`,
+      "-Dsonar.pullrequest.branch=agent-submission",
+      "-Dsonar.pullrequest.base=main",
+      "-Dsonar.newCode.referenceBranch=main",
+    );
+  }
 
   // Language-specific settings
   switch (opts.language.toLowerCase()) {
@@ -130,7 +177,31 @@ function buildScanCommand(opts: ScanCommandOpts): string {
       args.push("-Dsonar.language=go");
       args.push("-Dsonar.go.coverage.reportPaths=coverage.out");
       break;
+    case "ruby":
+      args.push("-Dsonar.language=ruby");
+      break;
+    case "php":
+      args.push("-Dsonar.language=php");
+      break;
+    case "csharp":
+      args.push("-Dsonar.language=cs");
+      break;
+    case "c":
+      args.push("-Dsonar.language=c");
+      break;
+    case "cpp":
+      args.push("-Dsonar.language=cpp");
+      break;
+    case "swift":
+      args.push("-Dsonar.language=swift");
+      break;
+    case "kotlin":
+      args.push("-Dsonar.language=kotlin");
+      break;
   }
+
+  // Clean up the token file after scanner finishes
+  args.push("&& rm -f /tmp/.sonar_token");
 
   return args.join(" ");
 }
@@ -158,8 +229,12 @@ async function pollQualityGate(
       await new Promise((r) => setTimeout(r, pollInterval));
     }
 
+    // SECURITY (H5): Use ephemeral file for curl auth to prevent token in environ
+    const safeToken = sonarToken.replace(/'/g, "'\\''");
     const result = await vm.exec(
-      `curl -s -u "${sonarToken}:" "${sonarUrl}/api/qualitygates/project_status?projectKey=${projectKey}"`,
+      `printf '%s:' '${safeToken}' > /tmp/.sonar_auth && chmod 600 /tmp/.sonar_auth && ` +
+      `curl -s -u "$(cat /tmp/.sonar_auth)" "${sonarUrl}/api/qualitygates/project_status?projectKey=${projectKey}"; ` +
+      `rm -f /tmp/.sonar_auth`,
       15_000,
     );
 

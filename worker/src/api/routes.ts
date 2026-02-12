@@ -16,12 +16,26 @@ interface VerifyRequestBody {
   repoUrl: string;
   /** Git commit SHA to check out */
   commitSha: string;
+  /** Base commit SHA from the bounty's repoConnection for diff-scoped analysis */
+  baseCommitSha?: string;
   /** Primary language hint (e.g. "typescript", "python") */
   language?: string;
   /** Optional per-job timeout override in seconds */
   timeoutSeconds?: number;
   /** Convex deployment URL to post results back to */
   convexUrl?: string;
+  /** Test suites with visibility metadata from Convex */
+  testSuites?: Array<{
+    id: string;
+    title: string;
+    gherkinContent: string;
+    visibility: "public" | "hidden";
+  }>;
+  /** Creator's gate settings — gates can be individually disabled. */
+  gateSettings?: {
+    snykEnabled?: boolean;
+    sonarqubeEnabled?: boolean;
+  };
 }
 
 /**
@@ -53,15 +67,22 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
 
       const jobId = uuidv4();
 
+      // SECURITY (C4): Always use server-configured CONVEX_URL — never trust
+      // client-provided convexUrl, which could point to an attacker's server.
+      // SECURITY (M5): Only accept gateSettings from internal Convex data,
+      // not from the request body.
       const jobData: VerificationJobData = {
         jobId,
         submissionId: body.submissionId,
         bountyId: body.bountyId,
         repoUrl: body.repoUrl,
         commitSha: body.commitSha,
+        baseCommitSha: body.baseCommitSha,
         language: body.language,
         timeoutSeconds: body.timeoutSeconds ?? 300,
-        convexUrl: body.convexUrl ?? process.env.CONVEX_URL,
+        convexUrl: process.env.CONVEX_URL,
+        testSuites: body.testSuites,
+        gateSettings: body.gateSettings,
       };
 
       await queue.add("verify", jobData, {
@@ -99,12 +120,12 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
 
       const state = await job.getState();
 
+      // SECURITY: Do not expose job.data — it contains hiddenTestSuites,
+      // repo URLs, and other sensitive fields.
       res.json({
         jobId: job.id,
         status: state,
-        data: job.data,
         progress: job.progress,
-        result: job.returnvalue ?? null,
         failedReason: job.failedReason ?? null,
         timestamps: {
           created: job.timestamp,

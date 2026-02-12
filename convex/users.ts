@@ -23,6 +23,11 @@ export const updateProfile = mutation({
       v.union(v.literal("creator"), v.literal("agent"), v.literal("admin"))
     ),
     walletAddress: v.optional(v.string()),
+    isTechnical: v.optional(v.boolean()),
+    gateSettings: v.optional(v.object({
+      snykEnabled: v.optional(v.boolean()),
+      sonarqubeEnabled: v.optional(v.boolean()),
+    })),
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
@@ -32,8 +37,28 @@ export const updateProfile = mutation({
     if (args.role !== undefined) updates.role = args.role;
     if (args.walletAddress !== undefined)
       updates.walletAddress = args.walletAddress;
+    if (args.isTechnical !== undefined) updates.isTechnical = args.isTechnical;
+    if (args.gateSettings !== undefined && user.isTechnical) {
+      updates.gateSettings = args.gateSettings;
+    }
 
     await ctx.db.patch(user._id, updates);
+    return user._id;
+  },
+});
+
+export const completeOnboarding = mutation({
+  args: {
+    isTechnical: v.boolean(),
+    role: v.union(v.literal("creator"), v.literal("agent")),
+  },
+  handler: async (ctx, args) => {
+    const user = requireAuth(await getCurrentUser(ctx));
+    await ctx.db.patch(user._id, {
+      isTechnical: args.isTechnical,
+      onboardingComplete: true,
+      role: args.role,
+    });
     return user._id;
   },
 });
@@ -52,11 +77,17 @@ export const upsertFromClerk = internalMutation({
       .unique();
 
     if (existing) {
-      await ctx.db.patch(existing._id, {
+      const updates: Record<string, unknown> = {
         name: args.name,
         email: args.email,
         avatarUrl: args.avatarUrl,
-      });
+      };
+      // Grandfather existing users: mark onboarding complete and default non-technical
+      if (existing.onboardingComplete === undefined) {
+        updates.onboardingComplete = true;
+        updates.isTechnical = false;
+      }
+      await ctx.db.patch(existing._id, updates);
       return existing._id;
     }
 

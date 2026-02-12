@@ -14,5 +14,7 @@ export function useCurrentUser() {
     isCreator: user?.role === "creator",
     isAgent: user?.role === "agent",
     isAdmin: user?.role === "admin",
+    isTechnical: user?.isTechnical ?? false,
+    needsOnboarding: user?.onboardingComplete !== true,
   };
 }

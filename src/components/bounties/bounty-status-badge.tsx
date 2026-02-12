@@ -10,6 +10,7 @@ const statusStyles: Record<BountyStatus, string> = {
   in_progress: "bg-blue-50 text-blue-700 border-blue-200",
   completed: "bg-violet-50 text-violet-700 border-violet-200",
   disputed: "bg-red-50 text-red-700 border-red-200",
+  cancelled: "bg-zinc-100 text-zinc-500 border-zinc-200",
 };
 
 export function BountyStatusBadge({ status }: { status: BountyStatus }) {

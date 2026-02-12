@@ -102,6 +102,16 @@ export async function createFirecrackerVM(
   await execFileAsync("ip", ["addr", "add", `${guestIp}/30`, "dev", tapDevice]);
   await execFileAsync("ip", ["link", "set", tapDevice, "up"]);
 
+  // SECURITY (P2-1): Apply iptables egress filtering on the TAP device.
+  // Allow only DNS (53) and HTTPS (443) outbound; drop everything else.
+  await applyEgressFiltering(tapDevice);
+
+  // 2a. SECURITY (P2-3): Generate per-VM ephemeral ed25519 SSH keypair
+  const vmSshKeyPath = `/tmp/fc-ssh-${vmId}`;
+  await execFileAsync("ssh-keygen", [
+    "-t", "ed25519", "-f", vmSshKeyPath, "-N", "", "-q",
+  ]);
+
   // 2. Prepare ephemeral overlay of rootfs
   const rootfsPath = `${ROOTFS_DIR}/${opts.rootfsImage}`;
   const overlayPath = `/tmp/fc-overlay-${vmId}.ext4`;
@@ -142,12 +152,13 @@ export async function createFirecrackerVM(
   // Store process reference for cleanup (fire-and-forget; the jailer manages the process)
   const vmProcessRef = fcProcess;
 
-  // 5. Wait for SSH to become available
-  await waitForSSH(guestIp, vmId);
+  // 5. Wait for SSH to become available (use per-VM key)
+  await waitForSSH(guestIp, vmId, vmSshKeyPath);
 
   logger.info("MicroVM ready", { vmId, guestIp });
 
   // Build handle
+  const sshKey = vmSshKeyPath;
   const handle: VMHandle = {
     vmId,
     jobId: opts.jobId,
@@ -157,7 +168,7 @@ export async function createFirecrackerVM(
       command: string,
       timeoutMs: number = DEFAULT_EXEC_TIMEOUT_MS,
     ): Promise<ExecResult> {
-      return execInVM(guestIp, command, timeoutMs);
+      return execInVM(guestIp, command, timeoutMs, sshKey);
     },
   };
 
@@ -165,6 +176,7 @@ export async function createFirecrackerVM(
   (handle as VMHandleInternal).__tapDevice = tapDevice;
   (handle as VMHandleInternal).__overlayPath = overlayPath;
   (handle as VMHandleInternal).__configPath = configPath;
+  (handle as VMHandleInternal).__sshKeyPath = vmSshKeyPath;
   (handle as VMHandleInternal).__processRef = vmProcessRef;
 
   return handle;
@@ -172,36 +184,85 @@ export async function createFirecrackerVM(
 
 /**
  * Tear down a Firecracker microVM and clean up all resources.
+ * SECURITY (P2-4): Hardened teardown — kill by PID, verify cleanup, log warnings.
  */
 export async function destroyFirecrackerVM(handle: VMHandle): Promise<void> {
-  const internal = handle as VMHandleInternal;
+  const int = handle as VMHandleInternal;
   logger.info("Destroying microVM", { vmId: handle.vmId });
 
-  // 1. Kill Firecracker process via jailer
-  try {
-    await execFileAsync("pkill", ["-f", `--id ${handle.vmId}`]);
-  } catch {
-    // Process may have already exited
+  // 1. Kill Firecracker process — try PID-based kill first, then pattern match as fallback
+  if (int.__firecrackerPid) {
+    try {
+      process.kill(int.__firecrackerPid, "SIGTERM");
+      // Wait briefly for graceful shutdown
+      await new Promise((r) => setTimeout(r, 2_000));
+      // Force kill if still alive
+      try {
+        process.kill(int.__firecrackerPid, 0); // Check if alive
+        process.kill(int.__firecrackerPid, "SIGKILL");
+      } catch {
+        // Process already exited — good
+      }
+    } catch {
+      // Process may have already exited
+    }
+  } else {
+    // Fallback to pkill pattern matching
+    try {
+      await execFileAsync("pkill", ["-f", `--id ${handle.vmId}`]);
+    } catch {
+      // Process may have already exited
+    }
   }
 
-  // 2. Remove TAP device
-  if (internal.__tapDevice) {
+  // 2. Remove iptables rules for this TAP device
+  if (int.__tapDevice) {
+    await removeEgressFiltering(int.__tapDevice);
+  }
+
+  // 3. Remove TAP device
+  if (int.__tapDevice) {
     await execFileAsync("ip", [
       "tuntap",
       "del",
-      internal.__tapDevice,
+      int.__tapDevice,
       "mode",
       "tap",
-    ]).catch(() => {});
+    ]).catch((err) => {
+      logger.warn("Failed to remove TAP device", {
+        vmId: handle.vmId,
+        tapDevice: int.__tapDevice,
+        error: String(err),
+      });
+    });
   }
 
-  // 3. Remove ephemeral files
+  // 4. Remove ephemeral files
   const { unlink } = await import("node:fs/promises");
-  if (internal.__overlayPath) {
-    await unlink(internal.__overlayPath).catch(() => {});
+  if (int.__overlayPath) {
+    await unlink(int.__overlayPath).catch(() => {});
   }
-  if (internal.__configPath) {
-    await unlink(internal.__configPath).catch(() => {});
+  if (int.__configPath) {
+    await unlink(int.__configPath).catch(() => {});
+  }
+  // SECURITY (P2-3): Delete per-VM SSH keypair
+  if (int.__sshKeyPath) {
+    await unlink(int.__sshKeyPath).catch(() => {});
+    await unlink(`${int.__sshKeyPath}.pub`).catch(() => {});
+  }
+
+  // 5. Verify TAP device is actually removed
+  if (int.__tapDevice) {
+    try {
+      await execFileAsync("ip", ["link", "show", int.__tapDevice]);
+      // If we get here, TAP still exists — warn
+      logger.warn("TAP device still exists after teardown", {
+        vmId: handle.vmId,
+        tapDevice: int.__tapDevice,
+      });
+    } catch {
+      // Expected: TAP device gone
+    }
   }
 
   logger.info("MicroVM destroyed", { vmId: handle.vmId });
@@ -215,23 +276,67 @@ interface VMHandleInternal extends VMHandle {
   __tapDevice?: string;
   __overlayPath?: string;
   __configPath?: string;
+  __sshKeyPath?: string;
   __processRef?: Promise<{ stdout: string; stderr: string }>;
+  __firecrackerPid?: number;
+}
+
+/**
+ * SECURITY (P2-1): Apply iptables FORWARD rules on TAP device.
+ * Only allows DNS (53) + HTTPS (443) egress; drops all else.
+ */
+async function applyEgressFiltering(tapDevice: string): Promise<void> {
+  // SECURITY (M4): Only allow DNS (53) and HTTPS (443) egress.
+  // TCP 80 (HTTP) is dropped to prevent MitM on package downloads.
+  // All package managers and git support HTTPS.
+  const rules: string[][] = [
+    // Allow established/related connections back in
+    ["FORWARD", "-i", tapDevice, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+    // Allow DNS (UDP 53)
+    ["FORWARD", "-i", tapDevice, "-p", "udp", "--dport", "53", "-j", "ACCEPT"],
+    // Allow HTTPS (TCP 443)
+    ["FORWARD", "-i", tapDevice, "-p", "tcp", "--dport", "443", "-j", "ACCEPT"],
+    // Drop everything else from this TAP
+    ["FORWARD", "-i", tapDevice, "-j", "DROP"],
+  ];
+
+  for (const rule of rules) {
+    await execFileAsync("iptables", ["-A", ...rule]).catch((err) => {
+      logger.warn("Failed to add iptables rule", { rule: rule.join(" "), error: String(err) });
+    });
+  }
+}
+
+/**
+ * Remove iptables rules for a TAP device during teardown.
+ */
+async function removeEgressFiltering(tapDevice: string): Promise<void> {
+  // Remove all FORWARD rules referencing this TAP device.
+  // Run multiple times since there are multiple rules.
+  for (let i = 0; i < 5; i++) {
+    await execFileAsync("iptables", ["-D", "FORWARD", "-i", tapDevice, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"]).catch(() => {});
+    await execFileAsync("iptables", ["-D", "FORWARD", "-i", tapDevice, "-p", "udp", "--dport", "53", "-j", "ACCEPT"]).catch(() => {});
+    await execFileAsync("iptables", ["-D", "FORWARD", "-i", tapDevice, "-p", "tcp", "--dport", "443", "-j", "ACCEPT"]).catch(() => {});
+    await execFileAsync("iptables", ["-D", "FORWARD", "-i", tapDevice, "-j", "DROP"]).catch(() => {});
+  }
 }
 
 /**
  * Execute a command inside the guest over SSH.
+ * Uses per-VM SSH key when provided, falls back to global key.
  */
 async function execInVM(
   guestIp: string,
   command: string,
   timeoutMs: number,
+  sshKeyPath: string = SSH_KEY_PATH,
 ): Promise<ExecResult> {
   try {
     const { stdout, stderr } = await execFileAsync(
       "ssh",
       [
         "-i",
-        SSH_KEY_PATH,
+        sshKeyPath,
         "-o",
         "StrictHostKeyChecking=no",
         "-o",
@@ -263,6 +368,7 @@ async function execInVM(
 async function waitForSSH(
   guestIp: string,
   vmId: string,
+  sshKeyPath: string = SSH_KEY_PATH,
   maxRetries: number = 30,
   baseDelayMs: number = 500,
 ): Promise<void> {
@@ -272,7 +378,7 @@ async function waitForSSH(
         "ssh",
         [
           "-i",
-          SSH_KEY_PATH,
+          sshKeyPath,
           "-o",
           "StrictHostKeyChecking=no",
           "-o",

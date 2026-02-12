@@ -5,6 +5,7 @@ import { api } from "../../../../convex/_generated/api";
 import { useCurrentUser } from "@/hooks/use-current-user";
 import { StatsCards } from "@/components/dashboard/stats-cards";
 import { RecentActivity } from "@/components/dashboard/recent-activity";
+import { LiveActivityFeed } from "@/components/landing/live-activity-feed";
 
 export default function DashboardPage() {
   const { user, isCreator } = useCurrentUser();
@@ -47,6 +48,11 @@ export default function DashboardPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <RecentActivity bounties={allBounties} />
+      </div>
+
+      <div className="mt-8">
+        <h2 className="text-xl font-semibold mb-4">Platform Activity</h2>
+        <LiveActivityFeed />
       </div>
     </div>
   );

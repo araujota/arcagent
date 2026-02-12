@@ -17,7 +17,7 @@ import { Sparkles, Loader2 } from "lucide-react";
 
 const STEPS = ["Basics", "Tests", "Config", "Review"] as const;
 
-export function BountyWizard() {
+export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
   const router = useRouter();
   const createBounty = useMutation(api.bounties.create);
   const createTestSuite = useMutation(api.testSuites.create);
@@ -41,7 +41,7 @@ export function BountyWizard() {
 
   const [config, setConfig] = useState<ConfigData>({
     deadline: undefined,
-    repositoryUrl: "",
+    repositoryUrl: repoUrl ?? "",
     paymentMethod: "stripe",
     tags: "",
   });

@@ -50,6 +50,18 @@ export const create = internalMutation({
   },
 });
 
+export const getByVerificationIdInternal = internalQuery({
+  args: { verificationId: v.id("verifications") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("verificationJobs")
+      .withIndex("by_verificationId", (q) =>
+        q.eq("verificationId", args.verificationId)
+      )
+      .first();
+  },
+});
+
 export const updateWorkerJobId = internalMutation({
   args: {
     jobId: v.id("verificationJobs"),

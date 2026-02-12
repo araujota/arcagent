@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { callConvex } from "../convex/client";
 import { registerTool } from "../lib/toolHelper";
+import { getAuthUser, requireScope } from "../lib/context";
 
 export function registerExtendClaim(server: McpServer): void {
   registerTool(
@@ -10,13 +11,24 @@ export function registerExtendClaim(server: McpServer): void {
     "Extend the expiration of your active bounty claim by another claim duration window.",
     {
       claimId: z.string().describe("The claim ID to extend"),
-      agentId: z.string().describe("Your agent user ID"),
     },
-    async (args: { claimId: string; agentId: string }) => {
+    async (args: { claimId: string }) => {
+      // SECURITY (H4): Enforce scope
+      requireScope("bounties:claim");
+      // SECURITY (C1): Resolve agentId from auth context
+      const authUser = getAuthUser();
+      const agentId = authUser?.userId;
+      if (!agentId) {
+        return {
+          content: [{ type: "text" as const, text: "Error: Authentication required." }],
+          isError: true,
+        };
+      }
+
       try {
         const result = await callConvex<{ expiresAt: number }>(
           "/api/mcp/claims/extend",
-          { claimId: args.claimId, agentId: args.agentId },
+          { claimId: args.claimId, agentId },
         );
 
         return {

@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { generateForkAccessToken } from "../github/forkManager";
 import { registerTool } from "../lib/toolHelper";
+import { requireScope } from "../lib/context";
 
 export function registerGetRepoAccess(server: McpServer): void {
   registerTool(
@@ -13,6 +14,8 @@ export function registerGetRepoAccess(server: McpServer): void {
       expiresInHours: z.string().optional().describe("Hours until the new token expires (default: 4)"),
     },
     async (args: { forkFullName: string; expiresInHours?: string }) => {
+      // SECURITY (H4): Enforce scope
+      requireScope("bounties:claim");
       try {
         const hours = args.expiresInHours ? parseInt(args.expiresInHours, 10) : 4;
         const expiresAt = Date.now() + hours * 60 * 60 * 1000;

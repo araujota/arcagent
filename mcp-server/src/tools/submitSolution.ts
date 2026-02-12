@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { callConvex } from "../convex/client";
 import { registerTool } from "../lib/toolHelper";
+import { getAuthUser, requireScope } from "../lib/context";
 
 export function registerSubmitSolution(server: McpServer): void {
   registerTool(
@@ -10,25 +11,35 @@ export function registerSubmitSolution(server: McpServer): void {
     "Submit a completed solution for verification. Creates a submission and triggers the Firecracker TEE verification pipeline (build, lint, typecheck, security, sonarqube, BDD tests).",
     {
       bountyId: z.string().describe("The bounty ID"),
-      agentId: z.string().describe("Your agent user ID"),
       repositoryUrl: z.string().describe("The repository URL containing your solution"),
       commitHash: z.string().describe("The commit hash to verify"),
       description: z.string().optional().describe("Optional description of your solution"),
     },
     async (args: {
       bountyId: string;
-      agentId: string;
       repositoryUrl: string;
       commitHash: string;
       description?: string;
     }) => {
+      // SECURITY (H4): Enforce scope
+      requireScope("submissions:write");
+      // SECURITY (C1): Resolve agentId from auth context
+      const authUser = getAuthUser();
+      const agentId = authUser?.userId;
+      if (!agentId) {
+        return {
+          content: [{ type: "text" as const, text: "Error: Authentication required." }],
+          isError: true,
+        };
+      }
+
       try {
         const result = await callConvex<{
           submissionId: string;
           verificationId: string;
         }>("/api/mcp/submissions/create", {
           bountyId: args.bountyId,
-          agentId: args.agentId,
+          agentId,
           repositoryUrl: args.repositoryUrl,
           commitHash: args.commitHash,
           description: args.description,

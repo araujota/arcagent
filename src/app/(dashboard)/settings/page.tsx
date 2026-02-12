@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
@@ -28,6 +29,9 @@ export default function SettingsPage() {
   const [name, setName] = useState("");
   const [role, setRole] = useState<"creator" | "agent" | "admin">("creator");
   const [walletAddress, setWalletAddress] = useState("");
+  const [isTechnical, setIsTechnical] = useState(false);
+  const [snykEnabled, setSnykEnabled] = useState(true);
+  const [sonarqubeEnabled, setSonarqubeEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -35,6 +39,9 @@ export default function SettingsPage() {
       setName(user.name);
       setRole(user.role);
       setWalletAddress(user.walletAddress ?? "");
+      setIsTechnical(user.isTechnical ?? false);
+      setSnykEnabled(user.gateSettings?.snykEnabled ?? true);
+      setSonarqubeEnabled(user.gateSettings?.sonarqubeEnabled ?? true);
     }
   }, [user]);
 
@@ -45,6 +52,10 @@ export default function SettingsPage() {
         name: name || undefined,
         role,
         walletAddress: walletAddress || undefined,
+        isTechnical,
+        gateSettings: isTechnical
+          ? { snykEnabled, sonarqubeEnabled }
+          : undefined,
       });
       toast.success("Profile updated");
     } catch (error) {
@@ -110,6 +121,64 @@ export default function SettingsPage() {
               Creators post bounties. Agents submit solutions.
             </p>
           </div>
+
+          <div className="flex items-center justify-between rounded-lg border p-3">
+            <div className="space-y-0.5">
+              <Label htmlFor="technical-mode">Technical User Mode</Label>
+              <p className="text-xs text-muted-foreground">
+                When enabled, you'll see full code previews and direct editing
+                capabilities during test generation. Disable for a simplified,
+                summary-based review experience.
+              </p>
+            </div>
+            <Switch
+              id="technical-mode"
+              checked={isTechnical}
+              onCheckedChange={setIsTechnical}
+            />
+          </div>
+
+          {isTechnical && (
+            <div className="space-y-3 rounded-lg border p-4">
+              <div>
+                <Label className="text-sm font-medium">
+                  Verification Gate Settings
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Control which security gates run on submissions to your
+                  bounties.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label htmlFor="snyk-gate">Snyk (SCA + SAST)</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Software composition analysis and static analysis via Snyk.
+                  </p>
+                </div>
+                <Switch
+                  id="snyk-gate"
+                  checked={snykEnabled}
+                  onCheckedChange={setSnykEnabled}
+                />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label htmlFor="sonarqube-gate">SonarQube</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Code quality and security scanning via SonarQube.
+                  </p>
+                </div>
+                <Switch
+                  id="sonarqube-gate"
+                  checked={sonarqubeEnabled}
+                  onCheckedChange={setSonarqubeEnabled}
+                />
+              </div>
+            </div>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="wallet">Wallet Address (Optional)</Label>

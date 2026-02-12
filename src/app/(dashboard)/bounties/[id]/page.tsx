@@ -25,10 +25,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  AlertTriangle,
   Calendar,
+  Copy,
   DollarSign,
   ExternalLink,
   Send,
+  Share2,
   User,
   FileText,
   GitBranch,
@@ -37,6 +40,16 @@ import {
 import Link from "next/link";
 import { useState } from "react";
 import { toast } from "sonner";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { RepoStatusBadge } from "@/components/bounties/repo-status-badge";
 import { RepoMapViewer } from "@/components/bounties/repo-map-viewer";
 
@@ -126,6 +139,104 @@ function SubmitSolutionDialog({
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function CancelBountyDialog({
+  bountyId,
+  escrowStatus,
+}: {
+  bountyId: Id<"bounties">;
+  escrowStatus?: string;
+}) {
+  const cancelBounty = useMutation(api.bounties.cancelBounty);
+  const [open, setOpen] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+
+  const handleCancel = async () => {
+    setCancelling(true);
+    try {
+      await cancelBounty({ bountyId });
+      toast.success("Bounty cancelled");
+      setOpen(false);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to cancel bounty"
+      );
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="destructive" size="sm">
+          Cancel Bounty
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Cancel Bounty</DialogTitle>
+          <DialogDescription>
+            Are you sure you want to cancel this bounty? This action cannot be
+            undone.
+          </DialogDescription>
+        </DialogHeader>
+        {escrowStatus === "funded" && (
+          <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span>
+              This bounty has funded escrow. A refund will be automatically
+              processed.
+            </span>
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Keep Bounty
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={handleCancel}
+            disabled={cancelling}
+          >
+            {cancelling ? "Cancelling..." : "Yes, Cancel Bounty"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ShareBountyButton({ bountyId }: { bountyId: Id<"bounties"> }) {
+  const siteUrl = process.env.NEXT_PUBLIC_CONVEX_SITE_URL ?? "";
+  const shareUrl = `${siteUrl}/public/bounty?id=${bountyId}`;
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      toast.success("Link copied!");
+    } catch {
+      toast.error("Failed to copy link");
+    }
+  };
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm">
+          <Share2 className="h-4 w-4 mr-2" />
+          Share
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent>
+        <DropdownMenuItem onClick={handleCopy}>
+          <Copy className="h-4 w-4 mr-2" />
+          Copy Link
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -221,9 +332,21 @@ export default function BountyDetailPage() {
           )}
         </div>
 
-        {isAgent && bounty.status === "active" && (
-          <SubmitSolutionDialog bountyId={bountyId} />
-        )}
+        <div className="flex items-center gap-2">
+          <ShareBountyButton bountyId={bountyId} />
+          {isAgent && bounty.status === "active" && (
+            <SubmitSolutionDialog bountyId={bountyId} />
+          )}
+          {user &&
+            bounty.creatorId === user._id &&
+            bounty.status !== "completed" &&
+            bounty.status !== "cancelled" && (
+              <CancelBountyDialog
+                bountyId={bountyId}
+                escrowStatus={bounty.escrowStatus}
+              />
+            )}
+        </div>
       </div>
 
       <Separator />

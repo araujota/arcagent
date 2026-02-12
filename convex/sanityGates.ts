@@ -21,7 +21,9 @@ export const record = internalMutation({
       v.literal("typecheck"),
       v.literal("security"),
       v.literal("build"),
-      v.literal("sonarqube")
+      v.literal("sonarqube"),
+      v.literal("snyk"),
+      v.literal("memory")
     ),
     tool: v.string(),
     status: v.union(

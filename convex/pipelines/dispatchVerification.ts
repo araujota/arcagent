@@ -3,6 +3,32 @@ import { v } from "convex/values";
 import { internal } from "../_generated/api";
 
 /**
+ * SECURITY (H6): Generate a per-job HMAC token that must be presented
+ * when posting verification results. This prevents a compromised worker
+ * secret from being used to forge results for arbitrary submissions.
+ */
+async function generateJobHmac(
+  verificationId: string,
+  submissionId: string,
+  bountyId: string,
+): Promise<string> {
+  const secret = process.env.WORKER_SHARED_SECRET || process.env.WORKER_API_SECRET || "";
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const data = `${verificationId}:${submissionId}:${bountyId}`;
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(data));
+  return Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
  * Dispatch a verification job to the worker service.
  * Creates a verificationJob record and sends the job to the external worker.
  */
@@ -65,6 +91,23 @@ export const dispatchVerification = internalAction({
         { bountyId: args.bountyId }
       );
 
+      // Fetch bounty creator's gate settings
+      const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+        bountyId: args.bountyId,
+      });
+      const creator = bounty
+        ? await ctx.runQuery(internal.users.getByIdInternal, {
+            userId: bounty.creatorId,
+          })
+        : null;
+
+      // SECURITY (H6): Generate per-job HMAC token
+      const jobHmac = await generateJobHmac(
+        args.verificationId,
+        args.submissionId,
+        args.bountyId,
+      );
+
       // Dispatch to worker
       const response = await fetch(`${workerUrl}/api/verify`, {
         method: "POST",
@@ -79,6 +122,7 @@ export const dispatchVerification = internalAction({
           jobId,
           repositoryUrl: submission.repositoryUrl,
           commitHash: submission.commitHash,
+          baseCommitSha: repoConnection?.commitSha,
           testSuites: testSuites.map((ts) => ({
             id: ts._id,
             title: ts.title,
@@ -88,6 +132,11 @@ export const dispatchVerification = internalAction({
           dockerfileContent: repoConnection?.dockerfileContent,
           dockerfilePath: repoConnection?.dockerfilePath,
           convexUrl: process.env.CONVEX_URL,
+          jobHmac,
+          gateSettings: {
+            snykEnabled: creator?.gateSettings?.snykEnabled ?? true,
+            sonarqubeEnabled: creator?.gateSettings?.sonarqubeEnabled ?? true,
+          },
         }),
       });
 

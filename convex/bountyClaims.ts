@@ -1,5 +1,6 @@
-import { internalMutation, internalQuery } from "./_generated/server";
+import { internalMutation, internalQuery, internalAction } from "./_generated/server";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 
 const DEFAULT_CLAIM_DURATION_HOURS = 4;
 
@@ -47,13 +48,26 @@ export const create = internalMutation({
     const now = Date.now();
     const expiresAt = now + durationHours * 60 * 60 * 1000;
 
-    return await ctx.db.insert("bountyClaims", {
+    const claimId = await ctx.db.insert("bountyClaims", {
       bountyId: args.bountyId,
       agentId: args.agentId,
       status: "active",
       claimedAt: now,
       expiresAt,
     });
+
+    // Transition bounty to in_progress (exclusive lock)
+    await ctx.db.patch(args.bountyId, { status: "in_progress" });
+
+    const agent = await ctx.db.get(args.agentId);
+    await ctx.scheduler.runAfter(0, internal.activityFeed.record, {
+      type: "bounty_claimed",
+      bountyId: args.bountyId,
+      bountyTitle: bounty.title,
+      actorName: agent?.name ?? "An agent",
+    });
+
+    return claimId;
   },
 });
 
@@ -76,6 +90,16 @@ export const release = internalMutation({
       status: "released",
       releasedAt: Date.now(),
     });
+
+    // Revert bounty to active
+    await ctx.db.patch(claim.bountyId, { status: "active" });
+
+    // SECURITY (P1-3): Schedule fork cleanup on release
+    if (claim.forkRepositoryUrl) {
+      await ctx.scheduler.runAfter(0, internal.bountyClaims.cleanupFork, {
+        forkRepositoryUrl: claim.forkRepositoryUrl,
+      });
+    }
   },
 });
 
@@ -83,23 +107,54 @@ export const expireStale = internalMutation({
   args: {},
   handler: async (ctx) => {
     const now = Date.now();
+    const EXTENSION_MS = 30 * 60 * 1000; // 30 minutes
 
-    // Find all active claims that have expired
-    const activeClaims = await ctx.db
+    // Use index to only fetch claims with expiresAt before now
+    const expiredClaims = await ctx.db
       .query("bountyClaims")
-      .withIndex("by_expiresAt")
+      .withIndex("by_expiresAt", (q) => q.lt("expiresAt", now))
       .collect();
 
     let expiredCount = 0;
-    for (const claim of activeClaims) {
-      if (claim.status === "active" && claim.expiresAt < now) {
+    let extendedCount = 0;
+    for (const claim of expiredClaims) {
+      if (claim.status === "active") {
+        // SECURITY (P1-5): Check for active verifications before expiring.
+        // If a verification is pending/running, extend the claim instead of
+        // expiring it — prevents race condition with double payout.
+        const activeVerifications = await ctx.db
+          .query("verifications")
+          .withIndex("by_bountyId", (q) => q.eq("bountyId", claim.bountyId))
+          .collect();
+
+        const hasRunningVerification = activeVerifications.some(
+          (v) => v.status === "pending" || v.status === "running"
+        );
+
+        if (hasRunningVerification) {
+          await ctx.db.patch(claim._id, { expiresAt: now + EXTENSION_MS });
+          extendedCount++;
+          continue;
+        }
+
         await ctx.db.patch(claim._id, { status: "expired" });
+        // Revert bounty to active
+        await ctx.db.patch(claim.bountyId, { status: "active" });
         expiredCount++;
+
+        // SECURITY (P1-3): Schedule fork cleanup
+        if (claim.forkRepositoryUrl) {
+          await ctx.scheduler.runAfter(0, internal.bountyClaims.cleanupFork, {
+            forkRepositoryUrl: claim.forkRepositoryUrl,
+          });
+        }
       }
     }
 
-    if (expiredCount > 0) {
-      console.log(`Expired ${expiredCount} stale bounty claims`);
+    if (expiredCount > 0 || extendedCount > 0) {
+      console.log(
+        `Expired ${expiredCount} stale bounty claims, extended ${extendedCount} with active verifications`
+      );
     }
   },
 });
@@ -193,6 +248,68 @@ export const updateForkInfo = internalMutation({
 export const markCompleted = internalMutation({
   args: { claimId: v.id("bountyClaims") },
   handler: async (ctx, args) => {
+    const claim = await ctx.db.get(args.claimId);
     await ctx.db.patch(args.claimId, { status: "completed" });
+
+    // SECURITY (P1-3): Schedule fork cleanup on completion
+    if (claim?.forkRepositoryUrl) {
+      await ctx.scheduler.runAfter(0, internal.bountyClaims.cleanupFork, {
+        forkRepositoryUrl: claim.forkRepositoryUrl,
+      });
+    }
+  },
+});
+
+/**
+ * Clean up a fork repository from the GitHub mirror org.
+ * Called after claim expiry, release, or completion.
+ */
+export const cleanupFork = internalAction({
+  args: {
+    forkRepositoryUrl: v.string(),
+  },
+  handler: async (_ctx, args) => {
+    const botToken = process.env.GITHUB_BOT_TOKEN;
+    if (!botToken) {
+      console.warn("[cleanupFork] GITHUB_BOT_TOKEN not configured, skipping fork cleanup");
+      return;
+    }
+
+    // Extract owner/repo from URL: https://github.com/owner/repo
+    const match = args.forkRepositoryUrl.match(
+      /github\.com\/([^/]+)\/([^/]+)/
+    );
+    if (!match) {
+      console.warn(`[cleanupFork] Could not parse fork URL: ${args.forkRepositoryUrl}`);
+      return;
+    }
+
+    const [, owner, repo] = match;
+    const fullName = `${owner}/${repo!.replace(/\.git$/, "")}`;
+
+    try {
+      const res = await fetch(`https://api.github.com/repos/${fullName}`, {
+        method: "DELETE",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${botToken}`,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      });
+
+      if (res.ok || res.status === 404) {
+        console.log(`[cleanupFork] Deleted fork ${fullName}`);
+      } else {
+        const body = await res.text().catch(() => "");
+        console.error(
+          `[cleanupFork] Failed to delete fork ${fullName}: ${res.status} ${body.slice(0, 200)}`
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[cleanupFork] Error deleting fork ${fullName}:`,
+        err instanceof Error ? err.message : String(err)
+      );
+    }
   },
 });

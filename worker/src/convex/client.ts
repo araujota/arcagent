@@ -28,6 +28,15 @@ interface ConvexResultPayload {
     details?: Record<string, unknown>;
   }>;
   totalDurationMs: number;
+  steps?: Array<{
+    scenarioName: string;
+    featureName: string;
+    status: "pass" | "fail" | "skip" | "error";
+    executionTimeMs: number;
+    output?: string;
+    stepNumber: number;
+    visibility: "public" | "hidden";
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -43,6 +52,27 @@ const REQUEST_TIMEOUT_MS = 15_000;
 // ---------------------------------------------------------------------------
 
 /**
+ * SECURITY (C4): Validate that the Convex URL is a trusted destination.
+ * Rejects attacker-controlled URLs that could exfiltrate verification results.
+ */
+function validateConvexUrl(url: string): void {
+  const configuredUrl = process.env.CONVEX_URL;
+  if (configuredUrl && url === configuredUrl) return;
+
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.endsWith(".convex.cloud") || parsed.hostname === "localhost") {
+      return;
+    }
+  } catch {
+    throw new Error(`Invalid Convex URL: ${url}`);
+  }
+  throw new Error(
+    `Untrusted Convex URL: ${url}. Must match CONVEX_URL env var or end with .convex.cloud`
+  );
+}
+
+/**
  * Post the final verification result to the Convex HTTP action endpoint.
  *
  * Retries up to {@link MAX_RETRIES} times with exponential back-off on
@@ -52,6 +82,7 @@ export async function postVerificationResult(
   convexUrl: string,
   result: VerificationResult,
 ): Promise<void> {
+  validateConvexUrl(convexUrl);
   const url = buildResultUrl(convexUrl);
   const payload: ConvexResultPayload = {
     submissionId: result.submissionId,
@@ -66,6 +97,7 @@ export async function postVerificationResult(
       details: g.details,
     })),
     totalDurationMs: result.totalDurationMs,
+    steps: result.steps,
   };
 
   const secret = process.env.WORKER_SHARED_SECRET;

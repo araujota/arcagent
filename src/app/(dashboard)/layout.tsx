@@ -5,6 +5,9 @@ import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { Header } from "@/components/layout/header";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useCurrentUser } from "@/hooks/use-current-user";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect } from "react";
 
 function LoadingState() {
   return (
@@ -15,6 +18,27 @@ function LoadingState() {
       </div>
     </div>
   );
+}
+
+function OnboardingGuard({ children }: { children: React.ReactNode }) {
+  const { needsOnboarding, isLoading } = useCurrentUser();
+  const pathname = usePathname();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (isLoading) return;
+    if (needsOnboarding && pathname !== "/onboarding") {
+      router.replace("/onboarding");
+    } else if (!needsOnboarding && pathname === "/onboarding") {
+      router.replace("/");
+    }
+  }, [needsOnboarding, isLoading, pathname, router]);
+
+  if (isLoading) return <LoadingState />;
+  if (needsOnboarding && pathname !== "/onboarding") return <LoadingState />;
+  if (!needsOnboarding && pathname === "/onboarding") return <LoadingState />;
+
+  return <>{children}</>;
 }
 
 function UnauthenticatedState() {
@@ -47,13 +71,15 @@ export default function DashboardLayout({
         <UnauthenticatedState />
       </Unauthenticated>
       <Authenticated>
-        <SidebarProvider>
-          <AppSidebar />
-          <SidebarInset>
-            <Header />
-            <main className="flex-1 p-6">{children}</main>
-          </SidebarInset>
-        </SidebarProvider>
+        <OnboardingGuard>
+          <SidebarProvider>
+            <AppSidebar />
+            <SidebarInset>
+              <Header />
+              <main className="flex-1 p-6">{children}</main>
+            </SidebarInset>
+          </SidebarProvider>
+        </OnboardingGuard>
       </Authenticated>
     </>
   );

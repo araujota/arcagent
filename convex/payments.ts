@@ -1,4 +1,4 @@
-import { query, internalMutation, internalAction } from "./_generated/server";
+import { query, internalMutation, internalAction, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 
@@ -38,6 +38,16 @@ export const listByRecipient = query({
   },
 });
 
+export const getByBountyInternal = internalQuery({
+  args: { bountyId: v.id("bounties") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("payments")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .first();
+  },
+});
+
 export const initiate = internalMutation({
   args: {
     bountyId: v.id("bounties"),
@@ -71,14 +81,31 @@ export const updateStatus = internalMutation({
     if (args.transactionId !== undefined)
       updates.transactionId = args.transactionId;
     await ctx.db.patch(args.paymentId, updates);
+
+    if (args.status === "completed") {
+      const payment = await ctx.db.get(args.paymentId);
+      if (payment) {
+        const bounty = await ctx.db.get(payment.bountyId);
+        const agent = await ctx.db.get(payment.recipientId);
+        if (bounty) {
+          await ctx.scheduler.runAfter(0, internal.activityFeed.record, {
+            type: "payout_sent",
+            bountyId: payment.bountyId,
+            bountyTitle: bounty.title,
+            amount: payment.amount,
+            currency: payment.currency,
+            actorName: agent?.name ?? "An agent",
+          });
+        }
+      }
+    }
   },
 });
 
 /**
- * STUBBED: Payment processing engine
- * In production, this would:
- * 1. For Stripe: Create a PaymentIntent and process the transfer
- * 2. For Web3: Execute a smart contract transaction
+ * Payment processing engine.
+ * For Stripe: delegates to the escrow release flow in convex/stripe.ts.
+ * For Web3: still stubbed (future implementation).
  */
 export const processPayment = internalAction({
   args: {
@@ -90,25 +117,36 @@ export const processPayment = internalAction({
     method: v.union(v.literal("stripe"), v.literal("web3")),
   },
   handler: async (ctx, args) => {
-    // Mark as processing
     await ctx.runMutation(internal.payments.updateStatus, {
       paymentId: args.paymentId,
       status: "processing",
     });
 
-    // TODO: Implement payment processing
-    // For Stripe: use Stripe SDK to create transfer
-    // For Web3: use ethers.js / viem to execute transaction
-
-    console.log(
-      `[STUB] processPayment called for payment ${args.paymentId}, amount: ${args.amount} ${args.currency}`
-    );
-
-    // Stub: mark as completed
-    await ctx.runMutation(internal.payments.updateStatus, {
-      paymentId: args.paymentId,
-      status: "completed",
-      transactionId: `stub_tx_${Date.now()}`,
-    });
+    if (args.method === "stripe") {
+      try {
+        await ctx.runAction(internal.stripe.releaseEscrow, {
+          bountyId: args.bountyId,
+          recipientUserId: args.recipientId,
+          paymentId: args.paymentId,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "Stripe transfer failed";
+        console.error(`[payments] Stripe release failed: ${msg}`);
+        await ctx.runMutation(internal.payments.updateStatus, {
+          paymentId: args.paymentId,
+          status: "failed",
+        });
+      }
+    } else {
+      // Web3 — still stubbed
+      console.log(
+        `[STUB] Web3 processPayment called for payment ${args.paymentId}, amount: ${args.amount} ${args.currency}`
+      );
+      await ctx.runMutation(internal.payments.updateStatus, {
+        paymentId: args.paymentId,
+        status: "completed",
+        transactionId: `stub_web3_tx_${Date.now()}`,
+      });
+    }
   },
 });

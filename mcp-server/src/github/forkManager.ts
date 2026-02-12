@@ -108,31 +108,26 @@ export async function createFork(
 }
 
 /**
- * Generate a fork access token.
+ * Generate fork access info.
  *
- * In production, this would create a fine-grained PAT via GitHub App
- * installation tokens. For now, we return the bot token scoped to
- * the fork. This should be replaced with proper token generation
- * when a GitHub App is set up.
+ * SECURITY: We no longer share any token with agents. The fork is created
+ * in the mirror org and the agent is instructed to push to their own
+ * public repository, then submit the URL + commit hash. The worker
+ * clones from the agent's repo directly.
+ *
+ * The fork URL is returned only so the agent knows the base code location.
  */
 export async function generateForkAccessToken(
   forkFullName: string,
-  expiresAt: number,
+  _expiresAt: number,
 ): Promise<ForkAccessResult> {
-  const { botToken } = getConfig();
-
-  // In a production setup, this would use:
-  //   POST /app/installations/{installation_id}/access_tokens
-  //   with repository_ids scoped to the fork only
-  //
-  // For now, return the bot token with appropriate metadata
   const forkUrl = `https://github.com/${forkFullName}`;
 
   return {
     forkUrl,
-    accessToken: botToken,
-    tokenExpiresAt: expiresAt,
-    cloneCommand: `git clone https://${botToken}@github.com/${forkFullName}.git`,
+    accessToken: "", // No token shared with agents
+    tokenExpiresAt: 0,
+    cloneCommand: `git clone ${forkUrl}.git`,
   };
 }
 

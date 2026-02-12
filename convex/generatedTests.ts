@@ -1,19 +1,72 @@
 import { query, mutation, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
-import { getCurrentUser, requireAuth, requireRole } from "./lib/utils";
+import { getCurrentUser, requireAuth, requireRole, requireBountyAccess } from "./lib/utils";
+import { Doc } from "./_generated/dataModel";
+
+/** Strip gherkinHidden for agent callers */
+function redactForAgent(
+  test: Doc<"generatedTests">,
+  role: "creator" | "admin" | "agent"
+) {
+  if (role === "agent") {
+    const { gherkinHidden: _hidden, llmModel: _model, ...safe } = test;
+    return safe;
+  }
+  return test;
+}
 
 export const getByBountyId = query({
   args: { bountyId: v.id("bounties") },
   handler: async (ctx, args) => {
-    return await ctx.db
+    const { role } = await requireBountyAccess(ctx, args.bountyId, { allowAgent: true });
+
+    const test = await ctx.db
       .query("generatedTests")
       .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
       .order("desc")
       .first();
+
+    if (!test) return null;
+    return redactForAgent(test, role);
   },
 });
 
 export const getByConversationId = query({
+  args: { conversationId: v.id("conversations") },
+  handler: async (ctx, args) => {
+    const conversation = await ctx.db.get(args.conversationId);
+    if (!conversation) throw new Error("Conversation not found");
+
+    const { role } = await requireBountyAccess(ctx, conversation.bountyId, { allowAgent: true });
+
+    const test = await ctx.db
+      .query("generatedTests")
+      .withIndex("by_conversationId", (q) =>
+        q.eq("conversationId", args.conversationId)
+      )
+      .order("desc")
+      .first();
+
+    if (!test) return null;
+    return redactForAgent(test, role);
+  },
+});
+
+export const listByBounty = query({
+  args: { bountyId: v.id("bounties") },
+  handler: async (ctx, args) => {
+    const { role } = await requireBountyAccess(ctx, args.bountyId, { allowAgent: true });
+
+    const tests = await ctx.db
+      .query("generatedTests")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .collect();
+
+    return tests.map((t) => redactForAgent(t, role));
+  },
+});
+
+export const getByConversationIdInternal = internalQuery({
   args: { conversationId: v.id("conversations") },
   handler: async (ctx, args) => {
     return await ctx.db
@@ -26,13 +79,14 @@ export const getByConversationId = query({
   },
 });
 
-export const listByBounty = query({
+export const getByBountyIdInternal = internalQuery({
   args: { bountyId: v.id("bounties") },
   handler: async (ctx, args) => {
     return await ctx.db
       .query("generatedTests")
       .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
-      .collect();
+      .order("desc")
+      .first();
   },
 });
 
@@ -138,6 +192,11 @@ export const publish = mutation({
       throw new Error("Unauthorized");
     }
 
+    // All users must approve tests before publishing
+    if (test.status !== "approved") {
+      throw new Error("Please approve tests before publishing");
+    }
+
     await ctx.db.patch(args.generatedTestId, { status: "published" });
   },
 });
@@ -161,10 +220,48 @@ export const updateGherkin = mutation({
       throw new Error("Unauthorized");
     }
 
+    // SECURITY: Freeze tests once an agent has claimed the bounty
+    if (bounty.status !== "draft" && bounty.status !== "active") {
+      throw new Error(
+        "Tests cannot be modified after an agent has claimed the bounty"
+      );
+    }
+
     const updates: Record<string, unknown> = {};
     if (args.gherkinPublic !== undefined) updates.gherkinPublic = args.gherkinPublic;
     if (args.gherkinHidden !== undefined) updates.gherkinHidden = args.gherkinHidden;
 
     await ctx.db.patch(args.generatedTestId, updates);
+  },
+});
+
+export const updateStepDefinitionsPublic = mutation({
+  args: {
+    generatedTestId: v.id("generatedTests"),
+    stepDefinitions: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = requireAuth(await getCurrentUser(ctx));
+    requireRole(user, ["creator", "admin"]);
+
+    const test = await ctx.db.get(args.generatedTestId);
+    if (!test) throw new Error("Generated test not found");
+
+    const bounty = await ctx.db.get(test.bountyId);
+    if (!bounty) throw new Error("Bounty not found");
+    if (bounty.creatorId !== user._id && user.role !== "admin") {
+      throw new Error("Unauthorized");
+    }
+
+    // SECURITY: Freeze tests once an agent has claimed the bounty
+    if (bounty.status !== "draft" && bounty.status !== "active") {
+      throw new Error(
+        "Tests cannot be modified after an agent has claimed the bounty"
+      );
+    }
+
+    await ctx.db.patch(args.generatedTestId, {
+      stepDefinitions: args.stepDefinitions,
+    });
   },
 });

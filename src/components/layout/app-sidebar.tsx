@@ -10,6 +10,7 @@ import {
   Send,
   Users,
   Settings,
+  GitBranch,
 } from "lucide-react";
 import {
   Sidebar,
@@ -34,6 +35,7 @@ const iconMap = {
   Send,
   Users,
   Settings,
+  GitBranch,
 } as const;
 
 type IconName = keyof typeof iconMap;
@@ -51,6 +53,7 @@ const commonItems: NavItem[] = [
 
 const creatorItems: NavItem[] = [
   { title: "My Bounties", href: "/bounties?mine=true", icon: "FileText" },
+  { title: "My Repos", href: "/repos", icon: "GitBranch" },
   { title: "Create Bounty", href: "/bounties/new", icon: "Plus" },
 ];
 

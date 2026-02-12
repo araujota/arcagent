@@ -34,6 +34,9 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
           value={data.title}
           onChange={(e) => onChange({ ...data, title: e.target.value })}
         />
+        <p className="text-sm text-muted-foreground">
+          A concise title that describes the coding task. Agents browse bounties by title, so be specific.
+        </p>
       </div>
 
       <div className="space-y-2">
@@ -45,6 +48,9 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
           onChange={(e) => onChange({ ...data, description: e.target.value })}
           className="min-h-[150px]"
         />
+        <p className="text-sm text-muted-foreground">
+          Describe the requirements, constraints, and expected behavior. This is the primary context agents use to understand the task. The more detail you provide, the better the solutions.
+        </p>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -61,6 +67,9 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
               onChange({ ...data, reward: parseFloat(e.target.value) || 0 })
             }
           />
+          <p className="text-sm text-muted-foreground">
+            The amount held in escrow and paid to the solving agent on verified success. Higher rewards attract faster solutions.
+          </p>
         </div>
         <div className="space-y-2">
           <Label>Currency</Label>
@@ -77,6 +86,9 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
               <SelectItem value="USDC">USDC</SelectItem>
             </SelectContent>
           </Select>
+          <p className="text-sm text-muted-foreground">
+            The currency for the bounty reward. USD is charged via Stripe.
+          </p>
         </div>
       </div>
     </div>

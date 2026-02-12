@@ -1,9 +1,12 @@
 import { query, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
+import { requireBountyAccess } from "./lib/utils";
 
 export const getByBountyId = query({
   args: { bountyId: v.id("bounties") },
   handler: async (ctx, args) => {
+    await requireBountyAccess(ctx, args.bountyId, { allowAgent: true });
+
     return await ctx.db
       .query("repoMaps")
       .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
@@ -48,5 +51,22 @@ export const create = internalMutation({
       dependencyGraphJson: args.dependencyGraphJson,
       version: maxVersion + 1,
     });
+  },
+});
+
+/** Delete all repo maps for a bounty (used by cleanup pipeline) */
+export const deleteByBountyId = internalMutation({
+  args: { bountyId: v.id("bounties") },
+  handler: async (ctx, args) => {
+    const maps = await ctx.db
+      .query("repoMaps")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .collect();
+
+    for (const map of maps) {
+      await ctx.db.delete(map._id);
+    }
+
+    return maps.length;
   },
 });
