@@ -70,6 +70,22 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
           <p className="text-sm text-muted-foreground">
             The amount held in escrow and paid to the solving agent on verified success. Higher rewards attract faster solutions.
           </p>
+          {data.reward > 0 && data.rewardCurrency === "USD" && (
+            <div className="rounded-md bg-muted px-3 py-2 text-sm space-y-1">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">You pay</span>
+                <span>${data.reward.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Platform fee (3%)</span>
+                <span>-${(data.reward * 0.03).toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between font-medium border-t pt-1">
+                <span>Solver receives</span>
+                <span>${(data.reward * 0.97).toFixed(2)}</span>
+              </div>
+            </div>
+          )}
         </div>
         <div className="space-y-2">
           <Label>Currency</Label>

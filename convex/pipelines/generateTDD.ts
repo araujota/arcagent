@@ -57,9 +57,9 @@ export const generateTDD = internalAction({
         }
       }
 
-      const allGherkin = `## Public Tests\n${args.gherkinPublic}\n\n## Hidden Tests\n${args.gherkinHidden}`;
-
-      const systemPrompt = `Generate executable step definitions for these Gherkin features.
+      // Generate step definitions separately for public and hidden scenarios
+      const generateStepDefs = async (gherkin: string, label: string) => {
+        const prompt = `Generate executable step definitions for these Gherkin features.
 
 ## Target Framework: ${frameworkConfig.framework}
 ## Language: ${language}
@@ -69,8 +69,8 @@ export const generateTDD = internalAction({
 ${repoMapText ? `## Repository Structure:\n${repoMapText}\n` : ""}
 ${relevantChunksText ? `## Relevant Source Code:\n${relevantChunksText}\n` : ""}
 
-## Gherkin Features:
-${allGherkin}
+## Gherkin Features (${label}):
+${gherkin}
 
 ## Instructions
 - Generate step definition files that implement each Given/When/Then step
@@ -93,38 +93,45 @@ Output as JSON:
   "runCommand": "..."
 }`;
 
-      const response = await llm.chat(
-        [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: "Generate the step definitions and test configuration.",
-          },
-        ],
-        { temperature: 0.3, maxTokens: 8000 }
-      );
+        const response = await llm.chat(
+          [
+            { role: "system", content: prompt },
+            {
+              role: "user",
+              content: "Generate the step definitions and test configuration.",
+            },
+          ],
+          { temperature: 0.3, maxTokens: 8000 }
+        );
 
-      // Parse the response
-      let stepDefinitions: string;
-      let testFramework = frameworkConfig.framework;
+        try {
+          const cleaned = response
+            .replace(/^```json\n?/, "")
+            .replace(/\n?```$/, "")
+            .trim();
+          const parsed = JSON.parse(cleaned);
+          return {
+            stepDefs: JSON.stringify(parsed.files || []),
+            framework: parsed.framework || frameworkConfig.framework,
+          };
+        } catch {
+          return { stepDefs: response, framework: frameworkConfig.framework };
+        }
+      };
 
-      try {
-        const cleaned = response
-          .replace(/^```json\n?/, "")
-          .replace(/\n?```$/, "")
-          .trim();
-        const parsed = JSON.parse(cleaned);
-        stepDefinitions = JSON.stringify(parsed.files || []);
-        testFramework = parsed.framework || frameworkConfig.framework;
-      } catch {
-        // If JSON fails, store raw response
-        stepDefinitions = response;
-      }
+      const publicResult = await generateStepDefs(args.gherkinPublic, "public");
+      const hiddenResult = await generateStepDefs(args.gherkinHidden, "hidden");
 
-      // Update the generated tests record
+      // Combined step definitions for backward compatibility
+      const stepDefinitions = publicResult.stepDefs;
+      const testFramework = publicResult.framework;
+
+      // Update the generated tests record with split step definitions
       await ctx.runMutation(internal.generatedTests.updateStepDefinitions, {
         generatedTestId: args.generatedTestId,
         stepDefinitions,
+        stepDefinitionsPublic: publicResult.stepDefs,
+        stepDefinitionsHidden: hiddenResult.stepDefs,
         testFramework,
         testLanguage: language,
       });
@@ -174,6 +181,13 @@ function getExtension(language: string): string {
     go: "go",
     rust: "rs",
     java: "java",
+    ruby: "rb",
+    php: "php",
+    csharp: "cs",
+    kotlin: "kt",
+    c: "c",
+    cpp: "cpp",
+    swift: "swift",
   };
   return extMap[language] || "ts";
 }

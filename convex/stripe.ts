@@ -1,6 +1,7 @@
 import { internalAction, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import { calculatePlatformFee, PLATFORM_FEE_RATE } from "./lib/fees";
 
 function getStripe() {
   // Dynamic import workaround for Convex bundling — Stripe is loaded at runtime
@@ -160,17 +161,28 @@ export const createEscrowCharge = internalAction({
       },
     });
 
-    // Update bounty with escrow info
+    // Calculate and store platform fee
+    const { feeCents, solverCents } = calculatePlatformFee(amountInCents);
+
+    // Update bounty with escrow info and fee breakdown
     await ctx.runMutation(internal.stripe.updateBountyEscrow, {
       bountyId: args.bountyId,
       stripePaymentIntentId: paymentIntent.id,
       escrowStatus: paymentIntent.status === "succeeded" ? "funded" : "unfunded",
     });
 
+    await ctx.runMutation(internal.stripe.storePlatformFee, {
+      bountyId: args.bountyId,
+      platformFeePercent: PLATFORM_FEE_RATE,
+      platformFeeCents: feeCents,
+    });
+
     return {
       paymentIntentId: paymentIntent.id,
       status: paymentIntent.status,
       escrowStatus: paymentIntent.status === "succeeded" ? "funded" : "unfunded",
+      platformFeeCents: feeCents,
+      solverAmountCents: solverCents,
     };
   },
 });
@@ -220,6 +232,20 @@ export const updateBountyEscrow = internalMutation({
       updates.stripePaymentIntentId = args.stripePaymentIntentId;
     }
     await ctx.db.patch(args.bountyId, updates);
+  },
+});
+
+export const storePlatformFee = internalMutation({
+  args: {
+    bountyId: v.id("bounties"),
+    platformFeePercent: v.number(),
+    platformFeeCents: v.number(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.bountyId, {
+      platformFeePercent: args.platformFeePercent,
+      platformFeeCents: args.platformFeeCents,
+    });
   },
 });
 
@@ -339,10 +365,14 @@ export const releaseEscrow = internalAction({
       throw new Error("Recipient has no Stripe Connect account");
     }
 
-    // Transfer funds to solver's Connect account (with idempotency key to prevent double transfers)
-    const amountInCents = Math.round(bounty.reward * 100);
+    // Transfer net amount (minus platform fee) to solver's Connect account
+    const grossCents = Math.round(bounty.reward * 100);
+    // Use stored fee if available, otherwise calculate from current rate
+    const feeCents = bounty.platformFeeCents ?? Math.round(grossCents * PLATFORM_FEE_RATE);
+    const solverCents = grossCents - feeCents;
+
     const transfer = await stripe.transfers.create({
-      amount: amountInCents,
+      amount: solverCents,
       currency: bounty.rewardCurrency.toLowerCase(),
       destination: recipient.stripeConnectAccountId,
       metadata: {
@@ -427,5 +457,45 @@ export const refundEscrow = internalAction({
     });
 
     return { refundId: refund.id };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Public Actions (for onboarding / settings pages)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a SetupIntent for the current authenticated user.
+ * Used by the onboarding wizard and settings page to save a payment method.
+ */
+export const createSetupIntentForCurrentUser = internalAction({
+  args: {
+    userId: v.id("users"),
+    email: v.string(),
+    name: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return ctx.runAction(internal.stripe.createSetupIntent, {
+      userId: args.userId,
+      email: args.email,
+      name: args.name,
+    });
+  },
+});
+
+/**
+ * Create a Stripe Connect onboarding link for the current authenticated user.
+ * Used by agents to set up payout accounts.
+ */
+export const createConnectOnboardingForCurrentUser = internalAction({
+  args: {
+    userId: v.id("users"),
+    email: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return ctx.runAction(internal.stripe.createConnectAccount, {
+      userId: args.userId,
+      email: args.email,
+    });
   },
 });

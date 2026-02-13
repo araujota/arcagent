@@ -40,8 +40,13 @@ http.route({
         id: string;
         first_name?: string;
         last_name?: string;
+        username?: string;
         email_addresses?: Array<{ email_address: string }>;
         image_url?: string;
+        external_accounts?: Array<{
+          provider: string;
+          username?: string;
+        }>;
       };
     };
 
@@ -66,11 +71,18 @@ http.route({
           "Unknown";
         const email = data.email_addresses?.[0]?.email_address ?? "";
 
+        // Extract GitHub username from linked OAuth accounts
+        const githubAccount = data.external_accounts?.find(
+          (a) => a.provider === "oauth_github"
+        );
+        const githubUsername = githubAccount?.username ?? data.username;
+
         await ctx.runMutation(internal.users.upsertFromClerk, {
           clerkId: data.id,
           name,
           email,
           avatarUrl: data.image_url,
+          githubUsername,
         });
         break;
       }
@@ -577,6 +589,44 @@ http.route({
   }),
 });
 
+// --- Bounties: Test Suites (ALL Gherkin — public + hidden, no step defs) ---
+http.route({
+  path: "/api/mcp/bounties/test-suites",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+
+    const body = await request.json();
+    const { bountyId } = body as { bountyId: string };
+    if (!bountyId) return mcpError("Missing bountyId");
+
+    const typedBountyId = bountyId as Id<"bounties">;
+
+    // Get ALL test suites (public + hidden) — agents see all Gherkin as their spec
+    const testSuites = await ctx.runQuery(
+      internal.testSuites.listAllByBounty,
+      { bountyId: typedBountyId }
+    );
+
+    // Get generated test metadata (framework, language) — no step defs
+    const generatedTest = await ctx.runQuery(
+      internal.generatedTests.getByBountyIdInternal,
+      { bountyId: typedBountyId }
+    );
+
+    return mcpJson({
+      testSuites: testSuites.map((ts) => ({
+        title: ts.title,
+        version: ts.version,
+        gherkinContent: ts.gherkinContent,
+        visibility: ts.visibility,
+      })),
+      testFramework: generatedTest?.testFramework ?? null,
+      testLanguage: generatedTest?.testLanguage ?? null,
+    });
+  }),
+});
+
 // --- Claims: Create ---
 http.route({
   path: "/api/mcp/claims/create",
@@ -823,6 +873,47 @@ http.route({
 
     if (!result) return mcpError("Verification not found", 404);
     return mcpJson({ verification: result });
+  }),
+});
+
+// --- Verifications: Latest feedback for a bounty ---
+http.route({
+  path: "/api/mcp/verifications/feedback",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+
+    const body = await request.json();
+    const { bountyId } = body as { bountyId: string };
+    if (!bountyId) return mcpError("Missing bountyId");
+
+    const typedBountyId = bountyId as Id<"bounties">;
+
+    // Get the latest verification for this bounty (most recent first)
+    const latestVerification = await ctx.runQuery(
+      internal.verifications.getLatestByBountyInternal,
+      { bountyId: typedBountyId }
+    );
+
+    if (!latestVerification) {
+      return mcpJson({
+        feedbackJson: null,
+        verificationStatus: "none",
+        attemptNumber: 0,
+      });
+    }
+
+    // Count total attempts for this bounty
+    const allVerifications = await ctx.runQuery(
+      internal.verifications.listByBountyInternal,
+      { bountyId: typedBountyId }
+    );
+
+    return mcpJson({
+      feedbackJson: latestVerification.feedbackJson ?? null,
+      verificationStatus: latestVerification.status,
+      attemptNumber: allVerifications.length,
+    });
   }),
 });
 

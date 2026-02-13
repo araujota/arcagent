@@ -25,6 +25,7 @@ export interface ConvexBountyDetails extends ConvexBounty {
     title: string;
     version: number;
     gherkinContent: string;
+    visibility: "public" | "hidden";
   }>;
   repoMap: {
     repoMapText: string;
@@ -32,6 +33,10 @@ export interface ConvexBountyDetails extends ConvexBounty {
     dependencyGraphJson: string;
   } | null;
   isClaimed: boolean;
+  platformFeePercent?: number;
+  testFramework?: string | null;
+  testLanguage?: string | null;
+  relevantPaths?: string[];
 }
 
 export interface ConvexClaim {
@@ -74,15 +79,11 @@ export interface VerificationStep {
   stepNumber: number;
 }
 
-export interface HiddenTestSummary {
-  total: number;
-  passed: number;
-  failed: number;
-  errors: number;
-  skipped: number;
+export interface AgentVerificationStep extends VerificationStep {
+  visibility: "public" | "hidden";
 }
 
-/** Agent-facing verification status (filtered: no hidden test details). */
+/** Agent-facing verification status — all scenarios visible with verbose output. */
 export interface ConvexAgentVerification {
   _id: string;
   submissionId: string;
@@ -93,8 +94,8 @@ export interface ConvexAgentVerification {
   completedAt?: number;
   errorLog?: string;
   gates: VerificationGate[];
-  publicSteps: VerificationStep[];
-  hiddenTestSummary: HiddenTestSummary;
+  steps: AgentVerificationStep[];
+  feedbackJson?: string;
   job: {
     status: string;
     currentGate?: string;

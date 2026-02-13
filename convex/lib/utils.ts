@@ -35,11 +35,12 @@ export function requireRole(
 
 /**
  * Reusable RLS helper — verifies the caller can access a bounty's data.
- * Returns the authenticated user, the bounty, and the caller's role.
+ * Returns the authenticated user, the bounty, and the caller's relationship.
  *
- * Roles:
+ * Relationship (not account role — any user can be a creator on one bounty
+ * and a solver on another):
  *  - "admin"   → user.role === "admin"
- *  - "creator" → bounty.creatorId === user._id
+ *  - "creator" → bounty.creatorId === user._id (the user who created THIS bounty)
  *  - "agent"   → user has an active bountyClaim on this bounty (opt-in via allowAgent)
  */
 export async function requireBountyAccess(

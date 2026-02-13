@@ -2,6 +2,7 @@ import { VMHandle } from "../vm/firecracker";
 import { GateResult, StepResult, TestSuiteInput } from "../queue/jobQueue";
 import { DiffContext } from "../lib/diffContext";
 import { parseJsonSafe } from "../lib/resultParser";
+import { logger } from "../index";
 
 /**
  * Test gate -- executes the project's test suite.
@@ -27,13 +28,18 @@ export async function runTestGate(
   timeoutMs: number,
   _diff: DiffContext | null,
   testSuites?: TestSuiteInput[],
+  stepDefinitionsPublic?: string,
+  stepDefinitionsHidden?: string,
 ): Promise<GateResult> {
   const start = Date.now();
 
   // If test suites with visibility are provided, run them separately
   // to tag each result with public/hidden visibility.
   if (testSuites && testSuites.length > 0) {
-    return runTaggedBddTests(vm, language, timeoutMs, testSuites, start);
+    return runTaggedBddTests(
+      vm, language, timeoutMs, testSuites, start,
+      stepDefinitionsPublic, stepDefinitionsHidden,
+    );
   }
 
   // Fallback: run the project's own test suite (no visibility tagging)
@@ -98,10 +104,49 @@ async function runTaggedBddTests(
   timeoutMs: number,
   testSuites: TestSuiteInput[],
   start: number,
+  stepDefinitionsPublic?: string,
+  stepDefinitionsHidden?: string,
 ): Promise<GateResult> {
   const allSteps: StepResult[] = [];
   let stepCounter = 0;
   let overallFailed = false;
+
+  // SECURITY: Inject step definitions into root-owned directory in the VM.
+  // The agent user cannot read /run/bdd_steps/ directly.
+  const stepDefsDir = "/run/bdd_steps";
+  await vm.exec(`mkdir -p ${stepDefsDir} && chmod 700 ${stepDefsDir}`, 5_000);
+
+  const injectStepDefs = async (stepDefsJson: string | undefined, label: string) => {
+    if (!stepDefsJson) return;
+    try {
+      const files = JSON.parse(stepDefsJson);
+      if (!Array.isArray(files)) return;
+      for (const file of files) {
+        if (file.path && file.content) {
+          const targetPath = `${stepDefsDir}/${label}_${file.path.replace(/\//g, "_")}`;
+          if (vm.writeFile) {
+            await vm.writeFile(
+              targetPath,
+              Buffer.from(file.content, "utf-8"),
+              "0400",
+              "root:root",
+            );
+          } else {
+            const b64 = Buffer.from(file.content).toString("base64");
+            await vm.exec(
+              `echo '${b64}' | base64 -d > ${targetPath} && chmod 0400 ${targetPath} && chown root:root ${targetPath}`,
+              5_000,
+            );
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn(`Failed to inject ${label} step definitions`, { error: String(err) });
+    }
+  };
+
+  await injectStepDefs(stepDefinitionsPublic, "public");
+  await injectStepDefs(stepDefinitionsHidden, "hidden");
 
   const publicSuites = testSuites.filter((ts) => ts.visibility === "public");
   const hiddenSuites = testSuites.filter((ts) => ts.visibility === "hidden");
@@ -113,8 +158,6 @@ async function runTaggedBddTests(
   ]) {
     for (const suite of group.suites) {
       // Write feature file to the VM using base64 to prevent injection.
-      // SECURITY (P1-4): Heredoc delimiter could be injected if gherkin
-      // content contains "FEATURE_EOF" on its own line.
       const featurePath = `/tmp/bdd_${group.visibility}_${stepCounter}.feature`;
       const b64 = Buffer.from(suite.gherkinContent).toString("base64");
       await vm.exec(
@@ -135,7 +178,6 @@ async function runTaggedBddTests(
       const scenarios = parseScenarios(suite.gherkinContent);
 
       if (result.exitCode === 0) {
-        // All scenarios in this suite passed
         for (const scenario of scenarios) {
           allSteps.push({
             scenarioName: scenario,
@@ -148,14 +190,14 @@ async function runTaggedBddTests(
         }
       } else {
         overallFailed = true;
-        // Record a failure for the suite — output only included for traceability
+        // Return verbose output so agents see full error messages and stack traces
         for (const scenario of scenarios) {
           allSteps.push({
             scenarioName: scenario,
             featureName,
             status: "fail",
             executionTimeMs: 0,
-            output: truncate(result.stdout, 500),
+            output: truncate(result.stdout, 5_000),
             stepNumber: stepCounter++,
             visibility: group.visibility,
           });
@@ -163,6 +205,9 @@ async function runTaggedBddTests(
       }
     }
   }
+
+  // SECURITY: Delete step definition files immediately after test execution
+  await vm.exec(`rm -rf ${stepDefsDir}`, 5_000).catch(() => {});
 
   const durationMs = Date.now() - start;
   const passed = allSteps.filter((s) => s.status === "pass").length;
@@ -205,6 +250,25 @@ function getBddTestCommand(language: string, featurePath: string): string | null
       return `bundle exec cucumber ${featurePath} --format json 2>&1`;
     case "java":
       return `mvn test -Dcucumber.features=${featurePath} 2>&1`;
+    case "go":
+      return `godog run ${featurePath} --format json 2>&1`;
+    case "rust":
+      return `cargo test --test cucumber -- ${featurePath} 2>&1`;
+    case "php":
+      return `vendor/bin/behat ${featurePath} --format json 2>&1`;
+    case "csharp":
+      return `dotnet test --filter "FeaturePath~${featurePath}" --logger "console;verbosity=detailed" 2>&1`;
+    case "kotlin":
+      return `gradle test -Dcucumber.features=${featurePath} 2>&1`;
+    case "c":
+    case "cpp":
+      return (
+        `if [ -d build ]; then ` +
+        `  ctest --test-dir build --output-on-failure -R bdd 2>&1; ` +
+        `else cmake -B build && cmake --build build && ctest --test-dir build --output-on-failure -R bdd 2>&1; fi`
+      );
+    case "swift":
+      return `swift test --filter BDD 2>&1`;
     default:
       return null;
   }

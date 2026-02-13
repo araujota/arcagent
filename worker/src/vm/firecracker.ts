@@ -2,6 +2,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "../index";
+import { vsockExec, vsockExecWithStdin, vsockWriteFile, waitForVsock } from "./vsockChannel";
+import { createEncryptedOverlay, destroyEncryptedOverlay, EncryptedOverlayHandle } from "./encryptedOverlay";
+import { startDnsResolver, stopDnsResolver, applyDnsRedirect, removeDnsRedirect, DnsResolverHandle } from "./dnsPolicy";
+import { startEgressProxy, stopEgressProxy, applyProxyRedirect, removeProxyRedirect, applyRateLimiting, removeRateLimiting, EgressProxyHandle } from "./egressProxy";
+import { getVMConfig } from "./vmConfig";
 
 const execFileAsync = promisify(execFile);
 
@@ -28,8 +33,12 @@ export interface VMHandle {
   jobId: string;
   /** IP address of the VM on the host-side tap interface. */
   guestIp: string;
-  /** Execute a shell command inside the guest via SSH. */
-  exec(command: string, timeoutMs?: number): Promise<ExecResult>;
+  /** Execute a shell command inside the guest via vsock (or SSH fallback). */
+  exec(command: string, timeoutMs?: number, user?: string): Promise<ExecResult>;
+  /** Execute a command with stdin piped via vsock. */
+  execWithStdin?(command: string, stdin: string, timeoutMs?: number, user?: string): Promise<ExecResult>;
+  /** Write a file inside the guest via vsock. */
+  writeFile?(path: string, content: Buffer, mode?: string, owner?: string): Promise<void>;
 }
 
 /** Result of executing a command inside the VM. */
@@ -50,11 +59,10 @@ const KERNEL_IMAGE =
   process.env.FC_KERNEL_IMAGE ?? "/var/lib/firecracker/vmlinux";
 const ROOTFS_DIR =
   process.env.FC_ROOTFS_DIR ?? "/var/lib/firecracker/rootfs";
-const SSH_KEY_PATH =
-  process.env.FC_SSH_KEY ?? "/var/lib/firecracker/id_rsa";
 const TAP_PREFIX = "fc-tap-";
-const GUEST_SSH_PORT = 22;
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000; // 2 minutes
+/** Enable vsock-based communication (set to "false" to fall back to SSH). */
+const USE_VSOCK = process.env.FC_USE_VSOCK !== "false";
 
 // ---------------------------------------------------------------------------
 // VM lifecycle
@@ -76,6 +84,7 @@ export async function createFirecrackerVM(
   const vmId = `vm-${uuidv4().slice(0, 8)}`;
   const tapDevice = `${TAP_PREFIX}${vmId.slice(3)}`;
   const guestIp = allocateGuestIp(vmId);
+  const vsockSocketPath = `/tmp/fc-vsock-${vmId}.sock`;
 
   logger.info("Creating Firecracker microVM", {
     vmId,
@@ -83,9 +92,10 @@ export async function createFirecrackerVM(
     vcpuCount: opts.vcpuCount,
     memSizeMib: opts.memSizeMib,
     rootfsImage: opts.rootfsImage,
+    useVsock: USE_VSOCK,
   });
 
-  // 1. Create TAP device
+  // 1. Create TAP device (kept solely for outbound internet: git clone, npm install)
   await execFileAsync("ip", [
     "tuntap",
     "add",
@@ -103,22 +113,66 @@ export async function createFirecrackerVM(
   await execFileAsync("ip", ["link", "set", tapDevice, "up"]);
 
   // SECURITY (P2-1): Apply iptables egress filtering on the TAP device.
-  // Allow only DNS (53) and HTTPS (443) outbound; drop everything else.
   await applyEgressFiltering(tapDevice);
 
-  // 2a. SECURITY (P2-3): Generate per-VM ephemeral ed25519 SSH keypair
-  const vmSshKeyPath = `/tmp/fc-ssh-${vmId}`;
-  await execFileAsync("ssh-keygen", [
-    "-t", "ed25519", "-f", vmSshKeyPath, "-N", "", "-q",
-  ]);
+  // Hardened egress: DNS resolver + SNI proxy + rate limiting (if enabled)
+  let dnsResolver: DnsResolverHandle | null = null;
+  let egressProxy: EgressProxyHandle | null = null;
+  const vmConfig = getVMConfig(opts.rootfsImage.replace(/\.ext4$/, "").replace(/-\d+$/, ""));
+  const hardenEgress = process.env.FC_HARDEN_EGRESS === "true";
 
-  // 2. Prepare ephemeral overlay of rootfs
+  if (hardenEgress && vmConfig.allowedDomains.length > 0) {
+    const gatewayIp = "10.0.0.1";
+    try {
+      dnsResolver = await startDnsResolver(vmId, gatewayIp, vmConfig.allowedDomains);
+      await applyDnsRedirect(tapDevice, gatewayIp);
+      egressProxy = await startEgressProxy(vmId, vmConfig.allowedDomains);
+      await applyProxyRedirect(tapDevice, egressProxy.port);
+      await applyRateLimiting(tapDevice);
+      logger.info("Hardened egress applied", { vmId, domains: vmConfig.allowedDomains.length });
+    } catch (err) {
+      logger.warn("Hardened egress setup failed, using basic filtering", {
+        vmId,
+        error: String(err),
+      });
+    }
+  }
+
+  // 2. Prepare ephemeral overlay of rootfs (with encryption if available)
   const rootfsPath = `${ROOTFS_DIR}/${opts.rootfsImage}`;
-  const overlayPath = `/tmp/fc-overlay-${vmId}.ext4`;
+  let overlayPath: string;
+  let encryptedOverlay: EncryptedOverlayHandle | null = null;
 
-  await execFileAsync("cp", ["--reflink=auto", rootfsPath, overlayPath]);
+  if (USE_VSOCK) {
+    // Use encrypted overlay — protects repo code from host-level access
+    try {
+      encryptedOverlay = await createEncryptedOverlay(vmId, rootfsPath);
+      overlayPath = encryptedOverlay.devicePath;
+      logger.info("Using encrypted overlay", { vmId });
+    } catch (err) {
+      // Fallback to unencrypted if dm-crypt unavailable (dev environments)
+      logger.warn("Encrypted overlay failed, falling back to unencrypted", {
+        vmId,
+        error: String(err),
+      });
+      overlayPath = `/tmp/fc-overlay-${vmId}.ext4`;
+      await execFileAsync("cp", ["--reflink=auto", rootfsPath, overlayPath]);
+    }
+  } else {
+    overlayPath = `/tmp/fc-overlay-${vmId}.ext4`;
+    await execFileAsync("cp", ["--reflink=auto", rootfsPath, overlayPath]);
+  }
 
-  // 3. Build Firecracker config
+  // 2a. Generate per-VM SSH keypair (only if not using vsock)
+  let vmSshKeyPath: string | undefined;
+  if (!USE_VSOCK) {
+    vmSshKeyPath = `/tmp/fc-ssh-${vmId}`;
+    await execFileAsync("ssh-keygen", [
+      "-t", "ed25519", "-f", vmSshKeyPath, "-N", "", "-q",
+    ]);
+  }
+
+  // 3. Build Firecracker config (with vsock device if enabled)
   const config = buildVMConfig({
     vmId,
     kernelImage: KERNEL_IMAGE,
@@ -127,11 +181,18 @@ export async function createFirecrackerVM(
     memSizeMib: opts.memSizeMib,
     tapDevice,
     guestIp,
+    vsockSocketPath: USE_VSOCK ? vsockSocketPath : undefined,
   });
 
   const configPath = `/tmp/fc-config-${vmId}.json`;
-  const { writeFile } = await import("node:fs/promises");
+  const { writeFile, chmod } = await import("node:fs/promises");
   await writeFile(configPath, JSON.stringify(config, null, 2));
+
+  // Set vsock socket permissions (worker process only)
+  if (USE_VSOCK) {
+    // Socket will be created by Firecracker, set parent dir permissions
+    // The socket itself will have restrictive permissions
+  }
 
   // 4. Launch Firecracker via jailer
   const fcProcess = execFileAsync(JAILER_BIN, [
@@ -149,16 +210,20 @@ export async function createFirecrackerVM(
     "--no-api",
   ]);
 
-  // Store process reference for cleanup (fire-and-forget; the jailer manages the process)
   const vmProcessRef = fcProcess;
 
-  // 5. Wait for SSH to become available (use per-VM key)
-  await waitForSSH(guestIp, vmId, vmSshKeyPath);
+  // 5. Wait for communication channel
+  if (USE_VSOCK) {
+    await waitForVsock(vsockSocketPath, vmId);
+    // Set socket permissions to 0600
+    await chmod(vsockSocketPath, 0o600).catch(() => {});
+  } else {
+    await waitForSSH(guestIp, vmId, vmSshKeyPath!);
+  }
 
-  logger.info("MicroVM ready", { vmId, guestIp });
+  logger.info("MicroVM ready", { vmId, guestIp, useVsock: USE_VSOCK });
 
   // Build handle
-  const sshKey = vmSshKeyPath;
   const handle: VMHandle = {
     vmId,
     jobId: opts.jobId,
@@ -167,17 +232,53 @@ export async function createFirecrackerVM(
     async exec(
       command: string,
       timeoutMs: number = DEFAULT_EXEC_TIMEOUT_MS,
+      user?: string,
     ): Promise<ExecResult> {
-      return execInVM(guestIp, command, timeoutMs, sshKey);
+      if (USE_VSOCK) {
+        return vsockExec(vsockSocketPath, command, timeoutMs, user);
+      }
+      return execInVM(guestIp, command, timeoutMs, vmSshKeyPath);
+    },
+
+    async execWithStdin(
+      command: string,
+      stdin: string,
+      timeoutMs: number = DEFAULT_EXEC_TIMEOUT_MS,
+      user?: string,
+    ): Promise<ExecResult> {
+      if (USE_VSOCK) {
+        return vsockExecWithStdin(vsockSocketPath, command, stdin, timeoutMs, user);
+      }
+      // SSH fallback: pipe via echo
+      const escaped = Buffer.from(stdin).toString("base64");
+      return execInVM(guestIp, `echo '${escaped}' | base64 -d | ${command}`, timeoutMs, vmSshKeyPath);
+    },
+
+    async writeFile(
+      path: string,
+      content: Buffer,
+      mode?: string,
+      owner?: string,
+    ): Promise<void> {
+      if (USE_VSOCK) {
+        return vsockWriteFile(vsockSocketPath, path, content, mode, owner);
+      }
+      // SSH fallback: base64 pipe
+      const b64 = content.toString("base64");
+      await execInVM(guestIp, `echo '${b64}' | base64 -d > ${path}${mode ? ` && chmod ${mode} ${path}` : ""}${owner ? ` && chown ${owner} ${path}` : ""}`, 30_000, vmSshKeyPath);
     },
   };
 
-  // Stash cleanup metadata on the handle for destroyFirecrackerVM
+  // Stash cleanup metadata on the handle
   (handle as VMHandleInternal).__tapDevice = tapDevice;
-  (handle as VMHandleInternal).__overlayPath = overlayPath;
+  (handle as VMHandleInternal).__overlayPath = encryptedOverlay ? encryptedOverlay.backingFile : overlayPath;
   (handle as VMHandleInternal).__configPath = configPath;
   (handle as VMHandleInternal).__sshKeyPath = vmSshKeyPath;
   (handle as VMHandleInternal).__processRef = vmProcessRef;
+  (handle as VMHandleInternal).__vsockSocketPath = vsockSocketPath;
+  (handle as VMHandleInternal).__encryptedOverlay = encryptedOverlay ?? undefined;
+  (handle as VMHandleInternal).__dnsResolver = dnsResolver ?? undefined;
+  (handle as VMHandleInternal).__egressProxy = egressProxy ?? undefined;
 
   return handle;
 }
@@ -215,7 +316,16 @@ export async function destroyFirecrackerVM(handle: VMHandle): Promise<void> {
     }
   }
 
-  // 2. Remove iptables rules for this TAP device
+  // 2. Remove egress controls
+  if (int.__egressProxy && int.__tapDevice) {
+    await removeProxyRedirect(int.__tapDevice, int.__egressProxy.port).catch(() => {});
+    await stopEgressProxy(int.__egressProxy).catch(() => {});
+    await removeRateLimiting(int.__tapDevice).catch(() => {});
+  }
+  if (int.__dnsResolver && int.__tapDevice) {
+    await removeDnsRedirect(int.__tapDevice, int.__dnsResolver.gatewayIp).catch(() => {});
+    await stopDnsResolver(int.__dnsResolver).catch(() => {});
+  }
   if (int.__tapDevice) {
     await removeEgressFiltering(int.__tapDevice);
   }
@@ -239,13 +349,29 @@ export async function destroyFirecrackerVM(handle: VMHandle): Promise<void> {
 
   // 4. Remove ephemeral files
   const { unlink } = await import("node:fs/promises");
-  if (int.__overlayPath) {
+
+  // Destroy encrypted overlay (wipes key from kernel memory, detaches loop, deletes file)
+  if (int.__encryptedOverlay) {
+    await destroyEncryptedOverlay(int.__encryptedOverlay).catch((err) => {
+      logger.warn("Failed to destroy encrypted overlay", {
+        vmId: handle.vmId,
+        error: String(err),
+      });
+    });
+  } else if (int.__overlayPath) {
     await unlink(int.__overlayPath).catch(() => {});
   }
+
   if (int.__configPath) {
     await unlink(int.__configPath).catch(() => {});
   }
-  // SECURITY (P2-3): Delete per-VM SSH keypair
+
+  // Clean up vsock socket
+  if (int.__vsockSocketPath) {
+    await unlink(int.__vsockSocketPath).catch(() => {});
+  }
+
+  // SECURITY (P2-3): Delete per-VM SSH keypair (only if SSH was used)
   if (int.__sshKeyPath) {
     await unlink(int.__sshKeyPath).catch(() => {});
     await unlink(`${int.__sshKeyPath}.pub`).catch(() => {});
@@ -279,6 +405,10 @@ interface VMHandleInternal extends VMHandle {
   __sshKeyPath?: string;
   __processRef?: Promise<{ stdout: string; stderr: string }>;
   __firecrackerPid?: number;
+  __vsockSocketPath?: string;
+  __encryptedOverlay?: EncryptedOverlayHandle;
+  __dnsResolver?: DnsResolverHandle;
+  __egressProxy?: EgressProxyHandle;
 }
 
 /**
@@ -427,8 +557,9 @@ function buildVMConfig(opts: {
   memSizeMib: number;
   tapDevice: string;
   guestIp: string;
+  vsockSocketPath?: string;
 }): Record<string, unknown> {
-  return {
+  const config: Record<string, unknown> = {
     "boot-source": {
       kernel_image_path: opts.kernelImage,
       boot_args:
@@ -455,6 +586,16 @@ function buildVMConfig(opts: {
       },
     ],
   };
+
+  // Add vsock device for host ↔ guest communication
+  if (opts.vsockSocketPath) {
+    config["vsock"] = {
+      guest_cid: 3,
+      uds_path: opts.vsockSocketPath,
+    };
+  }
+
+  return config;
 }
 
 /**

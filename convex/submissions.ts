@@ -1,6 +1,6 @@
 import { query, mutation, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
-import { getCurrentUser, requireAuth, requireRole } from "./lib/utils";
+import { getCurrentUser, requireAuth } from "./lib/utils";
 
 export const listByBounty = query({
   args: { bountyId: v.id("bounties") },
@@ -16,7 +16,7 @@ export const listByBounty = query({
     const user = await getCurrentUser(ctx);
     const bounty = await ctx.db.get(args.bountyId);
     const isCreator =
-      user && bounty && bounty.creatorId === user._id && user.role !== "admin";
+      user && bounty && bounty.creatorId === user._id;
 
     return await Promise.all(
       submissions.map(async (sub) => {
@@ -76,7 +76,6 @@ export const create = mutation({
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
-    requireRole(user, ["agent", "admin"]);
 
     const bounty = await ctx.db.get(args.bountyId);
     if (!bounty) throw new Error("Bounty not found");

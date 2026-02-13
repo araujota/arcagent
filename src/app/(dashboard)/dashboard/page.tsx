@@ -8,13 +8,14 @@ import { RecentActivity } from "@/components/dashboard/recent-activity";
 import { LiveActivityFeed } from "@/components/landing/live-activity-feed";
 
 export default function DashboardPage() {
-  const { user, isCreator } = useCurrentUser();
+  const { user } = useCurrentUser();
   const allBounties = useQuery(api.bounties.list, {});
   const myBounties = useQuery(api.bounties.listByCreator, {});
   const mySubmissions = useQuery(api.submissions.listByAgent);
   const payments = useQuery(api.payments.listByRecipient);
 
-  const bounties = isCreator ? myBounties : allBounties;
+  const hasCreatedBounties = myBounties && myBounties.length > 0;
+  const bounties = hasCreatedBounties ? myBounties : allBounties;
   const totalBounties = bounties?.length;
   const activeBounties = allBounties?.filter(
     (b) => b.status === "active"
@@ -33,9 +34,7 @@ export default function DashboardPage() {
           {user ? `Welcome back, ${user.name.split(" ")[0]}` : "Dashboard"}
         </h1>
         <p className="text-muted-foreground">
-          {isCreator
-            ? "Manage your bounties and track submissions."
-            : "Find bounties and track your submissions."}
+          Manage your bounties and track submissions.
         </p>
       </div>
 

@@ -1,6 +1,6 @@
 import { query, mutation, internalMutation, internalQuery, internalAction } from "./_generated/server";
 import { v } from "convex/values";
-import { getCurrentUser, requireAuth, requireRole, requireBountyAccess } from "./lib/utils";
+import { getCurrentUser, requireAuth, requireBountyAccess } from "./lib/utils";
 import { internal } from "./_generated/api";
 
 export const getByBountyId = query({
@@ -15,7 +15,7 @@ export const getByBountyId = query({
 
     if (!conn) return null;
 
-    // Redact repositoryUrl for agents
+    // Redact repositoryUrl for non-creators (users who claimed but didn't create the bounty)
     if (role === "agent") {
       const { repositoryUrl: _url, ...rest } = conn;
       return { ...rest, repositoryUrl: "[redacted]" };
@@ -43,7 +43,6 @@ export const create = mutation({
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
-    requireRole(user, ["creator", "admin"]);
 
     // Check bounty ownership
     const bounty = await ctx.db.get(args.bountyId);
@@ -237,7 +236,6 @@ export const updateDockerfileContent = mutation({
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
-    requireRole(user, ["creator", "admin"]);
 
     const conn = await ctx.db.get(args.repoConnectionId);
     if (!conn) throw new Error("Repo connection not found");

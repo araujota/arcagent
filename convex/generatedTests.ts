@@ -1,15 +1,28 @@
 import { query, mutation, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
-import { getCurrentUser, requireAuth, requireRole, requireBountyAccess } from "./lib/utils";
+import { getCurrentUser, requireAuth, requireBountyAccess } from "./lib/utils";
 import { Doc } from "./_generated/dataModel";
 
-/** Strip gherkinHidden for agent callers */
-function redactForAgent(
+/**
+ * Redact step definition source code for non-creator callers.
+ * Non-creators receive ALL Gherkin (public + hidden) as their spec, but NEVER
+ * see step definition source code — not even for public scenarios.
+ *
+ * The `relationship` parameter reflects the caller's relationship to the
+ * specific bounty (creator/admin/agent), NOT a global account role.
+ */
+function redactForNonCreator(
   test: Doc<"generatedTests">,
-  role: "creator" | "admin" | "agent"
+  relationship: "creator" | "admin" | "agent"
 ) {
-  if (role === "agent") {
-    const { gherkinHidden: _hidden, llmModel: _model, ...safe } = test;
+  if (relationship !== "creator" && relationship !== "admin") {
+    const {
+      stepDefinitions: _stepDefs,
+      stepDefinitionsPublic: _stepDefsPub,
+      stepDefinitionsHidden: _stepDefsHid,
+      llmModel: _model,
+      ...safe
+    } = test;
     return safe;
   }
   return test;
@@ -27,7 +40,7 @@ export const getByBountyId = query({
       .first();
 
     if (!test) return null;
-    return redactForAgent(test, role);
+    return redactForNonCreator(test, role);
   },
 });
 
@@ -48,7 +61,7 @@ export const getByConversationId = query({
       .first();
 
     if (!test) return null;
-    return redactForAgent(test, role);
+    return redactForNonCreator(test, role);
   },
 });
 
@@ -62,7 +75,7 @@ export const listByBounty = query({
       .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
       .collect();
 
-    return tests.map((t) => redactForAgent(t, role));
+    return tests.map((t) => redactForNonCreator(t, role));
   },
 });
 
@@ -128,15 +141,24 @@ export const updateStepDefinitions = internalMutation({
   args: {
     generatedTestId: v.id("generatedTests"),
     stepDefinitions: v.string(),
+    stepDefinitionsPublic: v.optional(v.string()),
+    stepDefinitionsHidden: v.optional(v.string()),
     testFramework: v.string(),
     testLanguage: v.string(),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.generatedTestId, {
+    const updates: Record<string, unknown> = {
       stepDefinitions: args.stepDefinitions,
       testFramework: args.testFramework,
       testLanguage: args.testLanguage,
-    });
+    };
+    if (args.stepDefinitionsPublic !== undefined) {
+      updates.stepDefinitionsPublic = args.stepDefinitionsPublic;
+    }
+    if (args.stepDefinitionsHidden !== undefined) {
+      updates.stepDefinitionsHidden = args.stepDefinitionsHidden;
+    }
+    await ctx.db.patch(args.generatedTestId, updates);
   },
 });
 
@@ -160,7 +182,6 @@ export const approve = mutation({
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
-    requireRole(user, ["creator", "admin"]);
 
     const test = await ctx.db.get(args.generatedTestId);
     if (!test) throw new Error("Generated test not found");
@@ -181,7 +202,6 @@ export const publish = mutation({
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
-    requireRole(user, ["creator", "admin"]);
 
     const test = await ctx.db.get(args.generatedTestId);
     if (!test) throw new Error("Generated test not found");
@@ -209,7 +229,6 @@ export const updateGherkin = mutation({
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
-    requireRole(user, ["creator", "admin"]);
 
     const test = await ctx.db.get(args.generatedTestId);
     if (!test) throw new Error("Generated test not found");
@@ -242,7 +261,6 @@ export const updateStepDefinitionsPublic = mutation({
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
-    requireRole(user, ["creator", "admin"]);
 
     const test = await ctx.db.get(args.generatedTestId);
     if (!test) throw new Error("Generated test not found");

@@ -16,6 +16,8 @@ export default defineSchema({
     stripeConnectOnboardingComplete: v.optional(v.boolean()),
     isTechnical: v.optional(v.boolean()),
     onboardingComplete: v.optional(v.boolean()),
+    onboardingStep: v.optional(v.number()),
+    hasPaymentMethod: v.optional(v.boolean()),
     gateSettings: v.optional(v.object({
       snykEnabled: v.optional(v.boolean()),
       sonarqubeEnabled: v.optional(v.boolean()),
@@ -55,6 +57,11 @@ export default defineSchema({
         v.literal("refunded")
       )
     ),
+    // ZTACO fields
+    platformFeePercent: v.optional(v.number()),
+    platformFeeCents: v.optional(v.number()),
+    ztacoMode: v.optional(v.boolean()),
+    relevantPaths: v.optional(v.array(v.string())),
   })
     .index("by_status", ["status"])
     .index("by_creatorId", ["creatorId"])
@@ -82,6 +89,7 @@ export default defineSchema({
       v.literal("failed")
     ),
     description: v.optional(v.string()),
+    attemptNumber: v.optional(v.number()),
   })
     .index("by_bountyId", ["bountyId"])
     .index("by_agentId", ["agentId"])
@@ -101,6 +109,7 @@ export default defineSchema({
     completedAt: v.optional(v.number()),
     timeoutSeconds: v.number(),
     errorLog: v.optional(v.string()),
+    feedbackJson: v.optional(v.string()),
   })
     .index("by_submissionId", ["submissionId"])
     .index("by_bountyId", ["bountyId"])
@@ -162,6 +171,8 @@ export default defineSchema({
     transactionId: v.optional(v.string()),
     stripePaymentIntentId: v.optional(v.string()),
     stripeTransferId: v.optional(v.string()),
+    platformFeeCents: v.optional(v.number()),
+    solverAmountCents: v.optional(v.number()),
     createdAt: v.number(),
   })
     .index("by_bountyId", ["bountyId"])
@@ -275,6 +286,8 @@ export default defineSchema({
     gherkinPublic: v.string(),
     gherkinHidden: v.string(),
     stepDefinitions: v.string(),
+    stepDefinitionsPublic: v.optional(v.string()),
+    stepDefinitionsHidden: v.optional(v.string()),
     testFramework: v.string(),
     testLanguage: v.string(),
     status: v.union(

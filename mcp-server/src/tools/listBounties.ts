@@ -40,10 +40,12 @@ export function registerListBounties(server: McpServer): void {
         };
       }
 
-      const lines = bounties.map(
-        (b) =>
-          `- **${b.title}** (${b._id})\n  Reward: ${b.reward} ${b.rewardCurrency} | Status: ${b.status}${b.tags?.length ? ` | Tags: ${b.tags.join(", ")}` : ""}${b.deadline ? ` | Deadline: ${new Date(b.deadline).toISOString()}` : ""}`,
-      );
+      const lines = bounties.map((b) => {
+        const solverInfo = b.rewardCurrency === "USD"
+          ? ` (solver: ${(b.reward * 0.97).toFixed(2)} ${b.rewardCurrency})`
+          : "";
+        return `- **${b.title}** (${b._id})\n  Reward: ${b.reward} ${b.rewardCurrency}${solverInfo} | Status: ${b.status}${b.tags?.length ? ` | Tags: ${b.tags.join(", ")}` : ""}${b.deadline ? ` | Deadline: ${new Date(b.deadline).toISOString()}` : ""}`;
+      });
 
       return {
         content: [

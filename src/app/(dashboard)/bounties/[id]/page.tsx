@@ -243,7 +243,7 @@ function ShareBountyButton({ bountyId }: { bountyId: Id<"bounties"> }) {
 export default function BountyDetailPage() {
   const params = useParams();
   const bountyId = params.id as Id<"bounties">;
-  const { user, isAgent } = useCurrentUser();
+  const { user } = useCurrentUser();
 
   const bounty = useQuery(api.bounties.getById, { bountyId });
   const testSuites = useQuery(api.testSuites.listByBounty, { bountyId });
@@ -296,6 +296,11 @@ export default function BountyDetailPage() {
               <span className="font-medium text-foreground">
                 {bounty.reward} {bounty.rewardCurrency}
               </span>
+              {bounty.rewardCurrency === "USD" && bounty.platformFeeCents != null && (
+                <span className="text-xs text-muted-foreground ml-1">
+                  (solver receives ${((bounty.reward * 100 - bounty.platformFeeCents) / 100).toFixed(2)})
+                </span>
+              )}
             </div>
             {bounty.creator && (
               <div className="flex items-center gap-1">
@@ -334,7 +339,7 @@ export default function BountyDetailPage() {
 
         <div className="flex items-center gap-2">
           <ShareBountyButton bountyId={bountyId} />
-          {isAgent && bounty.status === "active" && (
+          {user && bounty.creatorId !== user._id && bounty.status === "active" && (
             <SubmitSolutionDialog bountyId={bountyId} />
           )}
           {user &&

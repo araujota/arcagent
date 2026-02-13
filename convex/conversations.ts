@@ -1,6 +1,6 @@
 import { query, mutation, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
-import { getCurrentUser, requireAuth, requireRole, requireBountyAccess } from "./lib/utils";
+import { getCurrentUser, requireAuth, requireBountyAccess } from "./lib/utils";
 
 export const getByBountyId = query({
   args: { bountyId: v.id("bounties") },
@@ -42,8 +42,8 @@ export const create = mutation({
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
-    requireRole(user, ["creator", "admin"]);
 
+    // Ownership check: only the bounty creator (or admin) can create conversations
     const bounty = await ctx.db.get(args.bountyId);
     if (!bounty) throw new Error("Bounty not found");
     if (bounty.creatorId !== user._id && user.role !== "admin") {

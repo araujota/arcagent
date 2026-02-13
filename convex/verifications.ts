@@ -2,6 +2,7 @@ import { query, internalMutation, internalAction, internalQuery } from "./_gener
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { getCurrentUser, requireAuth } from "./lib/utils";
+import { calculatePlatformFee, PLATFORM_FEE_RATE } from "./lib/fees";
 
 /**
  * SECURITY (H8/M8): Require that the caller is the bounty creator,
@@ -102,6 +103,7 @@ export const updateResult = internalMutation({
     startedAt: v.optional(v.number()),
     completedAt: v.optional(v.number()),
     errorLog: v.optional(v.string()),
+    feedbackJson: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { verificationId, ...updates } = args;
@@ -186,8 +188,9 @@ export const getFullStatus = internalQuery({
 });
 
 /**
- * Agent-facing query that filters hidden test details.
- * Public steps: full detail. Hidden steps: aggregate counts only.
+ * Agent-facing query that returns verbose test runner output for ALL scenarios
+ * (both public and hidden). Agents see full stdout/stderr, error messages, and
+ * stack traces. The only thing never exposed is step definition source code.
  */
 export const getAgentStatus = internalQuery({
   args: { verificationId: v.id("verifications") },
@@ -216,28 +219,16 @@ export const getAgentStatus = internalQuery({
         .first(),
     ]);
 
-    // Partition steps by visibility (missing visibility treated as public)
-    const publicSteps = steps.filter((s) => s.visibility !== "hidden");
-    const hiddenSteps = steps.filter((s) => s.visibility === "hidden");
-
-    // Full detail for public steps
-    const publicResults = publicSteps.map((s) => ({
+    // Return verbose output for ALL steps (public + hidden)
+    const allSteps = steps.map((s) => ({
       scenarioName: s.scenarioName,
       featureName: s.featureName,
       status: s.status,
       executionTimeMs: s.executionTimeMs,
       output: s.output,
       stepNumber: s.stepNumber,
+      visibility: s.visibility ?? "public",
     }));
-
-    // Aggregate only for hidden steps
-    const hiddenSummary = {
-      total: hiddenSteps.length,
-      passed: hiddenSteps.filter((s) => s.status === "pass").length,
-      failed: hiddenSteps.filter((s) => s.status === "fail").length,
-      errors: hiddenSteps.filter((s) => s.status === "error").length,
-      skipped: hiddenSteps.filter((s) => s.status === "skip").length,
-    };
 
     return {
       ...verification,
@@ -247,8 +238,8 @@ export const getAgentStatus = internalQuery({
         status: g.status,
         issues: g.issues,
       })),
-      publicSteps: publicResults,
-      hiddenTestSummary: hiddenSummary,
+      steps: allSteps,
+      feedbackJson: verification.feedbackJson,
       job: job
         ? {
             status: job.status,
@@ -341,6 +332,29 @@ export const getBySubmissionInternal = internalQuery({
   },
 });
 
+/** Get the latest verification for a bounty (most recently created) */
+export const getLatestByBountyInternal = internalQuery({
+  args: { bountyId: v.id("bounties") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("verifications")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .order("desc")
+      .first();
+  },
+});
+
+/** List all verifications for a bounty (for counting attempts) */
+export const listByBountyInternal = internalQuery({
+  args: { bountyId: v.id("bounties") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("verifications")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .collect();
+  },
+});
+
 /**
  * After verification passes, trigger payout if bounty uses Stripe escrow.
  */
@@ -390,13 +404,20 @@ export const triggerPayoutOnVerificationPass = internalAction({
       );
       if (!submission) throw new Error("Submission not found");
 
-      // Initiate payment record
+      // Calculate fee breakdown for payment record
+      const grossCents = Math.round(bounty.reward * 100);
+      const feeCents = bounty.platformFeeCents ?? Math.round(grossCents * PLATFORM_FEE_RATE);
+      const solverCents = grossCents - feeCents;
+
+      // Initiate payment record with fee breakdown
       const paymentId = await ctx.runMutation(internal.payments.initiate, {
         bountyId: args.bountyId,
         recipientId: submission.agentId,
         amount: bounty.reward,
         currency: bounty.rewardCurrency,
         method: "stripe",
+        platformFeeCents: feeCents,
+        solverAmountCents: solverCents,
       });
 
       // Release escrow

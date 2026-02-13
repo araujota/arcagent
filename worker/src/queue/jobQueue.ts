@@ -34,6 +34,14 @@ export interface VerificationJobData {
     snykEnabled?: boolean;
     sonarqubeEnabled?: boolean;
   };
+  /** Step definitions for public scenarios (injected into VM at test time). */
+  stepDefinitionsPublic?: string;
+  /** Step definitions for hidden scenarios (injected into VM at test time). */
+  stepDefinitionsHidden?: string;
+  /** ZTACO mode: all gates block (no fail-fast). */
+  ztacoMode?: boolean;
+  /** Attempt number for this submission (1-indexed). */
+  attemptNumber?: number;
 }
 
 /** Possible outcome of a single gate. */
@@ -71,6 +79,8 @@ export interface VerificationResult {
   totalDurationMs: number;
   /** Aggregated BDD scenario steps with visibility tagging. */
   steps?: StepResult[];
+  /** Structured feedback JSON for iterative improvement. */
+  feedbackJson?: string;
 }
 
 // ---------------------------------------------------------------------------

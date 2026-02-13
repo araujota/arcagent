@@ -72,7 +72,10 @@ export async function runGates(
   const results: GateResult[] = [];
   const vmConfig = getVMConfig(language);
   let pipelineAborted = false;
+  const ztacoMode = job.data.ztacoMode ?? false;
   const testSuites: TestSuiteInput[] | undefined = job.data.testSuites;
+  const stepDefinitionsPublic: string | undefined = job.data.stepDefinitionsPublic;
+  const stepDefinitionsHidden: string | undefined = job.data.stepDefinitionsHidden;
 
   // Progress spans from 25 (after repo clone) to 95 (before result posting).
   // Distribute evenly across gates.
@@ -122,9 +125,9 @@ export async function runGates(
     });
 
     try {
-      // Test gate receives testSuites for visibility-tagged BDD execution
+      // Test gate receives testSuites + step definitions for visibility-tagged BDD execution
       const result = gate.name === "test"
-        ? await runTestGate(vm, language, vmConfig.defaultGateTimeoutMs, diff, testSuites)
+        ? await runTestGate(vm, language, vmConfig.defaultGateTimeoutMs, diff, testSuites, stepDefinitionsPublic, stepDefinitionsHidden)
         : await gate.fn(vm, language, vmConfig.defaultGateTimeoutMs, diff);
       results.push(result);
 
@@ -135,8 +138,9 @@ export async function runGates(
         durationMs: result.durationMs,
       });
 
-      // Check fail-fast
+      // Check fail-fast (disabled in ZTACO mode — agent sees ALL issues at once)
       if (
+        !ztacoMode &&
         gate.failFast !== false &&
         (result.status === "fail" || result.status === "error")
       ) {
@@ -160,7 +164,7 @@ export async function runGates(
         summary: `Unexpected error: ${error.message}`,
       });
 
-      if (gate.failFast !== false) {
+      if (!ztacoMode && gate.failFast !== false) {
         pipelineAborted = true;
       }
     }

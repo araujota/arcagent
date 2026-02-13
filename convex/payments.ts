@@ -55,10 +55,18 @@ export const initiate = internalMutation({
     amount: v.number(),
     currency: v.string(),
     method: v.union(v.literal("stripe"), v.literal("web3")),
+    platformFeeCents: v.optional(v.number()),
+    solverAmountCents: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("payments", {
-      ...args,
+      bountyId: args.bountyId,
+      recipientId: args.recipientId,
+      amount: args.amount,
+      currency: args.currency,
+      method: args.method,
+      platformFeeCents: args.platformFeeCents,
+      solverAmountCents: args.solverAmountCents,
       status: "pending",
       createdAt: Date.now(),
     });

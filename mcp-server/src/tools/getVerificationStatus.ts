@@ -9,7 +9,7 @@ export function registerGetVerificationStatus(server: McpServer): void {
   registerTool(
     server,
     "get_verification_status",
-    "Check the progress and results of a verification. Shows gate results (build, lint, typecheck, security, sonarqube, tests), public test step outcomes, hidden test summary (pass/fail counts only), and overall status.",
+    "Check verification progress and results. Shows gate results (build, lint, typecheck, security, tests), verbose test output for ALL scenarios (public + hidden), full lint/type/security diagnostics, and structured feedback with prioritized action items.",
     {
       verificationId: z.string().optional().describe("The verification ID (from submit_solution)"),
       submissionId: z.string().optional().describe("The submission ID (alternative to verificationId)"),
@@ -50,38 +50,57 @@ export function registerGetVerificationStatus(server: McpServer): void {
           for (const g of v.gates) {
             const statusLabel = g.status === "passed" ? "PASS" : g.status === "failed" ? "FAIL" : "WARN";
             text += `| ${g.gateType} | ${statusLabel} | ${g.tool} |\n`;
-          }
-        }
-
-        // Public test failures (full detail)
-        if (v.publicSteps.length > 0) {
-          const passed = v.publicSteps.filter((s) => s.status === "pass").length;
-          const failed = v.publicSteps.filter((s) => s.status === "fail").length;
-          text += `\n## Public Test Results (${v.publicSteps.length} scenarios)\n`;
-          text += `**Passed:** ${passed} | **Failed:** ${failed}\n\n`;
-
-          const publicFailures = v.publicSteps.filter((s) => s.status === "fail" || s.status === "error");
-          if (publicFailures.length > 0) {
-            text += `### Public Test Failures\n\n`;
-            for (const s of publicFailures) {
-              text += `- **${s.featureName} > ${s.scenarioName}** - ${s.status.toUpperCase()}\n`;
-              if (s.output) text += `  \`\`\`\n  ${s.output.slice(0, 500)}\n  \`\`\`\n`;
+            // Show full gate issues (lint violations, type errors, security findings)
+            if (g.issues && g.issues.length > 0) {
+              text += `\n**${g.gateType} issues:**\n`;
+              for (const issue of g.issues.slice(0, 50)) {
+                text += `- ${issue}\n`;
+              }
+              if (g.issues.length > 50) {
+                text += `- ... and ${g.issues.length - 50} more\n`;
+              }
+              text += `\n`;
             }
           }
         }
 
-        // Hidden test summary (counts only — no scenario names or output)
-        const hs = v.hiddenTestSummary;
-        if (hs.total > 0) {
-          text += `\n### Hidden Tests\n`;
-          text += `${hs.passed}/${hs.total} hidden scenarios passed.`;
-          if (hs.failed > 0) text += ` ${hs.failed} failed.`;
-          if (hs.errors > 0) text += ` ${hs.errors} errored.`;
-          text += `\n> Hidden test details are not shown. Fix issues identified in public tests and CI gates — hidden tests validate the same requirements from different angles.\n`;
+        // ALL test results with verbose output (public + hidden)
+        const steps = v.steps ?? [];
+        if (steps.length > 0) {
+          const passed = steps.filter((s: { status: string }) => s.status === "pass").length;
+          const failed = steps.filter((s: { status: string }) => s.status === "fail").length;
+          text += `\n## Test Results (${steps.length} scenarios)\n`;
+          text += `**Passed:** ${passed} | **Failed:** ${failed}\n\n`;
+
+          const failures = steps.filter((s: { status: string }) => s.status === "fail" || s.status === "error");
+          if (failures.length > 0) {
+            text += `### Failed Scenarios\n\n`;
+            for (const s of failures) {
+              text += `- **${s.featureName} > ${s.scenarioName}** [${s.visibility}] - ${s.status.toUpperCase()}\n`;
+              if (s.output) text += `  \`\`\`\n${s.output}\n  \`\`\`\n`;
+            }
+          }
+        }
+
+        // Structured feedback with prioritized action items
+        if (v.feedbackJson) {
+          try {
+            const feedback = JSON.parse(v.feedbackJson);
+            text += `\n## Structured Feedback\n\n`;
+            text += `**Attempt:** ${feedback.attemptNumber ?? "?"} | **Remaining:** ${feedback.attemptsRemaining ?? "?"}\n\n`;
+            if (feedback.actionItems && feedback.actionItems.length > 0) {
+              text += `### Action Items (prioritized)\n\n`;
+              for (let i = 0; i < feedback.actionItems.length; i++) {
+                text += `${i + 1}. ${feedback.actionItems[i]}\n`;
+              }
+            }
+          } catch {
+            // feedbackJson parse failed — skip
+          }
         }
 
         if (v.result) text += `\n## Result\n${v.result}\n`;
-        if (v.errorLog) text += `\n## Error Log\n\`\`\`\n${v.errorLog.slice(0, 1000)}\n\`\`\`\n`;
+        if (v.errorLog) text += `\n## Error Log\n\`\`\`\n${v.errorLog.slice(0, 2000)}\n\`\`\`\n`;
 
         return { content: [{ type: "text" as const, text }] };
       } catch (err) {

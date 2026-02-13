@@ -5,39 +5,39 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import { useCurrentUser } from "@/hooks/use-current-user";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
+import { Copy, Check, Key, Plus, Trash2, CreditCard, ExternalLink } from "lucide-react";
 
 export default function SettingsPage() {
   const { user, isLoading } = useCurrentUser();
   const updateProfile = useMutation(api.users.updateProfile);
   const payments = useQuery(api.payments.listByRecipient);
+  const apiKeys = useQuery(api.apiKeys.listMyKeys);
+  const generateApiKey = useMutation(api.apiKeys.generateForCurrentUser);
+  const revokeApiKey = useMutation(api.apiKeys.revokeKey);
 
   const [name, setName] = useState("");
-  const [role, setRole] = useState<"creator" | "agent" | "admin">("creator");
   const [walletAddress, setWalletAddress] = useState("");
   const [isTechnical, setIsTechnical] = useState(false);
   const [snykEnabled, setSnykEnabled] = useState(true);
   const [sonarqubeEnabled, setSonarqubeEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [newKeyName, setNewKeyName] = useState("");
+  const [generatedKey, setGeneratedKey] = useState<string | null>(null);
+  const [keyCopied, setKeyCopied] = useState(false);
+  const [generatingKey, setGeneratingKey] = useState(false);
+  const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null);
 
   useEffect(() => {
     if (user) {
       setName(user.name);
-      setRole(user.role);
       setWalletAddress(user.walletAddress ?? "");
       setIsTechnical(user.isTechnical ?? false);
       setSnykEnabled(user.gateSettings?.snykEnabled ?? true);
@@ -50,7 +50,6 @@ export default function SettingsPage() {
     try {
       await updateProfile({
         name: name || undefined,
-        role,
         walletAddress: walletAddress || undefined,
         isTechnical,
         gateSettings: isTechnical
@@ -63,6 +62,48 @@ export default function SettingsPage() {
       console.error(error);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleGenerateKey = async () => {
+    if (!newKeyName.trim()) {
+      toast.error("Please enter a name for the API key");
+      return;
+    }
+    setGeneratingKey(true);
+    try {
+      const result = await generateApiKey({ name: newKeyName.trim() });
+      setGeneratedKey(result.rawKey);
+      setNewKeyName("");
+      toast.success("API key generated");
+    } catch {
+      toast.error("Failed to generate API key");
+    } finally {
+      setGeneratingKey(false);
+    }
+  };
+
+  const handleCopyKey = async () => {
+    if (!generatedKey) return;
+    try {
+      await navigator.clipboard.writeText(generatedKey);
+      setKeyCopied(true);
+      toast.success("API key copied!");
+      setTimeout(() => setKeyCopied(false), 2000);
+    } catch {
+      toast.error("Failed to copy");
+    }
+  };
+
+  const handleRevokeKey = async (apiKeyId: string) => {
+    setRevokingKeyId(apiKeyId);
+    try {
+      await revokeApiKey({ apiKeyId: apiKeyId as never });
+      toast.success("API key revoked");
+    } catch {
+      toast.error("Failed to revoke API key");
+    } finally {
+      setRevokingKeyId(null);
     }
   };
 
@@ -103,22 +144,6 @@ export default function SettingsPage() {
             <Input id="email" value={user?.email ?? ""} disabled />
             <p className="text-xs text-muted-foreground">
               Email is managed by your authentication provider.
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <Label>Role</Label>
-            <Select value={role} onValueChange={(v) => setRole(v as typeof role)}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="creator">Creator</SelectItem>
-                <SelectItem value="agent">Agent</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              Creators post bounties. Agents submit solutions.
             </p>
           </div>
 
@@ -193,6 +218,223 @@ export default function SettingsPage() {
           <Button onClick={handleSave} disabled={saving}>
             {saving ? "Saving..." : "Save Changes"}
           </Button>
+        </CardContent>
+      </Card>
+
+      <Separator />
+
+      {/* Payment Method */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <CreditCard className="h-4 w-4" />
+            Payment Method
+          </CardTitle>
+          <CardDescription>
+            Add or update your payment method for funding bounty escrows.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {user?.hasPaymentMethod ? (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Badge variant="default">Active</Badge>
+                <span className="text-sm text-muted-foreground">
+                  Payment method on file
+                </span>
+              </div>
+              <Button variant="outline" size="sm" disabled>
+                Update Card
+              </Button>
+            </div>
+          ) : (
+            <div className="text-center space-y-3 py-2">
+              <p className="text-sm text-muted-foreground">
+                No payment method on file. Add a card to fund bounties.
+              </p>
+              <Button variant="outline" disabled>
+                <CreditCard className="h-4 w-4 mr-2" />
+                Add Payment Method
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                Stripe Elements integration coming soon.
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Payout Account */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <ExternalLink className="h-4 w-4" />
+            Payout Account
+          </CardTitle>
+          <CardDescription>
+            Set up your Stripe Connect account to receive bounty payouts. A 3% platform fee is deducted.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {user?.stripeConnectOnboardingComplete ? (
+            <div className="flex items-center gap-2">
+              <Badge variant="default">Connected</Badge>
+              <span className="text-sm text-muted-foreground">
+                Stripe Connect account active
+              </span>
+            </div>
+          ) : user?.stripeConnectAccountId ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary">Incomplete</Badge>
+                <span className="text-sm text-muted-foreground">
+                  Stripe onboarding not finished
+                </span>
+              </div>
+              <Button variant="outline" size="sm" disabled>
+                <ExternalLink className="h-4 w-4 mr-2" />
+                Complete Onboarding
+              </Button>
+            </div>
+          ) : (
+            <div className="text-center space-y-3 py-2">
+              <p className="text-sm text-muted-foreground">
+                No payout account connected. Set up Stripe Connect to receive payments.
+              </p>
+              <Button variant="outline" disabled>
+                <ExternalLink className="h-4 w-4 mr-2" />
+                Connect Stripe Account
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                Stripe Connect onboarding coming soon.
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* API Keys */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Key className="h-4 w-4" />
+            API Keys
+          </CardTitle>
+          <CardDescription>
+            Manage API keys for MCP/Claude Desktop integration.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Generate new key */}
+          <div className="flex gap-2">
+            <Input
+              placeholder="Key name (e.g. Claude Desktop)"
+              value={newKeyName}
+              onChange={(e) => setNewKeyName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleGenerateKey()}
+            />
+            <Button
+              onClick={handleGenerateKey}
+              disabled={generatingKey || !newKeyName.trim()}
+              size="sm"
+            >
+              <Plus className="h-4 w-4 mr-1" />
+              {generatingKey ? "Generating..." : "Generate"}
+            </Button>
+          </div>
+
+          {/* Show newly generated key */}
+          {generatedKey && (
+            <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-4 space-y-3">
+              <p className="text-sm font-medium text-yellow-600 dark:text-yellow-400">
+                Copy this key now — it won&apos;t be shown again.
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 rounded bg-muted px-3 py-2 text-sm font-mono break-all">
+                  {generatedKey}
+                </code>
+                <Button variant="outline" size="icon" onClick={handleCopyKey}>
+                  {keyCopied ? (
+                    <Check className="h-4 w-4 text-green-500" />
+                  ) : (
+                    <Copy className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+              <div className="rounded bg-muted p-3">
+                <p className="text-xs font-medium mb-1">MCP Config (claude_desktop_config.json)</p>
+                <pre className="text-xs text-muted-foreground overflow-auto">
+{`{
+  "mcpServers": {
+    "arcagent": {
+      "command": "npx",
+      "args": ["-y", "arcagent-mcp"],
+      "env": {
+        "ARCAGENT_API_KEY": "${generatedKey}"
+      }
+    }
+  }
+}`}
+                </pre>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setGeneratedKey(null)}
+              >
+                Dismiss
+              </Button>
+            </div>
+          )}
+
+          {/* List existing keys */}
+          {apiKeys === undefined ? (
+            <div className="space-y-2">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          ) : apiKeys.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No API keys yet. Generate one to get started.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {apiKeys.map((key) => (
+                <div
+                  key={key._id}
+                  className="flex items-center justify-between py-2 px-3 rounded-lg border"
+                >
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">{key.name}</span>
+                      <Badge
+                        variant={key.status === "active" ? "default" : "secondary"}
+                      >
+                        {key.status}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground font-mono">
+                      {key.keyPrefix}... &middot; Created{" "}
+                      {new Date(key.createdAt).toLocaleDateString()}
+                      {key.lastUsedAt && (
+                        <> &middot; Last used {new Date(key.lastUsedAt).toLocaleDateString()}</>
+                      )}
+                    </p>
+                  </div>
+                  {key.status === "active" && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleRevokeKey(key._id)}
+                      disabled={revokingKeyId === key._id}
+                    >
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 

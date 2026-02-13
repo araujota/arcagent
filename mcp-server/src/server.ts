@@ -18,6 +18,8 @@ import { registerSetupPayoutAccount } from "./tools/setupPayoutAccount";
 import { registerFundBountyEscrow } from "./tools/fundBountyEscrow";
 import { registerCheckNotifications } from "./tools/checkNotifications";
 import { registerCancelBounty } from "./tools/cancelBounty";
+import { registerGetSubmissionFeedback } from "./tools/getSubmissionFeedback";
+import { registerRegisterAccount } from "./tools/registerAccount";
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({
@@ -25,7 +27,8 @@ export function createMcpServer(): McpServer {
     version: "0.1.0",
   });
 
-  // Register all 19 tools
+  // Register all 21 tools
+  registerRegisterAccount(server);
   registerListBounties(server);
   registerGetBountyDetails(server);
   registerGetTestSuites(server);
@@ -37,6 +40,7 @@ export function createMcpServer(): McpServer {
   registerGetRepoAccess(server);
   registerSubmitSolution(server);
   registerGetVerificationStatus(server);
+  registerGetSubmissionFeedback(server);
   registerListMySubmissions(server);
   registerCreateBounty(server);
   registerGetBountyGenerationStatus(server);

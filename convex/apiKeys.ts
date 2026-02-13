@@ -1,5 +1,6 @@
-import { internalMutation, internalQuery } from "./_generated/server";
+import { mutation, query, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
+import { getCurrentUser, requireAuth } from "./lib/utils";
 
 export const create = internalMutation({
   args: {
@@ -71,3 +72,101 @@ export const listByUser = internalQuery({
       .collect();
   },
 });
+
+// ---------------------------------------------------------------------------
+// Web-facing mutations (for settings page / onboarding)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a new API key for the current user.
+ * Returns the raw key (shown once) and stores only the hash.
+ */
+export const generateForCurrentUser = mutation({
+  args: {
+    name: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = requireAuth(await getCurrentUser(ctx));
+
+    // Generate a random API key
+    const rawKey = `arc_${generateRandomString(48)}`;
+    const keyPrefix = rawKey.slice(0, 12);
+
+    // Hash the key with SHA-256
+    const encoder = new TextEncoder();
+    const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(rawKey));
+    const keyHash = Array.from(new Uint8Array(hashBuffer))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+
+    // Default scopes for agents
+    const scopes = [
+      "bounties:read",
+      "bounties:claim",
+      "bounties:submit",
+      "bounties:create",
+      "repos:read",
+    ];
+
+    await ctx.db.insert("apiKeys", {
+      userId: user._id,
+      keyHash,
+      keyPrefix,
+      name: args.name,
+      scopes,
+      status: "active",
+      createdAt: Date.now(),
+    });
+
+    return { rawKey, keyPrefix };
+  },
+});
+
+/**
+ * List the current user's API keys (prefix only, never the raw key).
+ */
+export const listMyKeys = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = requireAuth(await getCurrentUser(ctx));
+
+    const keys = await ctx.db
+      .query("apiKeys")
+      .withIndex("by_userId", (q) => q.eq("userId", user._id))
+      .collect();
+
+    return keys.map((k) => ({
+      _id: k._id,
+      name: k.name,
+      keyPrefix: k.keyPrefix,
+      status: k.status,
+      scopes: k.scopes,
+      createdAt: k.createdAt,
+      lastUsedAt: k.lastUsedAt,
+    }));
+  },
+});
+
+/**
+ * Revoke an API key owned by the current user.
+ */
+export const revokeKey = mutation({
+  args: { apiKeyId: v.id("apiKeys") },
+  handler: async (ctx, args) => {
+    const user = requireAuth(await getCurrentUser(ctx));
+
+    const key = await ctx.db.get(args.apiKeyId);
+    if (!key || key.userId !== user._id) {
+      throw new Error("API key not found");
+    }
+
+    await ctx.db.patch(args.apiKeyId, { status: "revoked" });
+  },
+});
+
+function generateRandomString(length: number): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const array = new Uint8Array(length);
+  crypto.getRandomValues(array);
+  return Array.from(array, (b) => chars[b % chars.length]).join("");
+}

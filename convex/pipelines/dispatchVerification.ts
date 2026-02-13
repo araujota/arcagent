@@ -101,6 +101,14 @@ export const dispatchVerification = internalAction({
           })
         : null;
 
+      // Fetch generated step definitions (for injection into VM at test time)
+      const generatedTests = await ctx.runQuery(
+        internal.generatedTests.getByBountyIdInternal,
+        { bountyId: args.bountyId }
+      );
+      const stepDefinitionsPublic = generatedTests?.stepDefinitionsPublic ?? generatedTests?.stepDefinitions;
+      const stepDefinitionsHidden = generatedTests?.stepDefinitionsHidden;
+
       // SECURITY (H6): Generate per-job HMAC token
       const jobHmac = await generateJobHmac(
         args.verificationId,
@@ -137,6 +145,11 @@ export const dispatchVerification = internalAction({
             snykEnabled: creator?.gateSettings?.snykEnabled ?? true,
             sonarqubeEnabled: creator?.gateSettings?.sonarqubeEnabled ?? true,
           },
+          // Step definitions for VM-only injection (agents never see these)
+          stepDefinitionsPublic: stepDefinitionsPublic ?? undefined,
+          stepDefinitionsHidden: stepDefinitionsHidden ?? undefined,
+          // ZTACO mode: all gates block
+          ztacoMode: bounty?.ztacoMode ?? false,
         }),
       });
 

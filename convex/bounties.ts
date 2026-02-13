@@ -1,6 +1,6 @@
 import { query, mutation, action, internalQuery, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
-import { getCurrentUser, requireAuth, requireRole } from "./lib/utils";
+import { getCurrentUser, requireAuth } from "./lib/utils";
 import { api, internal } from "./_generated/api";
 
 export const list = query({
@@ -34,21 +34,15 @@ export const list = query({
       bounties = await ctx.db.query("bounties").collect();
     }
 
-    // Role-based filtering
+    // Ownership-based filtering: everyone sees their own bounties + public ones
     if (user.role === "admin") {
       // Admins see all
-    } else if (user.role === "creator") {
-      // Creators see their own + active/in_progress bounties
+    } else {
       bounties = bounties.filter(
         (b) =>
           b.creatorId === user._id ||
           b.status === "active" ||
           b.status === "in_progress"
-      );
-    } else {
-      // Agents see only active/in_progress bounties
-      bounties = bounties.filter(
-        (b) => b.status === "active" || b.status === "in_progress"
       );
     }
 
@@ -169,7 +163,6 @@ export const create = mutation({
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
-    requireRole(user, ["creator", "admin"]);
 
     // Input validation
     if (args.reward <= 0) throw new Error("Reward must be positive");
@@ -384,13 +377,18 @@ export const getForMcp = internalQuery({
 
     const creator = await ctx.db.get(bounty.creatorId);
 
-    // Get public test suites only
+    // Get ALL test suites (public + hidden) — agents see all Gherkin as their spec
     const testSuites = await ctx.db
       .query("testSuites")
-      .withIndex("by_bountyId_and_visibility", (q) =>
-        q.eq("bountyId", args.bountyId).eq("visibility", "public")
-      )
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
       .collect();
+
+    // Get test framework/language metadata from generated tests
+    const generatedTest = await ctx.db
+      .query("generatedTests")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .order("desc")
+      .first();
 
     // Get repo map
     const repoMap = await ctx.db
@@ -425,7 +423,10 @@ export const getForMcp = internalQuery({
         title: ts.title,
         version: ts.version,
         gherkinContent: ts.gherkinContent,
+        visibility: ts.visibility,
       })),
+      testFramework: generatedTest?.testFramework ?? null,
+      testLanguage: generatedTest?.testLanguage ?? null,
       repoMap: repoMap
         ? {
             repoMapText: repoMap.repoMapText,
@@ -435,6 +436,8 @@ export const getForMcp = internalQuery({
         : null,
       isClaimed: !!activeClaim,
       claimDurationHours: bounty.claimDurationHours ?? 4,
+      platformFeePercent: bounty.platformFeePercent,
+      relevantPaths: bounty.relevantPaths,
     };
   },
 });

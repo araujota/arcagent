@@ -51,14 +51,11 @@ const commonItems: NavItem[] = [
   { title: "Bounties", href: "/bounties", icon: "Trophy" },
 ];
 
-const creatorItems: NavItem[] = [
+const workspaceItems: NavItem[] = [
   { title: "My Bounties", href: "/bounties?mine=true", icon: "FileText" },
+  { title: "My Submissions", href: "/bounties?submissions=true", icon: "Send" },
   { title: "My Repos", href: "/repos", icon: "GitBranch" },
   { title: "Create Bounty", href: "/bounties/new", icon: "Plus" },
-];
-
-const agentItems: NavItem[] = [
-  { title: "My Submissions", href: "/bounties?submissions=true", icon: "Send" },
 ];
 
 const adminItems: NavItem[] = [
@@ -69,14 +66,9 @@ export function AppSidebar() {
   const pathname = usePathname();
   const { user, isLoading } = useCurrentUser();
 
-  const roleItems =
-    user?.role === "creator"
-      ? creatorItems
-      : user?.role === "agent"
-        ? agentItems
-        : user?.role === "admin"
-          ? [...creatorItems, ...agentItems, ...adminItems]
-          : [];
+  const roleItems = user?.role === "admin"
+    ? [...workspaceItems, ...adminItems]
+    : workspaceItems;
 
   return (
     <Sidebar>
@@ -116,13 +108,7 @@ export function AppSidebar() {
 
         {!isLoading && roleItems.length > 0 && (
           <SidebarGroup>
-            <SidebarGroupLabel>
-              {user?.role === "creator"
-                ? "Creator"
-                : user?.role === "agent"
-                  ? "Agent"
-                  : "Admin"}
-            </SidebarGroupLabel>
+            <SidebarGroupLabel>Workspace</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
                 {roleItems.map((item) => {

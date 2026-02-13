@@ -15,6 +15,7 @@ import { createFirecrackerVM, destroyFirecrackerVM, VMHandle } from "../vm/firec
 import { getVMConfig } from "../vm/vmConfig";
 import { withTimeout } from "../lib/timeout";
 import { postVerificationResult } from "../convex/client";
+import { generateFeedback, VerificationFeedback } from "../lib/feedbackFormatter";
 
 /**
  * Main entry-point invoked by the BullMQ worker for every verification job.
@@ -63,7 +64,7 @@ export async function processVerificationJob(
 
     await job.updateProgress(15);
 
-    // 4. Clone repo inside VM (using sanitized values)
+    // 4. Clone repo inside VM (root phase for setup)
     const safeBaseCommitSha = data.baseCommitSha
       ? sanitizeShellArg(data.baseCommitSha, "commitSha", "baseCommitSha")
       : null;
@@ -71,7 +72,9 @@ export async function processVerificationJob(
       ? `git clone ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`
       : `git clone --depth 1 ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`;
 
+    // Root phase: clone and set ownership to unprivileged agent user
     await vm.exec(cloneCmd);
+    await vm.exec("chown -R agent:agent /workspace 2>/dev/null || true");
 
     await job.updateProgress(20);
 
@@ -98,8 +101,10 @@ export async function processVerificationJob(
 
     await job.updateProgress(95);
 
-    // 7. Compute overall status
-    const overallStatus = computeOverallStatus(gateResults);
+    // 7. Compute overall status (ZTACO mode: ANY non-skipped gate failing means fail)
+    const overallStatus = data.ztacoMode
+      ? computeOverallStatusZtaco(gateResults)
+      : computeOverallStatus(gateResults);
 
     // Collect visibility-tagged steps from gate results (test gate)
     const allSteps: StepResult[] = [];
@@ -109,6 +114,10 @@ export async function processVerificationJob(
       }
     }
 
+    // Generate structured feedback for iterative improvement
+    const attemptNumber = data.attemptNumber ?? 1;
+    const feedback: VerificationFeedback = generateFeedback(gateResults, attemptNumber);
+
     const result: VerificationResult = {
       jobId: data.jobId,
       submissionId: data.submissionId,
@@ -117,6 +126,7 @@ export async function processVerificationJob(
       gates: gateResults,
       totalDurationMs: Date.now() - startTime,
       steps: allSteps.length > 0 ? allSteps : undefined,
+      feedbackJson: JSON.stringify(feedback),
     };
 
     // 8. Report back to Convex
@@ -178,5 +188,18 @@ function computeOverallStatus(
 ): "pass" | "fail" | "error" {
   if (gates.some((g) => g.status === "error")) return "error";
   if (gates.some((g) => g.status === "fail")) return "fail";
+  return "pass";
+}
+
+/**
+ * ZTACO mode: ANY non-skipped gate failing means overall fail.
+ * Advisory gates (lint, typecheck, security, etc.) now block too.
+ */
+function computeOverallStatusZtaco(
+  gates: GateResult[],
+): "pass" | "fail" | "error" {
+  const nonSkipped = gates.filter((g) => g.status !== "skipped");
+  if (nonSkipped.some((g) => g.status === "error")) return "error";
+  if (nonSkipped.some((g) => g.status === "fail")) return "fail";
   return "pass";
 }

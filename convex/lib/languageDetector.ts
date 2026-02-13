@@ -98,6 +98,41 @@ export const BDD_FRAMEWORK_MAP: Record<
     runner: "junit5",
     configFile: "src/test/resources/cucumber.properties",
   },
+  ruby: {
+    framework: "cucumber",
+    runner: "cucumber",
+    configFile: "cucumber.yml",
+  },
+  php: {
+    framework: "behat",
+    runner: "behat",
+    configFile: "behat.yml",
+  },
+  csharp: {
+    framework: "reqnroll",
+    runner: "dotnet test",
+    configFile: "reqnroll.json",
+  },
+  kotlin: {
+    framework: "cucumber-jvm",
+    runner: "gradle test",
+    configFile: "src/test/resources/cucumber.properties",
+  },
+  c: {
+    framework: "ctest-bdd",
+    runner: "ctest",
+    configFile: "CMakeLists.txt",
+  },
+  cpp: {
+    framework: "ctest-bdd",
+    runner: "ctest",
+    configFile: "CMakeLists.txt",
+  },
+  swift: {
+    framework: "xctest-gherkin",
+    runner: "swift test",
+    configFile: "Package.swift",
+  },
 };
 
 // Build commands per language

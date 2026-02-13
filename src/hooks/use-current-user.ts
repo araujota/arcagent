@@ -11,8 +11,6 @@ export function useCurrentUser() {
     user: user ?? null,
     isLoading,
     isAuthenticated: !!user,
-    isCreator: user?.role === "creator",
-    isAgent: user?.role === "agent",
     isAdmin: user?.role === "admin",
     isTechnical: user?.isTechnical ?? false,
     needsOnboarding: user?.onboardingComplete !== true,

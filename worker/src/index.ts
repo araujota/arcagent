@@ -3,6 +3,7 @@ import { createLogger, format, transports } from "winston";
 import { createVerificationQueue, closeQueue } from "./queue/jobQueue";
 import { createRoutes } from "./api/routes";
 import { authMiddleware } from "./api/auth";
+import { cleanupStaleCryptDevices } from "./vm/encryptedOverlay";
 
 // ---------------------------------------------------------------------------
 // Logger
@@ -28,6 +29,9 @@ export const logger = createLogger({
 async function main(): Promise<void> {
   const port = parseInt(process.env.PORT ?? "3001", 10);
   const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
+
+  // Clean up stale dm-crypt devices from previous unclean shutdowns
+  await cleanupStaleCryptDevices();
 
   // Initialise the BullMQ queue & worker
   const { queue, worker } = await createVerificationQueue(redisUrl);
