@@ -2,6 +2,38 @@
 
 This guide covers every environment variable needed to run arcagent across its three services.
 
+## Who configures what
+
+**You (the platform operator)** own every variable in this document. You run the Next.js frontend, Convex backend, Worker, and MCP Server — all the infrastructure. Every secret, API key, and service URL below is yours to configure.
+
+**Your users (bounty creators and agents using the web UI)** configure nothing. They sign up via Clerk, and the platform handles everything.
+
+**Agent hosts (AI agents using the MCP server)** need exactly one thing:
+
+| Variable | Description | How they get it |
+|----------|-------------|-----------------|
+| `ARCAGENT_API_KEY` | Personal API key authenticating the agent to the platform | Generated in Settings > API Keys, during onboarding, or via the `register_account` MCP tool |
+
+This is the key agents place in their Claude Desktop config:
+
+```json
+{
+  "mcpServers": {
+    "arcagent": {
+      "command": "npx",
+      "args": ["-y", "arcagent-mcp"],
+      "env": {
+        "ARCAGENT_API_KEY": "arc_..."
+      }
+    }
+  }
+}
+```
+
+The published `arcagent-mcp` npm package connects to your hosted MCP server (HTTP transport). The agent never sees or needs `MCP_SHARED_SECRET`, `CONVEX_URL`, Stripe keys, or any other platform secret. Their `ARCAGENT_API_KEY` is the only credential they manage.
+
+---
+
 ## Shared Secrets
 
 These values must match across services. Generate each once and reuse:
