@@ -3,7 +3,7 @@ import { z } from "zod";
 import { callConvex } from "../convex/client";
 import { generateApiKey } from "../lib/crypto";
 import { registerTool } from "../lib/toolHelper";
-import { randomUUID } from "crypto";
+import { findOrCreateClerkUser } from "../lib/clerk";
 
 export function registerRegisterAccount(server: McpServer): void {
   registerTool(
@@ -11,7 +11,8 @@ export function registerRegisterAccount(server: McpServer): void {
     "register_account",
     "Create a new arcagent account and get an API key. No authentication required. " +
       "Use this if you don't have an account yet. Returns an API key that you must " +
-      "store securely — it will not be shown again.",
+      "store securely — it will not be shown again. If you already have a web account " +
+      "with the same email, this will link to it.",
     {
       name: z.string().describe("Your display name"),
       email: z.string().describe("Your email address"),
@@ -36,9 +37,18 @@ export function registerRegisterAccount(server: McpServer): void {
         };
       }
 
+      let clerkId: string | undefined;
       try {
+        // Create or find existing Clerk user (unified accounts)
+        const clerkResult = await findOrCreateClerkUser(
+          args.name,
+          args.email,
+          args.githubUsername,
+        );
+        clerkId = clerkResult.clerkId;
+        const isExisting = clerkResult.isExisting;
+
         const { plaintext, hash, prefix } = generateApiKey();
-        const clerkId = `mcp_agent_${randomUUID()}`;
 
         const result = await callConvex<{ userId: string }>(
           "/api/mcp/agents/create",
@@ -68,6 +78,10 @@ export function registerRegisterAccount(server: McpServer): void {
           2,
         );
 
+        const accountNote = isExisting
+          ? "Linked to your existing arcagent account. You can also sign in via the web UI."
+          : "New account created. You can also sign in to the web UI at any time.";
+
         return {
           content: [
             {
@@ -77,6 +91,8 @@ export function registerRegisterAccount(server: McpServer): void {
                 "",
                 `**User ID:** ${result.userId}`,
                 `**API Key:** \`${plaintext}\``,
+                "",
+                accountNote,
                 "",
                 "IMPORTANT: Store this API key securely. It will NOT be shown again.",
                 "",
@@ -95,11 +111,14 @@ export function registerRegisterAccount(server: McpServer): void {
       } catch (err) {
         const message =
           err instanceof Error ? err.message : "Registration failed";
+        const clerkNote = clerkId
+          ? ` (Clerk user was created: ${clerkId}. Contact support if this persists.)`
+          : "";
         return {
           content: [
             {
               type: "text" as const,
-              text: `Error: ${message}`,
+              text: `Error: ${message}${clerkNote}`,
             },
           ],
           isError: true,

@@ -48,6 +48,13 @@ export const getByBountyInternal = internalQuery({
   },
 });
 
+export const getByIdInternal = internalQuery({
+  args: { paymentId: v.id("payments") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.paymentId);
+  },
+});
+
 export const initiate = internalMutation({
   args: {
     bountyId: v.id("bounties"),
@@ -125,6 +132,15 @@ export const processPayment = internalAction({
     method: v.union(v.literal("stripe"), v.literal("web3")),
   },
   handler: async (ctx, args) => {
+    // Guard: only process payments that are pending or failed (retry)
+    const payment = await ctx.runQuery(internal.payments.getByIdInternal, {
+      paymentId: args.paymentId,
+    });
+    if (!payment || (payment.status !== "pending" && payment.status !== "failed")) {
+      console.log(`[payments] Skipping payment ${args.paymentId}: status is ${payment?.status}`);
+      return;
+    }
+
     await ctx.runMutation(internal.payments.updateStatus, {
       paymentId: args.paymentId,
       status: "processing",

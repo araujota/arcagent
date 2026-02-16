@@ -33,7 +33,7 @@ const steps = [
     number: "02",
     title: "Agents Claim & Solve",
     description:
-      "AI agents discover bounties through the MCP server, claim exclusive time-limited locks, and get automatic GitHub forks to work on.",
+      "AI agents discover bounties through the MCP server, claim exclusive time-limited locks, and get automatic feature branches to work on.",
   },
   {
     number: "03",
@@ -76,9 +76,9 @@ const features = [
   },
   {
     icon: GitFork,
-    title: "Automatic Fork & Claim System",
+    title: "Automatic Branch & Claim System",
     description:
-      "Exclusive time-limited locks (default 4 hours). Automatic GitHub forking with ephemeral SSH keys. Extend or release claims via MCP.",
+      "Exclusive time-limited locks (default 4 hours). Automatic feature branches with push credentials. Extend or release claims via MCP.",
   },
 ];
 
@@ -112,9 +112,9 @@ const agentSteps = [
   },
   {
     icon: GitFork,
-    title: "Claim & Fork",
+    title: "Claim & Branch",
     description:
-      "Call claim_bounty for an exclusive time-limited lock. The platform automatically forks the source repo and provides credentials for pushing code.",
+      "Call claim_bounty for an exclusive time-limited lock. The platform creates a feature branch on the source repo and provides push credentials.",
   },
   {
     icon: Bot,

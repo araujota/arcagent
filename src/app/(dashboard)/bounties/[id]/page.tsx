@@ -30,6 +30,7 @@ import {
   Copy,
   DollarSign,
   ExternalLink,
+  RefreshCw,
   Send,
   Share2,
   User,
@@ -52,6 +53,10 @@ import {
 } from "@/components/ui/dialog";
 import { RepoStatusBadge } from "@/components/bounties/repo-status-badge";
 import { RepoMapViewer } from "@/components/bounties/repo-map-viewer";
+import { TierBadge } from "@/components/shared/tier-badge";
+import { StarRating } from "@/components/shared/star-rating";
+import { AgentRatingDialog } from "@/components/bounties/agent-rating-dialog";
+import type { TierLevel } from "@/lib/constants/tiers";
 
 function SubmitSolutionDialog({
   bountyId,
@@ -209,6 +214,73 @@ function CancelBountyDialog({
   );
 }
 
+function PublishDraftButton({
+  bountyId,
+  escrowStatus,
+}: {
+  bountyId: Id<"bounties">;
+  escrowStatus?: string;
+}) {
+  const updateStatus = useMutation(api.bounties.updateStatus);
+  const [publishing, setPublishing] = useState(false);
+
+  const isFunded = escrowStatus === "funded";
+
+  const handlePublish = async () => {
+    setPublishing(true);
+    try {
+      await updateStatus({ bountyId, status: "active" });
+      toast.success("Bounty published!");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to publish bounty"
+      );
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  return (
+    <Button
+      onClick={handlePublish}
+      disabled={publishing || !isFunded}
+      title={!isFunded ? "Fund the escrow before publishing" : undefined}
+    >
+      {publishing ? "Publishing..." : "Publish Bounty"}
+    </Button>
+  );
+}
+
+function RetryIndexingButton({
+  repoConnectionId,
+}: {
+  repoConnectionId: Id<"repoConnections">;
+}) {
+  const retryIndexing = useMutation(api.repoConnections.retryIndexing);
+  const [retrying, setRetrying] = useState(false);
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    try {
+      await retryIndexing({ repoConnectionId });
+      toast.success("Indexing restarted");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to retry indexing"
+      );
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  return (
+    <Button variant="outline" size="sm" onClick={handleRetry} disabled={retrying}>
+      <RefreshCw className={`h-3 w-3 mr-1 ${retrying ? "animate-spin" : ""}`} />
+      {retrying ? "Retrying..." : "Retry"}
+    </Button>
+  );
+}
+
 function ShareBountyButton({ bountyId }: { bountyId: Id<"bounties"> }) {
   const siteUrl = process.env.NEXT_PUBLIC_CONVEX_SITE_URL ?? "";
   const shareUrl = `${siteUrl}/public/bounty?id=${bountyId}`;
@@ -250,6 +322,7 @@ export default function BountyDetailPage() {
   const submissions = useQuery(api.submissions.listByBounty, { bountyId });
   const repoConnection = useQuery(api.repoConnections.getByBountyId, { bountyId });
   const repoMap = useQuery(api.repoMaps.getByBountyId, { bountyId });
+  const existingRating = useQuery(api.agentRatings.getByBounty, { bountyId });
 
   if (bounty === undefined) {
     return (
@@ -289,6 +362,9 @@ export default function BountyDetailPage() {
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold">{bounty.title}</h1>
             <BountyStatusBadge status={bounty.status} />
+            {bounty.requiredTier && (
+              <TierBadge tier={bounty.requiredTier as TierLevel} size="sm" />
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
             <div className="flex items-center gap-1">
@@ -339,6 +415,9 @@ export default function BountyDetailPage() {
 
         <div className="flex items-center gap-2">
           <ShareBountyButton bountyId={bountyId} />
+          {user && bounty.creatorId === user._id && bounty.status === "draft" && (
+            <PublishDraftButton bountyId={bountyId} escrowStatus={bounty.escrowStatus} />
+          )}
           {user && bounty.creatorId !== user._id && bounty.status === "active" && (
             <SubmitSolutionDialog bountyId={bountyId} />
           )}
@@ -354,7 +433,83 @@ export default function BountyDetailPage() {
         </div>
       </div>
 
+      {/* Refund status for cancelled bounties */}
+      {bounty.status === "cancelled" && bounty.escrowStatus && (
+        <Card className="border-blue-200 bg-blue-50/50">
+          <CardContent className="py-4">
+            <div className="flex items-center gap-2 text-sm">
+              <DollarSign className="h-4 w-4 text-blue-600" />
+              {bounty.escrowStatus === "refunded" ? (
+                <span className="text-blue-800">Escrow has been refunded to your payment method.</span>
+              ) : bounty.escrowStatus === "funded" ? (
+                <span className="text-blue-800">Refund is being processed. This typically takes 5-10 business days.</span>
+              ) : (
+                <span className="text-muted-foreground">Escrow status: {bounty.escrowStatus}</span>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Separator />
+
+      {/* Rating prompt for creator on completed bounty */}
+      {user &&
+        bounty.creatorId === user._id &&
+        bounty.status === "completed" &&
+        existingRating === null && (
+          <Card className="border-amber-200 bg-amber-50/50">
+            <CardContent className="py-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium">Rate the agent who solved this bounty</p>
+                  <p className="text-xs text-muted-foreground">
+                    Your rating helps build agent reputation and improves the platform.
+                  </p>
+                </div>
+                <AgentRatingDialog bountyId={bountyId} />
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+      {/* Show existing rating */}
+      {existingRating && "codeQuality" in existingRating && (
+        <Card>
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Agent Rating</p>
+                <div className="flex items-center gap-2">
+                  <StarRating
+                    value={Math.round(
+                      ((existingRating as any).codeQuality +
+                        (existingRating as any).speed +
+                        (existingRating as any).mergedWithoutChanges +
+                        (existingRating as any).communication +
+                        (existingRating as any).testCoverage) /
+                        5
+                    )}
+                    readonly
+                    size="sm"
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    {(
+                      ((existingRating as any).codeQuality +
+                        (existingRating as any).speed +
+                        (existingRating as any).mergedWithoutChanges +
+                        (existingRating as any).communication +
+                        (existingRating as any).testCoverage) /
+                      5
+                    ).toFixed(1)}{" "}
+                    / 5.0
+                  </span>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Tabs */}
       <Tabs defaultValue="details">
@@ -553,10 +708,21 @@ export default function BountyDetailPage() {
                   </Link>
                 )}
 
-                {repoConnection.status === "failed" && repoConnection.errorMessage && (
-                  <p className="text-sm text-destructive">
-                    Error: {repoConnection.errorMessage}
+                {["fetching", "parsing", "indexing"].includes(repoConnection.status) && (
+                  <p className="text-sm text-muted-foreground">
+                    {repoConnection.status === "fetching" && "Fetching repository contents..."}
+                    {repoConnection.status === "parsing" && "Parsing code and extracting symbols..."}
+                    {repoConnection.status === "indexing" && "Indexing files and building dependency graph..."}
                   </p>
+                )}
+
+                {repoConnection.status === "failed" && repoConnection.errorMessage && (
+                  <div className="flex items-center gap-3">
+                    <p className="text-sm text-destructive flex-1">
+                      Error: {repoConnection.errorMessage}
+                    </p>
+                    <RetryIndexingButton repoConnectionId={repoConnection._id} />
+                  </div>
                 )}
               </CardContent>
             </Card>

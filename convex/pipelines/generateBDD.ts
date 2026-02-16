@@ -15,6 +15,7 @@ export const generateBDD = internalAction({
     conversationId: v.id("conversations"),
     description: v.string(),
     repoContext: v.optional(v.string()),
+    existingGherkin: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     try {
@@ -61,11 +62,20 @@ export const generateBDD = internalAction({
         }
       }
 
+      const existingGherkinSection = args.existingGherkin
+        ? `## Existing Test Scenarios
+The repository already has these BDD scenarios. Generate ADDITIONAL scenarios
+that complement these, covering cases they miss. Do NOT duplicate existing scenarios.
+
+${args.existingGherkin}
+`
+        : "";
+
       const systemPrompt = `You are an expert BDD test architect. Generate comprehensive Gherkin feature files for this feature request.
 
 ${repoMapText ? `## Repository Structure\n${repoMapText}\n` : ""}
 ${relevantChunksText ? `## Relevant Code\n${relevantChunksText}\n` : ""}
-
+${existingGherkinSection}
 ## Feature Request
 ${args.description}
 

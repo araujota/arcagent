@@ -123,6 +123,11 @@ export const fetchRepo = internalAction({
         }
       }
 
+      // Detect .feature files for Gherkin import
+      const featureFiles = fileDataBatch
+        .filter((f) => f.filePath.endsWith(".feature"))
+        .map((f) => ({ filePath: f.filePath, content: f.content }));
+
       // Store all file data
       await ctx.runMutation(internal.repoConnections.storeFileData, {
         repoConnectionId: args.repoConnectionId,
@@ -131,6 +136,14 @@ export const fetchRepo = internalAction({
         languages: Array.from(languageSet),
         fileDataJson: JSON.stringify(fileDataBatch),
       });
+
+      // Store detected feature files if any
+      if (featureFiles.length > 0) {
+        await ctx.runMutation(internal.repoConnections.storeDetectedFeatures, {
+          repoConnectionId: args.repoConnectionId,
+          detectedFeatureFiles: featureFiles,
+        });
+      }
 
       // Chain to ensureDockerfile pipeline
       await ctx.scheduler.runAfter(0, internal.pipelines.ensureDockerfile.ensureDockerfile, {

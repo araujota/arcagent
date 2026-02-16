@@ -86,7 +86,7 @@ Set via `npx convex env set VARIABLE_NAME "value"` or in the Convex Dashboard un
 |----------|----------|-------------|---------------|
 | `GITHUB_API_TOKEN` | Yes | Fetches repo contents during indexing (5K req/hr) | GitHub > Settings > Developer settings > Personal access tokens. Scopes: `repo`, `read:org` |
 | `GITHUB_WEBHOOK_SECRET` | No | Verifies GitHub push webhook signatures | GitHub > Repo Settings > Webhooks > Secret. Generate: `openssl rand -hex 32` |
-| `GITHUB_BOT_TOKEN` | No | Creates forks for agents via MCP | GitHub > Settings > Developer settings > Fine-grained PAT. Scopes: `repo`, `admin:org_hook` |
+| `GITHUB_BOT_TOKEN` | No | Creates feature branches and grants push access for agents working on bounties. Must have write access to creator repos. | GitHub > Settings > Developer settings > Fine-grained PAT. Scopes: `repo` |
 
 ### Stripe
 
@@ -167,10 +167,10 @@ Create `mcp-server/.env`.
 |----------|----------|-------------|---------------|
 | `CONVEX_URL` | Yes | Convex deployment URL | Same as `NEXT_PUBLIC_CONVEX_URL` |
 | `MCP_SHARED_SECRET` | Yes | Auth with Convex HTTP endpoints | Must match value set in Convex env |
+| `CLERK_SECRET_KEY` | Yes | Clerk Backend API key for creating unified user accounts during agent registration | Clerk Dashboard > API Keys > Secret key (same value as the frontend `CLERK_SECRET_KEY`) |
 | `MCP_PORT` | No | HTTP server port (default: `3002`) | Only used when `MCP_TRANSPORT=http` |
 | `MCP_TRANSPORT` | No | `"stdio"` (default, for Claude Desktop) or `"http"` (for remote agents) | Set based on deployment mode |
-| `GITHUB_BOT_TOKEN` | No | Creates private forks for agents working on bounties | GitHub > Developer settings > Fine-grained PAT. Scopes: `repo`, `admin:org_hook` |
-| `GITHUB_MIRROR_ORG` | No | GitHub org where agent forks are created | Create an org (e.g. `arcagent-mirrors`), then set the name here |
+| `GITHUB_BOT_TOKEN` | No | Creates feature branches and grants push access for agents working on bounties. Must have write access to creator repos. | GitHub > Developer settings > Fine-grained PAT. Scopes: `repo` |
 
 ---
 
@@ -218,6 +218,7 @@ EOF
 cat > mcp-server/.env <<EOF
 CONVEX_URL=$(grep NEXT_PUBLIC_CONVEX_URL .env.local | cut -d= -f2)
 MCP_SHARED_SECRET=$MCP_SECRET
+CLERK_SECRET_KEY=$(grep CLERK_SECRET_KEY .env.local | cut -d= -f2)
 EOF
 
 # 8. Run all services
@@ -235,3 +236,38 @@ GitHub OAuth (for GitHub sign-up) is configured in the Clerk Dashboard, not in c
 3. Optionally add your GitHub OAuth App credentials for custom branding
 
 The `<SignIn />` and `<SignUp />` components automatically render all enabled social providers.
+
+---
+
+## Troubleshooting
+
+### Common Errors
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `CLERK_JWT_ISSUER_DOMAIN not configured` | Missing Convex env var | `npx convex env set CLERK_JWT_ISSUER_DOMAIN "your-app.clerk.accounts.dev"` |
+| `STRIPE_SECRET_KEY not configured` | Missing Convex env var | `npx convex env set STRIPE_SECRET_KEY "sk_test_..."` |
+| `MCP_SHARED_SECRET not configured` or `Invalid shared secret` | Secret mismatch between MCP server and Convex | Regenerate: `openssl rand -hex 32`, set in both Convex env and `mcp-server/.env` |
+| `WORKER_SHARED_SECRET` / HMAC verification failed | Secret mismatch between worker and Convex | Regenerate: `openssl rand -hex 32`, set in both Convex env and `worker/.env` |
+| `connect ECONNREFUSED 127.0.0.1:6379` | Redis not running | Start Redis: `redis-server` or `brew services start redis` |
+| `Cannot find module 'firecracker'` / Firecracker timeout | Missing Firecracker binary or not on Linux | Firecracker requires a Linux host with KVM. See worker Firecracker env vars above. |
+
+### Validation Checklist
+
+After setup, verify each service starts correctly:
+
+- [ ] **Convex**: `npx convex dev` starts without errors, dashboard accessible at the deployment URL
+- [ ] **Next.js**: `npm run dev:next` starts, `http://localhost:3000` loads the sign-in page
+- [ ] **Worker**: `cd worker && npm run dev` starts, logs "Worker listening on port 3001"
+- [ ] **MCP Server**: `cd mcp-server && npm run dev` starts without errors (stdio mode outputs nothing on success; HTTP mode logs "MCP server listening on port 3002")
+
+### Secret Rotation Procedure
+
+If you need to rotate a shared secret:
+
+1. **Generate** a new secret: `openssl rand -hex 32`
+2. **Update Convex** env: `npx convex env set SECRET_NAME "new-value"`
+3. **Update the service** `.env` file with the same new value
+4. **Restart** the affected service (worker or MCP server)
+
+Note: There is no built-in secret expiry mechanism. Rotate secrets if you suspect a compromise or as part of regular security hygiene.

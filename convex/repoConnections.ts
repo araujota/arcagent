@@ -347,6 +347,68 @@ export const listReady = internalQuery({
   },
 });
 
+/** Store detected .feature files on a repo connection */
+export const storeDetectedFeatures = internalMutation({
+  args: {
+    repoConnectionId: v.id("repoConnections"),
+    detectedFeatureFiles: v.array(v.object({
+      filePath: v.string(),
+      content: v.string(),
+    })),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.repoConnectionId, {
+      detectedFeatureFiles: args.detectedFeatureFiles,
+    });
+  },
+});
+
+/** Get detected .feature files for a bounty (frontend use) */
+export const getDetectedFeatures = query({
+  args: { bountyId: v.id("bounties") },
+  handler: async (ctx, args) => {
+    await requireBountyAccess(ctx, args.bountyId);
+
+    const conn = await ctx.db
+      .query("repoConnections")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .first();
+
+    return conn?.detectedFeatureFiles ?? [];
+  },
+});
+
+/** Retry a failed repo connection indexing */
+export const retryIndexing = mutation({
+  args: { repoConnectionId: v.id("repoConnections") },
+  handler: async (ctx, args) => {
+    const user = requireAuth(await getCurrentUser(ctx));
+    const conn = await ctx.db.get(args.repoConnectionId);
+    if (!conn) throw new Error("Repo connection not found");
+
+    const bounty = await ctx.db.get(conn.bountyId);
+    if (!bounty) throw new Error("Bounty not found");
+    if (bounty.creatorId !== user._id && user.role !== "admin") {
+      throw new Error("Unauthorized");
+    }
+
+    if (conn.status !== "failed") {
+      throw new Error("Can only retry failed connections");
+    }
+
+    await ctx.db.patch(args.repoConnectionId, {
+      status: "pending",
+      errorMessage: undefined,
+    });
+
+    await ctx.scheduler.runAfter(0, internal.pipelines.fetchRepo.fetchRepo, {
+      repoConnectionId: args.repoConnectionId,
+      bountyId: conn.bountyId,
+      repositoryUrl: conn.repositoryUrl,
+    });
+  },
+});
+
 /** Store webhook ID on a repo connection */
 export const updateWebhookId = internalMutation({
   args: {

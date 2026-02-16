@@ -36,6 +36,22 @@ interface VerifyRequestBody {
     snykEnabled?: boolean;
     sonarqubeEnabled?: boolean;
   };
+  /** Diff patch to apply instead of checking out a specific commit (workspace flow). */
+  diffPatch?: string;
+  /** Source workspace ID (for tracking). */
+  sourceWorkspaceId?: string;
+  /** Per-job HMAC token for result verification. */
+  jobHmac?: string;
+  /** Step definitions for public scenarios. */
+  stepDefinitionsPublic?: string;
+  /** Step definitions for hidden scenarios. */
+  stepDefinitionsHidden?: string;
+  /** ZTACO mode: all gates block. */
+  ztacoMode?: boolean;
+  /** Convex-generated verification ID. */
+  verificationId?: string;
+  /** Convex-generated job ID. */
+  jobId?: string;
 }
 
 /**
@@ -83,6 +99,11 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
         convexUrl: process.env.CONVEX_URL,
         testSuites: body.testSuites,
         gateSettings: body.gateSettings,
+        diffPatch: body.diffPatch,
+        sourceWorkspaceId: body.sourceWorkspaceId,
+        ztacoMode: body.ztacoMode,
+        stepDefinitionsPublic: body.stepDefinitionsPublic,
+        stepDefinitionsHidden: body.stepDefinitionsHidden,
       };
 
       await queue.add("verify", jobData, {

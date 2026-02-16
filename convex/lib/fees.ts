@@ -9,6 +9,12 @@
 /** Platform fee rate as a fraction (3%). */
 export const PLATFORM_FEE_RATE = 0.03;
 
+/** Minimum bounty reward in dollars. */
+export const MIN_BOUNTY_REWARD = 50;
+
+/** Minimum bounty reward in dollars for S-Tier bounties. */
+export const MIN_S_TIER_BOUNTY_REWARD = 150;
+
 /**
  * Calculate the platform fee and solver payout for a given reward amount.
  *

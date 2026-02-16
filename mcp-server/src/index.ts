@@ -7,6 +7,8 @@ import { generateApiKey } from "./lib/crypto";
 import { validateApiKey, extractApiKey } from "./auth/apiKeyAuth";
 import { checkRateLimit, startCleanupInterval } from "./lib/rateLimit";
 import { runWithAuth } from "./lib/context";
+import { findOrCreateClerkUser } from "./lib/clerk";
+import { initWorkerClient } from "./worker/client";
 import { randomUUID } from "crypto";
 
 // ---------------------------------------------------------------------------
@@ -17,6 +19,7 @@ const CONVEX_URL = process.env.CONVEX_URL;
 const MCP_SHARED_SECRET = process.env.MCP_SHARED_SECRET;
 const MCP_PORT = parseInt(process.env.MCP_PORT || "3002", 10);
 const TRANSPORT = process.env.MCP_TRANSPORT || "stdio";
+const WORKER_SHARED_SECRET = process.env.WORKER_SHARED_SECRET;
 
 if (!CONVEX_URL) {
   console.error("CONVEX_URL is required");
@@ -28,8 +31,21 @@ if (!MCP_SHARED_SECRET) {
   process.exit(1);
 }
 
+if (!WORKER_SHARED_SECRET) {
+  console.warn("[MCP] WORKER_SHARED_SECRET not set — workspace tools will be unavailable");
+}
+
+if (!process.env.CLERK_SECRET_KEY) {
+  console.warn("[MCP] CLERK_SECRET_KEY not set — agent registration will be unavailable");
+}
+
 // Initialize Convex HTTP client
 initConvexClient(CONVEX_URL, MCP_SHARED_SECRET);
+
+// Initialize worker client for direct workspace operations
+if (WORKER_SHARED_SECRET) {
+  initWorkerClient(WORKER_SHARED_SECRET);
+}
 
 // ---------------------------------------------------------------------------
 // Start server based on transport mode
@@ -67,7 +83,7 @@ async function startHttp() {
     res.json({ status: "ok", service: "arcagent-mcp-server" });
   });
 
-  // Agent self-registration endpoint
+  // Agent self-registration endpoint (creates real Clerk user for unified accounts)
   app.post("/api/mcp/register", async (req, res) => {
     try {
       const { name, email, githubUsername } = req.body as {
@@ -81,11 +97,17 @@ async function startHttp() {
         return;
       }
 
+      // Create or find existing Clerk user (unified accounts)
+      const { clerkId, isExisting } = await findOrCreateClerkUser(
+        name,
+        email,
+        githubUsername,
+      );
+
       // Generate API key
       const { plaintext, hash, prefix } = generateApiKey();
-      const clerkId = `mcp_agent_${randomUUID()}`;
 
-      // Create agent in Convex
+      // Create or link agent in Convex
       const result = await callConvex<{ userId: string }>(
         "/api/mcp/agents/create",
         {
@@ -102,6 +124,7 @@ async function startHttp() {
         userId: result.userId,
         apiKey: plaintext,
         keyPrefix: prefix,
+        isExistingAccount: isExisting,
         message:
           "Store this API key securely. It will not be shown again.",
       });
@@ -124,7 +147,14 @@ async function startHttp() {
       return;
     }
 
-    const user = await validateApiKey(apiKey);
+    let user;
+    try {
+      user = await validateApiKey(apiKey);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Invalid API key";
+      res.status(403).json({ error: message });
+      return;
+    }
     if (!user) {
       res.status(403).json({ error: "Invalid API key" });
       return;

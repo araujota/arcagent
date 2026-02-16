@@ -72,15 +72,20 @@ export function registerCheckNotifications(server: McpServer): void {
 
       // Auto-mark as read
       const notificationIds = notifications.map((n) => n._id);
-      await callConvex("/api/mcp/notifications/mark-read", {
-        notificationIds,
-      });
+      let markReadNote = "_(All marked as read)_";
+      try {
+        await callConvex("/api/mcp/notifications/mark-read", {
+          notificationIds,
+        });
+      } catch {
+        markReadNote = "_(Warning: could not mark notifications as read. They may appear again.)_";
+      }
 
       return {
         content: [
           {
             type: "text" as const,
-            text: `${notifications.length} new notification(s):\n\n${lines.join("\n\n")}\n\n_(All marked as read)_`,
+            text: `${notifications.length} new notification(s):\n\n${lines.join("\n\n")}\n\n${markReadNote}`,
           },
         ],
       };

@@ -42,8 +42,14 @@ RUN ssh-keygen -A \
     && echo "UseDNS no" >> /etc/ssh/sshd_config \
     && echo "MaxSessions 10" >> /etc/ssh/sshd_config
 
-# Create workspace directory
+# Create workspace directory and agent user (uid 1000)
 RUN mkdir -p /workspace && chmod 777 /workspace
+RUN adduser -D -u 1000 -h /home/agent -s /bin/bash agent \
+    && echo "agent ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# Install vsock-agent binary for host ↔ guest communication
+COPY vsock-agent /usr/local/bin/vsock-agent
+RUN chmod 755 /usr/local/bin/vsock-agent
 
 # Configure networking
 RUN echo "nameserver 8.8.8.8" > /etc/resolv.conf \
@@ -61,6 +67,9 @@ set -e
 if [ -f /root/.ssh/authorized_keys ]; then
     chmod 600 /root/.ssh/authorized_keys
 fi
+
+# Start vsock agent for host ↔ guest communication
+/usr/local/bin/vsock-agent &
 
 # Keep the init process alive
 exec sleep infinity

@@ -3,16 +3,19 @@ import { z } from "zod";
 import { callConvex } from "../convex/client";
 import { registerTool } from "../lib/toolHelper";
 import { getAuthUser, requireScope } from "../lib/context";
+import { callWorker } from "../worker/client";
+import { getWorkspaceForAgent, invalidateWorkspaceCache } from "../workspace/cache";
 
 export function registerExtendClaim(server: McpServer): void {
   registerTool(
     server,
     "extend_claim",
-    "Extend the expiration of your active bounty claim by another claim duration window.",
+    "Extend the expiration of your active bounty claim and workspace by another claim duration window.",
     {
       claimId: z.string().describe("The claim ID to extend"),
+      bountyId: z.string().optional().describe("The bounty ID (used to extend workspace TTL)"),
     },
-    async (args: { claimId: string }) => {
+    async (args: { claimId: string; bountyId?: string }) => {
       // SECURITY (H4): Enforce scope
       requireScope("bounties:claim");
       // SECURITY (C1): Resolve agentId from auth context
@@ -30,6 +33,28 @@ export function registerExtendClaim(server: McpServer): void {
           "/api/mcp/claims/extend",
           { claimId: args.claimId, agentId },
         );
+
+        // Also extend workspace TTL if bountyId provided
+        if (args.bountyId) {
+          try {
+            const ws = await getWorkspaceForAgent(agentId, args.bountyId);
+            if (ws.found && ws.status === "ready") {
+              await callWorker(ws.workerHost, "/api/workspace/extend-ttl", {
+                workspaceId: ws.workspaceId,
+                newExpiresAt: result.expiresAt,
+              });
+              // Update Convex record
+              await callConvex("/api/mcp/workspace/update-status", {
+                workspaceId: ws.workspaceId,
+                status: "ready",
+                expiresAt: result.expiresAt,
+              });
+              invalidateWorkspaceCache(agentId, args.bountyId);
+            }
+          } catch {
+            // Workspace TTL extension is best-effort — claim extension already succeeded
+          }
+        }
 
         return {
           content: [

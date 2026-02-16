@@ -346,6 +346,7 @@ export function isSourceFile(path: string): boolean {
     ".html", ".css", ".scss", ".less",
     ".md", ".mdx",
     ".vue", ".svelte",
+    ".feature",
     "Dockerfile", "Makefile", "CMakeLists.txt",
   ];
 

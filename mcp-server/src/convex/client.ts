@@ -36,10 +36,21 @@ export async function callConvex<T = unknown>(
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(
-        `Convex HTTP ${response.status}: ${text.slice(0, 200)}`
-      );
+      const rawText = await response.text().catch(() => "");
+      // Try to extract a structured error message from Convex JSON responses
+      let errorMessage: string;
+      try {
+        const parsed = JSON.parse(rawText);
+        errorMessage = parsed.message || parsed.error || rawText.slice(0, 200);
+      } catch {
+        // Non-JSON response (e.g. HTML error page from 502/503)
+        if (response.status === 401 || response.status === 403) {
+          errorMessage = "Authentication failed. Check your API key.";
+        } else {
+          errorMessage = `Server error (${response.status}). Please retry.`;
+        }
+      }
+      throw new Error(errorMessage);
     }
 
     return (await response.json()) as T;

@@ -4,6 +4,8 @@ import { createVerificationQueue, closeQueue } from "./queue/jobQueue";
 import { createRoutes } from "./api/routes";
 import { authMiddleware } from "./api/auth";
 import { cleanupStaleCryptDevices } from "./vm/encryptedOverlay";
+import { createWorkspaceRoutes } from "./workspace/routes";
+import { destroyAllSessions, startIdleChecker } from "./workspace/sessionManager";
 
 // ---------------------------------------------------------------------------
 // Logger
@@ -42,7 +44,8 @@ async function main(): Promise<void> {
 
   // Express app
   const app = express();
-  app.use(express.json({ limit: "1mb" }));
+  // 12 MB limit to accommodate diff patches (up to 10 MiB) with overhead
+  app.use(express.json({ limit: "12mb" }));
 
   // Health endpoint is unauthenticated
   app.get("/api/health", (_req, res) => {
@@ -56,6 +59,13 @@ async function main(): Promise<void> {
   const routes = createRoutes(queue);
   app.use("/api", routes);
 
+  // Mount workspace routes (dev VM lifecycle)
+  const workspaceRoutes = createWorkspaceRoutes();
+  app.use("/api", workspaceRoutes);
+
+  // Start idle workspace checker
+  startIdleChecker();
+
   const server = app.listen(port, () => {
     logger.info(`Worker API server listening on port ${port}`);
   });
@@ -64,6 +74,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`Received ${signal} – shutting down gracefully`);
     server.close();
+    await destroyAllSessions();
     await worker.close();
     await closeQueue(queue);
     process.exit(0);

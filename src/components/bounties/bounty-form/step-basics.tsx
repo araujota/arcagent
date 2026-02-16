@@ -10,12 +10,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PmImportDialog } from "@/components/bounties/pm-import-dialog";
+import { Button } from "@/components/ui/button";
+import { Import } from "lucide-react";
+
+// Must match PLATFORM_FEE_RATE in convex/lib/fees.ts
+const PLATFORM_FEE_RATE = 0.03;
 
 export interface BasicsData {
   title: string;
   description: string;
   reward: number;
   rewardCurrency: string;
+  pmIssueKey?: string;
+  pmProvider?: "jira" | "linear" | "asana" | "monday";
 }
 
 interface StepBasicsProps {
@@ -40,7 +48,25 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="description">Description</Label>
+        <div className="flex items-center justify-between">
+          <Label htmlFor="description">Description</Label>
+          <PmImportDialog
+            onImport={(imported) => {
+              onChange({
+                ...data,
+                title: imported.title || data.title,
+                description: imported.description || data.description,
+                pmIssueKey: imported.pmIssueKey,
+                pmProvider: imported.pmProvider,
+              });
+            }}
+          >
+            <Button variant="ghost" size="sm" className="text-xs">
+              <Import className="h-3.5 w-3.5 mr-1" />
+              Import from Project Tool
+            </Button>
+          </PmImportDialog>
+        </div>
         <Textarea
           id="description"
           placeholder="Describe the task requirements, constraints, and expected deliverables..."
@@ -51,6 +77,11 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
         <p className="text-sm text-muted-foreground">
           Describe the requirements, constraints, and expected behavior. This is the primary context agents use to understand the task. The more detail you provide, the better the solutions.
         </p>
+        {data.pmIssueKey && (
+          <p className="text-xs text-muted-foreground">
+            Imported from {data.pmProvider}: {data.pmIssueKey}
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -59,7 +90,7 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
           <Input
             id="reward"
             type="number"
-            min={0}
+            min={50}
             step={0.01}
             placeholder="500"
             value={data.reward || ""}
@@ -68,7 +99,7 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
             }
           />
           <p className="text-sm text-muted-foreground">
-            The amount held in escrow and paid to the solving agent on verified success. Higher rewards attract faster solutions.
+            Minimum $50. Higher rewards attract faster solutions.
           </p>
           {data.reward > 0 && data.rewardCurrency === "USD" && (
             <div className="rounded-md bg-muted px-3 py-2 text-sm space-y-1">
@@ -77,12 +108,12 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
                 <span>${data.reward.toFixed(2)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Platform fee (3%)</span>
-                <span>-${(data.reward * 0.03).toFixed(2)}</span>
+                <span className="text-muted-foreground">Platform fee ({PLATFORM_FEE_RATE * 100}%)</span>
+                <span>-${(data.reward * PLATFORM_FEE_RATE).toFixed(2)}</span>
               </div>
               <div className="flex justify-between font-medium border-t pt-1">
                 <span>Solver receives</span>
-                <span>${(data.reward * 0.97).toFixed(2)}</span>
+                <span>${(data.reward * (1 - PLATFORM_FEE_RATE)).toFixed(2)}</span>
               </div>
             </div>
           )}
@@ -98,8 +129,8 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="USD">USD</SelectItem>
-              <SelectItem value="ETH">ETH</SelectItem>
-              <SelectItem value="USDC">USDC</SelectItem>
+              <SelectItem value="ETH" disabled>ETH (Coming Soon)</SelectItem>
+              <SelectItem value="USDC" disabled>USDC (Coming Soon)</SelectItem>
             </SelectContent>
           </Select>
           <p className="text-sm text-muted-foreground">

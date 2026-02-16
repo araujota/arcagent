@@ -8,16 +8,19 @@ export function registerCreateBounty(server: McpServer): void {
   registerTool(
     server,
     "create_bounty",
-    "Create a new bounty with NL description, optional GitHub repo URL, and reward. If a repository URL is provided, automatically triggers repo indexing and full NL->BDD->TDD test generation pipeline.",
+    "Create a new bounty with NL description, optional GitHub repo URL, and reward. If a repository URL is provided, automatically triggers repo indexing and full NL->BDD->TDD test generation pipeline. Requires tosAccepted: true.",
     {
       title: z.string().describe("Bounty title"),
       description: z.string().describe("Natural language description of what needs to be built/fixed"),
       reward: z.string().describe("Reward amount (numeric string, e.g. '100')"),
       rewardCurrency: z.string().describe("Currency code (e.g. 'USD', 'ETH')"),
       paymentMethod: z.enum(["stripe", "web3"]).describe("Payment method: 'stripe' or 'web3'"),
+      tosAccepted: z.boolean().describe("Must be true — confirms acceptance of Bounty Creation Terms of Service"),
       repositoryUrl: z.string().optional().describe("GitHub repository URL to index and generate tests from"),
       deadline: z.string().optional().describe("Deadline as Unix timestamp in milliseconds"),
       tags: z.string().optional().describe("Comma-separated tags (e.g. 'react,typescript,api')"),
+      pmIssueKey: z.string().optional().describe("PM tool issue key (e.g. 'PROJ-123', 'LIN-456')"),
+      pmProvider: z.enum(["jira", "linear", "asana", "monday"]).optional().describe("PM tool provider"),
     },
     async (args: {
       title: string;
@@ -25,9 +28,12 @@ export function registerCreateBounty(server: McpServer): void {
       reward: string;
       rewardCurrency: string;
       paymentMethod: "stripe" | "web3";
+      tosAccepted: boolean;
       repositoryUrl?: string;
       deadline?: string;
       tags?: string;
+      pmIssueKey?: string;
+      pmProvider?: "jira" | "linear" | "asana" | "monday";
     }) => {
       // SECURITY (H4): Enforce scope
       requireScope("bounties:create");
@@ -37,6 +43,14 @@ export function registerCreateBounty(server: McpServer): void {
       if (!creatorId) {
         return {
           content: [{ type: "text" as const, text: "Error: Authentication required." }],
+          isError: true,
+        };
+      }
+
+      // Enforce TOS acceptance
+      if (!args.tosAccepted) {
+        return {
+          content: [{ type: "text" as const, text: "Error: You must accept the Bounty Creation Terms of Service (tosAccepted: true) to create a bounty." }],
           isError: true,
         };
       }
@@ -56,6 +70,11 @@ export function registerCreateBounty(server: McpServer): void {
           repositoryUrl: args.repositoryUrl,
           deadline: args.deadline ? parseInt(args.deadline, 10) : undefined,
           tags: args.tags ? args.tags.split(",").map((t) => t.trim()) : undefined,
+          tosAccepted: true,
+          tosAcceptedAt: Date.now(),
+          tosVersion: "1.0",
+          pmIssueKey: args.pmIssueKey,
+          pmProvider: args.pmProvider,
         });
 
         let text = `# Bounty Created\n\n`;
@@ -63,6 +82,11 @@ export function registerCreateBounty(server: McpServer): void {
         text += `**Title:** ${args.title}\n`;
         text += `**Reward:** ${args.reward} ${args.rewardCurrency}\n`;
         text += `**Payment:** ${args.paymentMethod}\n`;
+        text += `**TOS:** Accepted (v1.0)\n`;
+
+        if (args.pmIssueKey) {
+          text += `**PM Issue:** ${args.pmProvider}/${args.pmIssueKey}\n`;
+        }
 
         if (result.repoConnectionId) {
           text += `\n## Autonomous Pipeline Started\n\n`;

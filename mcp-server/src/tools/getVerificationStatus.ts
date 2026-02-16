@@ -102,6 +102,12 @@ export function registerGetVerificationStatus(server: McpServer): void {
         if (v.result) text += `\n## Result\n${v.result}\n`;
         if (v.errorLog) text += `\n## Error Log\n\`\`\`\n${v.errorLog.slice(0, 2000)}\n\`\`\`\n`;
 
+        // Polling guidance
+        const isTerminal = ["passed", "failed", "error", "timed_out"].includes(v.status);
+        if (!isTerminal) {
+          text += `\n---\n_Verification typically takes 2-5 minutes. Check again in ~15 seconds._\n`;
+        }
+
         return { content: [{ type: "text" as const, text }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to get verification status";

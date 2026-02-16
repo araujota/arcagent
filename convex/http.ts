@@ -308,7 +308,10 @@ http.route({
   }),
 });
 
-// --- Agents: Create agent user + API key ---
+// --- Agents: Create/link agent user + API key ---
+// Uses upsertFromClerk so MCP-registered agents share the same user record
+// as web-registered users. The clerkId comes from a real Clerk user created
+// by the MCP server via the Clerk Backend API.
 http.route({
   path: "/api/mcp/agents/create",
   method: "POST",
@@ -331,10 +334,11 @@ http.route({
     }
 
     try {
-      const userId = await ctx.runMutation(internal.users.createApiAgent, {
+      // Upsert user via the same path as Clerk webhooks — unified accounts
+      const userId = await ctx.runMutation(internal.users.upsertFromClerk, {
+        clerkId,
         name,
         email,
-        clerkId,
         githubUsername,
       });
 
@@ -343,7 +347,7 @@ http.route({
         keyHash,
         keyPrefix,
         name: `${name}'s API key`,
-        scopes: ["bounties:read", "bounties:claim", "bounties:create", "submissions:write"],
+        scopes: ["bounties:read", "bounties:claim", "bounties:create", "submissions:write", "workspace:read", "workspace:write", "workspace:exec"],
       });
 
       return mcpJson({ userId });
@@ -422,6 +426,12 @@ http.route({
       deadline,
       tags,
       repositoryUrl,
+      tosAccepted,
+      tosAcceptedAt,
+      tosVersion,
+      pmIssueKey,
+      pmProvider,
+      pmConnectionId,
     } = body as {
       creatorId: string;
       title: string;
@@ -432,6 +442,13 @@ http.route({
       deadline?: number;
       tags?: string[];
       repositoryUrl?: string;
+      tosAccepted?: boolean;
+      tosAcceptedAt?: number;
+      tosVersion?: string;
+      pmIssueKey?: string;
+      pmProvider?: "jira" | "linear" | "asana" | "monday";
+      pmConnectionId?: string;
+      requiredTier?: "S" | "A" | "B" | "C" | "D";
     };
 
     if (!creatorId || !title || !description || !reward || !rewardCurrency || !paymentMethod) {
@@ -449,6 +466,13 @@ http.route({
         deadline,
         tags,
         status: "active",
+        tosAccepted,
+        tosAcceptedAt,
+        tosVersion,
+        pmIssueKey,
+        pmProvider,
+        pmConnectionId: pmConnectionId as Id<"pmConnections"> | undefined,
+        requiredTier: body.requiredTier,
       });
 
       let repoConnectionId: string | null = null;
@@ -647,7 +671,26 @@ http.route({
         agentId: agentId as Id<"users">,
       });
 
-      return mcpJson({ claimId });
+      // Look up repo connection for branch creation info
+      let repoInfo: { owner: string; repo: string; baseBranch: string; repositoryUrl: string } | null = null;
+      const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+        bountyId: bountyId as Id<"bounties">,
+      });
+      if (bounty?.repoConnectionId) {
+        const repoConn = await ctx.runQuery(internal.repoConnections.getByBountyIdInternal, {
+          bountyId: bountyId as Id<"bounties">,
+        });
+        if (repoConn) {
+          repoInfo = {
+            owner: repoConn.owner,
+            repo: repoConn.repo,
+            baseBranch: repoConn.trackedBranch ?? repoConn.defaultBranch,
+            repositoryUrl: repoConn.repositoryUrl,
+          };
+        }
+      }
+
+      return mcpJson({ claimId, repoInfo });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create claim";
       return mcpError(message);
@@ -712,36 +755,34 @@ http.route({
   }),
 });
 
-// --- Claims: Update fork info ---
+// --- Claims: Update branch info ---
 http.route({
-  path: "/api/mcp/claims/update-fork",
+  path: "/api/mcp/claims/update-branch",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
     if (!verifyMcpSecret(request)) return mcpUnauthorized();
 
     const body = await request.json();
-    const { claimId, forkRepositoryUrl, forkAccessToken, forkTokenExpiresAt } =
+    const { claimId, featureBranchName, featureBranchRepo } =
       body as {
         claimId: string;
-        forkRepositoryUrl: string;
-        forkAccessToken: string;
-        forkTokenExpiresAt: number;
+        featureBranchName: string;
+        featureBranchRepo: string;
       };
 
-    if (!claimId || !forkRepositoryUrl || !forkAccessToken || !forkTokenExpiresAt) {
+    if (!claimId || !featureBranchName || !featureBranchRepo) {
       return mcpError("Missing required fields");
     }
 
     try {
-      await ctx.runMutation(internal.bountyClaims.updateForkInfo, {
+      await ctx.runMutation(internal.bountyClaims.updateBranchInfo, {
         claimId: claimId as Id<"bountyClaims">,
-        forkRepositoryUrl,
-        forkAccessToken,
-        forkTokenExpiresAt,
+        featureBranchName,
+        featureBranchRepo,
       });
       return mcpJson({ success: true });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to update fork info";
+      const message = err instanceof Error ? err.message : "Failed to update branch info";
       return mcpError(message);
     }
   }),
@@ -918,6 +959,131 @@ http.route({
 });
 
 // ---------------------------------------------------------------------------
+// MCP Agent Ratings & Stats Endpoints
+// ---------------------------------------------------------------------------
+
+// --- Ratings: Submit ---
+http.route({
+  path: "/api/mcp/ratings/submit",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+
+    const body = await request.json();
+    const {
+      bountyId,
+      creatorId,
+      codeQuality,
+      speed,
+      mergedWithoutChanges,
+      communication,
+      testCoverage,
+      comment,
+    } = body as {
+      bountyId: string;
+      creatorId: string;
+      codeQuality: number;
+      speed: number;
+      mergedWithoutChanges: number;
+      communication: number;
+      testCoverage: number;
+      comment?: string;
+    };
+
+    if (!bountyId || !creatorId || !codeQuality || !speed || !mergedWithoutChanges || !communication || !testCoverage) {
+      return mcpError("Missing required fields");
+    }
+
+    try {
+      const ratingId = await ctx.runMutation(internal.agentRatings.submitRatingFromMcp, {
+        bountyId: bountyId as Id<"bounties">,
+        creatorId: creatorId as Id<"users">,
+        codeQuality,
+        speed,
+        mergedWithoutChanges,
+        communication,
+        testCoverage,
+        comment,
+      });
+
+      return mcpJson({ ratingId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to submit rating";
+      return mcpError(message);
+    }
+  }),
+});
+
+// --- Agents: Get stats by ID ---
+http.route({
+  path: "/api/mcp/agents/stats",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+
+    const body = await request.json();
+    const { agentId } = body as { agentId: string };
+    if (!agentId) return mcpError("Missing agentId");
+
+    const stats = await ctx.runQuery(internal.agentStats.getByAgentInternal, {
+      agentId: agentId as Id<"users">,
+    });
+
+    if (!stats) return mcpJson({ stats: null });
+
+    const user = await ctx.runQuery(internal.users.getByIdInternal, {
+      userId: agentId as Id<"users">,
+    });
+
+    return mcpJson({
+      stats: {
+        ...stats,
+        agent: user
+          ? { name: user.name, avatarUrl: user.avatarUrl, githubUsername: user.githubUsername }
+          : null,
+      },
+    });
+  }),
+});
+
+// --- Agents: Get own stats ---
+http.route({
+  path: "/api/mcp/agents/my-stats",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+
+    const body = await request.json();
+    const { userId } = body as { userId: string };
+    if (!userId) return mcpError("Missing userId");
+
+    const stats = await ctx.runQuery(internal.agentStats.getByAgentInternal, {
+      agentId: userId as Id<"users">,
+    });
+
+    return mcpJson({ stats: stats ?? null });
+  }),
+});
+
+// --- Agents: Leaderboard ---
+http.route({
+  path: "/api/mcp/agents/leaderboard",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+
+    const body = await request.json();
+    const { limit } = body as { limit?: number };
+
+    const leaderboard = await ctx.runQuery(internal.agentStats.getLeaderboardInternal, {
+      limit: limit ?? 50,
+    });
+
+    return mcpJson({ leaderboard });
+  }),
+});
+
+// ---------------------------------------------------------------------------
 // Stripe MCP Endpoints
 // ---------------------------------------------------------------------------
 
@@ -1022,6 +1188,145 @@ http.route({
       return mcpJson(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to fund escrow";
+      return mcpError(message);
+    }
+  }),
+});
+
+// ---------------------------------------------------------------------------
+// Workspace Endpoints
+// ---------------------------------------------------------------------------
+
+// --- Workspace: Lookup (MCP server routing cache) ---
+http.route({
+  path: "/api/mcp/workspace/lookup",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+
+    const body = await request.json();
+    const { agentId, bountyId } = body as { agentId: string; bountyId: string };
+    if (!agentId || !bountyId) return mcpError("Missing agentId or bountyId");
+
+    const ws = await ctx.runQuery(internal.devWorkspaces.getActiveByAgentAndBounty, {
+      agentId: agentId as Id<"users">,
+      bountyId: bountyId as Id<"bounties">,
+    });
+
+    if (!ws) {
+      return mcpJson({ found: false });
+    }
+
+    return mcpJson({
+      found: true,
+      workspaceId: ws.workspaceId,
+      workerHost: ws.workerHost,
+      status: ws.status,
+      expiresAt: ws.expiresAt,
+    });
+  }),
+});
+
+// --- Workspace: Update status (called by worker) ---
+http.route({
+  path: "/api/mcp/workspace/update-status",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!verifyWorkerSecret(request) && !verifyMcpSecret(request)) {
+      return mcpUnauthorized();
+    }
+
+    const body = await request.json();
+    const { workspaceId, status, vmId, errorMessage } = body as {
+      workspaceId: string;
+      status: "provisioning" | "ready" | "error" | "destroyed";
+      vmId?: string;
+      errorMessage?: string;
+    };
+
+    if (!workspaceId || !status) return mcpError("Missing workspaceId or status");
+
+    try {
+      await ctx.runMutation(internal.devWorkspaces.updateStatus, {
+        workspaceId,
+        status,
+        vmId,
+        errorMessage,
+        readyAt: status === "ready" ? Date.now() : undefined,
+        destroyedAt: status === "destroyed" ? Date.now() : undefined,
+      });
+
+      return mcpJson({ success: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to update workspace";
+      return mcpError(message);
+    }
+  }),
+});
+
+// --- Submissions: Create from workspace (diff-based) ---
+http.route({
+  path: "/api/mcp/submissions/create-from-workspace",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+
+    const body = await request.json();
+    const { bountyId, agentId, workspaceId, diffPatch, description } = body as {
+      bountyId: string;
+      agentId: string;
+      workspaceId: string;
+      diffPatch: string;
+      description?: string;
+    };
+
+    if (!bountyId || !agentId || !workspaceId || !diffPatch) {
+      return mcpError("Missing required fields: bountyId, agentId, workspaceId, diffPatch");
+    }
+
+    try {
+      // Look up workspace for repository info
+      const ws = await ctx.runQuery(internal.devWorkspaces.getByWorkspaceId, {
+        workspaceId,
+      });
+      if (!ws) return mcpError("Workspace not found", 404);
+
+      // Create submission with workspace metadata
+      const submissionId = await ctx.runMutation(
+        internal.submissions.createFromMcp,
+        {
+          bountyId: bountyId as Id<"bounties">,
+          agentId: agentId as Id<"users">,
+          repositoryUrl: ws.repositoryUrl,
+          commitHash: workspaceId.replace(/-/g, "").slice(0, 40).padEnd(40, "0"),
+          description,
+        },
+      );
+
+      // Create verification
+      const verificationId = await ctx.runMutation(
+        internal.verifications.create,
+        {
+          submissionId,
+          bountyId: bountyId as Id<"bounties">,
+          timeoutSeconds: 600,
+        },
+      );
+
+      // Trigger diff-based verification
+      await ctx.scheduler.runAfter(0, internal.verifications.runVerificationFromDiff, {
+        verificationId,
+        submissionId,
+        bountyId: bountyId as Id<"bounties">,
+        baseRepoUrl: ws.repositoryUrl,
+        baseCommitSha: ws.baseCommitSha,
+        diffPatch,
+        sourceWorkspaceId: workspaceId,
+      });
+
+      return mcpJson({ submissionId, verificationId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to create submission";
       return mcpError(message);
     }
   }),

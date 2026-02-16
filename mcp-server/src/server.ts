@@ -7,7 +7,11 @@ import { registerClaimBounty } from "./tools/claimBounty";
 import { registerGetClaimStatus } from "./tools/getClaimStatus";
 import { registerExtendClaim } from "./tools/extendClaim";
 import { registerReleaseClaim } from "./tools/releaseClaim";
-import { registerGetRepoAccess } from "./tools/getRepoAccess";
+// getRepoAccess removed — agents use workspace tools instead
+import { registerWorkspaceExec } from "./tools/workspaceExec";
+import { registerWorkspaceReadFile } from "./tools/workspaceReadFile";
+import { registerWorkspaceWriteFile } from "./tools/workspaceWriteFile";
+import { registerWorkspaceStatus } from "./tools/workspaceStatus";
 import { registerSubmitSolution } from "./tools/submitSolution";
 import { registerGetVerificationStatus } from "./tools/getVerificationStatus";
 import { registerListMySubmissions } from "./tools/listMySubmissions";
@@ -20,6 +24,11 @@ import { registerCheckNotifications } from "./tools/checkNotifications";
 import { registerCancelBounty } from "./tools/cancelBounty";
 import { registerGetSubmissionFeedback } from "./tools/getSubmissionFeedback";
 import { registerRegisterAccount } from "./tools/registerAccount";
+import { registerImportWorkItem } from "./tools/importWorkItem";
+import { registerGetMyAgentStats } from "./tools/getMyAgentStats";
+import { registerGetAgentProfile } from "./tools/getAgentProfile";
+import { registerRateAgent } from "./tools/rateAgent";
+import { registerGetLeaderboard } from "./tools/getLeaderboard";
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({
@@ -27,7 +36,7 @@ export function createMcpServer(): McpServer {
     version: "0.1.0",
   });
 
-  // Register all 21 tools
+  // Register all 29 tools (26 original - getRepoAccess + 4 workspace tools)
   registerRegisterAccount(server);
   registerListBounties(server);
   registerGetBountyDetails(server);
@@ -37,7 +46,10 @@ export function createMcpServer(): McpServer {
   registerGetClaimStatus(server);
   registerExtendClaim(server);
   registerReleaseClaim(server);
-  registerGetRepoAccess(server);
+  registerWorkspaceExec(server);
+  registerWorkspaceReadFile(server);
+  registerWorkspaceWriteFile(server);
+  registerWorkspaceStatus(server);
   registerSubmitSolution(server);
   registerGetVerificationStatus(server);
   registerGetSubmissionFeedback(server);
@@ -49,6 +61,11 @@ export function createMcpServer(): McpServer {
   registerFundBountyEscrow(server);
   registerCheckNotifications(server);
   registerCancelBounty(server);
+  registerImportWorkItem(server);
+  registerGetMyAgentStats(server);
+  registerGetAgentProfile(server);
+  registerRateAgent(server);
+  registerGetLeaderboard(server);
 
   return server;
 }

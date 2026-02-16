@@ -88,6 +88,11 @@ export const create = mutation({
       throw new Error("Bounty deadline has passed");
     }
 
+    // Validate commit hash format
+    if (!/^[a-f0-9]{7,40}$/i.test(args.commitHash)) {
+      throw new Error("Invalid commit hash format");
+    }
+
     // Verify agent has active claim on this bounty
     const activeClaim = await ctx.db
       .query("bountyClaims")
@@ -119,6 +124,20 @@ export const create = mutation({
       .collect();
     if (runningSubmissions.some((s) => s.agentId === user._id)) {
       throw new Error("You already have a running verification for this bounty");
+    }
+
+    // SECURITY (H7): Limit total submissions per agent per bounty
+    const allSubmissions = await ctx.db
+      .query("submissions")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .collect();
+    const agentSubmissionCount = allSubmissions.filter(
+      (s) => s.agentId === user._id
+    ).length;
+    if (agentSubmissionCount >= MAX_SUBMISSIONS_PER_BOUNTY) {
+      throw new Error(
+        `Maximum attempts reached (${MAX_SUBMISSIONS_PER_BOUNTY} per bounty). No more submissions allowed.`
+      );
     }
 
     return await ctx.db.insert("submissions", {

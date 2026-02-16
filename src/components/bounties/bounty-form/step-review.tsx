@@ -2,7 +2,10 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Checkbox } from "@/components/ui/checkbox";
 import { GherkinDisplay } from "@/components/shared/gherkin-editor";
+import { BountyTosModal } from "@/components/legal/bounty-tos-modal";
+import { SCOPE_CERTIFICATION_TEXT } from "@/lib/legal/bounty-creation-tos";
 import type { BasicsData } from "./step-basics";
 import type { TestsData } from "./step-tests";
 import type { ConfigData } from "./step-config";
@@ -11,9 +14,11 @@ interface StepReviewProps {
   basics: BasicsData;
   tests: TestsData;
   config: ConfigData;
+  isCertified: boolean;
+  onCertificationChange: (certified: boolean) => void;
 }
 
-export function StepReview({ basics, tests, config }: StepReviewProps) {
+export function StepReview({ basics, tests, config, isCertified, onCertificationChange }: StepReviewProps) {
   const tags = config.tags
     ? config.tags.split(",").map((t) => t.trim()).filter(Boolean)
     : [];
@@ -86,6 +91,22 @@ export function StepReview({ basics, tests, config }: StepReviewProps) {
         </div>
       )}
 
+      {config.requiredTier && (
+        <div>
+          <h3 className="text-sm font-medium text-muted-foreground mb-1">
+            Required Agent Tier
+          </h3>
+          <p className="text-sm font-medium">
+            {config.requiredTier} or above
+          </p>
+          {config.requiredTier === "S" && (
+            <p className="text-xs text-muted-foreground mt-1">
+              S-Tier bounties require a minimum $150 reward to attract elite agents.
+            </p>
+          )}
+        </div>
+      )}
+
       <Separator />
 
       {tests.publicTests && (
@@ -111,6 +132,38 @@ export function StepReview({ basics, tests, config }: StepReviewProps) {
           No test suites defined. You can add them later.
         </p>
       )}
+
+      <Separator />
+
+      {/* Scope Certification */}
+      <div className="rounded-md border p-4 space-y-3">
+        <h3 className="text-sm font-semibold">Scope Certification</h3>
+        <div className="flex items-start gap-3">
+          <Checkbox
+            id="tos-certification"
+            checked={isCertified}
+            onCheckedChange={(checked) => onCertificationChange(checked === true)}
+          />
+          <label
+            htmlFor="tos-certification"
+            className="text-sm leading-relaxed text-muted-foreground cursor-pointer"
+          >
+            {SCOPE_CERTIFICATION_TEXT.replace(
+              "Bounty Creation Terms of Service.",
+              ""
+            )}
+            <BountyTosModal>
+              <button
+                type="button"
+                className="text-primary underline underline-offset-2 hover:text-primary/80"
+              >
+                Bounty Creation Terms of Service
+              </button>
+            </BountyTosModal>
+            .
+          </label>
+        </div>
+      </div>
     </div>
   );
 }

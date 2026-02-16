@@ -180,6 +180,201 @@ export async function processVerificationJob(
 }
 
 /**
+ * Diff-based verification processor.
+ *
+ * Instead of cloning a specific commit, this:
+ *  1. Clones the base repo at the base commit.
+ *  2. Applies the agent's diff patch.
+ *  3. Runs the same 8-gate pipeline.
+ *
+ * If the patch fails to apply, the job fails immediately at a "patch-apply" gate.
+ */
+export async function processVerificationFromDiff(
+  job: Job<VerificationJobData, VerificationResult>,
+): Promise<VerificationResult> {
+  const startTime = Date.now();
+  const data = job.data;
+  let vm: VMHandle | null = null;
+
+  try {
+    if (!data.diffPatch) {
+      throw new Error("diffPatch is required for diff-based verification");
+    }
+
+    // 0. Validate base repo inputs
+    const safeRepoUrl = sanitizeShellArg(data.repoUrl, "repoUrl", "repoUrl");
+    const safeCommitSha = sanitizeShellArg(data.commitSha, "commitSha", "commitSha");
+
+    // 1. Language detection
+    const language = data.language ?? (await detectLanguage(data.repoUrl));
+    logger.info("Diff verification: detected language", { jobId: data.jobId, language });
+
+    await job.updateProgress(5);
+
+    // 2. Create CLEAN verification VM
+    const vmConfig = getVMConfig(language);
+    vm = await createFirecrackerVM({
+      jobId: data.jobId,
+      rootfsImage: vmConfig.rootfsImage,
+      vcpuCount: vmConfig.vcpuCount,
+      memSizeMib: vmConfig.memSizeMib,
+    });
+    logger.info("Diff verification: microVM started", { jobId: data.jobId, vmId: vm.vmId });
+
+    await job.updateProgress(15);
+
+    // 3. Clone original repo at base commit
+    const cloneCmd = `git clone ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`;
+    await vm.exec(cloneCmd);
+    await vm.exec("chown -R agent:agent /workspace 2>/dev/null || true");
+
+    await job.updateProgress(20);
+
+    // 4. Write diff to temp file and apply
+    if (!vm.writeFile) {
+      throw new Error("VM does not support writeFile — cannot apply diff patch");
+    }
+    await vm.writeFile("/tmp/agent.patch", Buffer.from(data.diffPatch), "0644", "agent:agent");
+
+    const applyResult = await vm.exec(
+      "cd /workspace && git apply --whitespace=fix /tmp/agent.patch",
+      30_000,
+      "agent",
+    );
+
+    if (applyResult.exitCode !== 0) {
+      // Patch failed to apply — fail immediately
+      const patchGate: GateResult = {
+        gate: "patch-apply",
+        status: "fail",
+        durationMs: Date.now() - startTime,
+        summary: "Failed to apply agent's diff patch to clean repository clone",
+        details: {
+          stdout: applyResult.stdout?.slice(0, 5000),
+          stderr: applyResult.stderr?.slice(0, 5000),
+          exitCode: applyResult.exitCode,
+        },
+      };
+
+      const feedback = generateFeedback([patchGate], data.attemptNumber ?? 1);
+
+      const result: VerificationResult = {
+        jobId: data.jobId,
+        submissionId: data.submissionId,
+        bountyId: data.bountyId,
+        overallStatus: "fail",
+        gates: [patchGate],
+        totalDurationMs: Date.now() - startTime,
+        feedbackJson: JSON.stringify(feedback),
+      };
+
+      if (data.convexUrl) {
+        await postVerificationResult(data.convexUrl, result).catch((err) => {
+          logger.error("Failed to post patch-apply failure to Convex", { jobId: data.jobId, error: err });
+        });
+      }
+
+      return result;
+    }
+
+    // Clean up the patch file
+    await vm.exec("rm /tmp/agent.patch");
+
+    await job.updateProgress(25);
+
+    // 5. Compute diff context from the applied patch
+    let diffContext: DiffContext | null = null;
+    try {
+      diffContext = await computeDiff(vm, data.commitSha, "HEAD");
+    } catch {
+      // Diff context is optional — proceed without it
+    }
+
+    await job.updateProgress(30);
+
+    // 6. Run gate pipeline
+    const gateResults: GateResult[] = await withTimeout(
+      () => runGates(vm!, language, job, diffContext),
+      data.timeoutSeconds * 1_000,
+      `Verification timed out after ${data.timeoutSeconds}s`,
+    );
+
+    await job.updateProgress(95);
+
+    // 7. Compute overall status
+    const overallStatus = data.ztacoMode
+      ? computeOverallStatusZtaco(gateResults)
+      : computeOverallStatus(gateResults);
+
+    const allSteps: StepResult[] = [];
+    for (const gate of gateResults) {
+      if (gate.steps) {
+        allSteps.push(...gate.steps);
+      }
+    }
+
+    const attemptNumber = data.attemptNumber ?? 1;
+    const feedback: VerificationFeedback = generateFeedback(gateResults, attemptNumber);
+
+    const result: VerificationResult = {
+      jobId: data.jobId,
+      submissionId: data.submissionId,
+      bountyId: data.bountyId,
+      overallStatus,
+      gates: gateResults,
+      totalDurationMs: Date.now() - startTime,
+      steps: allSteps.length > 0 ? allSteps : undefined,
+      feedbackJson: JSON.stringify(feedback),
+    };
+
+    // 8. Report back to Convex
+    if (data.convexUrl) {
+      await postVerificationResult(data.convexUrl, result).catch((err) => {
+        logger.error("Failed to post diff verification result to Convex", {
+          jobId: data.jobId,
+          error: err,
+        });
+      });
+    }
+
+    await job.updateProgress(100);
+    return result;
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    logger.error("Diff verification job failed", {
+      jobId: data.jobId,
+      error: error.message,
+      stack: error.stack,
+    });
+
+    const errorResult: VerificationResult = {
+      jobId: data.jobId,
+      submissionId: data.submissionId,
+      bountyId: data.bountyId,
+      overallStatus: "error",
+      gates: [],
+      totalDurationMs: Date.now() - startTime,
+    };
+
+    if (data.convexUrl) {
+      await postVerificationResult(data.convexUrl, errorResult).catch(() => {});
+    }
+
+    throw error;
+  } finally {
+    if (vm) {
+      await destroyFirecrackerVM(vm).catch((cleanupErr) => {
+        logger.error("Failed to destroy diff verification microVM", {
+          jobId: data.jobId,
+          vmId: vm!.vmId,
+          error: cleanupErr,
+        });
+      });
+    }
+  }
+}
+
+/**
  * Determine the overall verification status from individual gate results.
  * Any "fail" or "error" means the whole verification fails.
  */

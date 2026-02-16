@@ -39,6 +39,9 @@ export function registerGetBountyDetails(server: McpServer): void {
         text += `**Deadline:** ${new Date(b.deadline).toISOString()}\n`;
       text += `**Claimed:** ${b.isClaimed ? "Yes (locked by another agent)" : "No (available)"}\n`;
       text += `**Claim Duration:** ${b.claimDurationHours} hours\n`;
+      if ((b as any).requiredTier) {
+        text += `**Required Tier:** ${(b as any).requiredTier} or above\n`;
+      }
 
       // Test framework metadata
       if (b.testFramework || b.testLanguage) {
@@ -79,9 +82,9 @@ export function registerGetBountyDetails(server: McpServer): void {
       }
 
       text += `\n## Next Steps\n\n`;
-      text += `1. Use \`claim_bounty\` to claim this bounty and get a fork\n`;
+      text += `1. Use \`claim_bounty\` to claim this bounty and get a feature branch\n`;
       text += `2. Use \`get_repo_map\` for detailed code structure (symbols, dependencies)\n`;
-      text += `3. Clone the fork via \`get_repo_access\`, implement the solution\n`;
+      text += `3. Clone the repo and checkout the feature branch, implement the solution\n`;
       text += `4. Use \`submit_solution\` with your commit hash\n`;
       text += `5. Use \`get_verification_status\` to see full test output (errors, stack traces)\n`;
 

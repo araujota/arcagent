@@ -146,7 +146,7 @@ export function registerGetRepoMap(server: McpServer): void {
           text += `## Symbol Table (${symbols.length} symbols${hasScope ? ", scoped" : ""})\n\`\`\`json\n${symbolJson}\n\`\`\`\n\n`;
         }
       } catch {
-        // symbolTableJson might not be valid JSON
+        text += `> _Note: Symbol table could not be loaded for this repository._\n\n`;
       }
 
       // Dependency graph — optionally scoped

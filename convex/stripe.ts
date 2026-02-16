@@ -365,6 +365,13 @@ export const releaseEscrow = internalAction({
       throw new Error("Recipient has no Stripe Connect account");
     }
 
+    // SECURITY: Verify Connect onboarding is complete before transferring funds
+    if (!recipient.stripeConnectOnboardingComplete) {
+      throw new Error(
+        "Recipient has not completed Stripe Connect onboarding. Payout will be retried once onboarding is complete."
+      );
+    }
+
     // Transfer net amount (minus platform fee) to solver's Connect account
     const grossCents = Math.round(bounty.reward * 100);
     // Use stored fee if available, otherwise calculate from current rate
@@ -457,6 +464,43 @@ export const refundEscrow = internalAction({
     });
 
     return { refundId: refund.id };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Retry failed refunds
+// ---------------------------------------------------------------------------
+
+/**
+ * Retries refunds for cancelled bounties that are still in "funded" escrow status.
+ * This handles cases where the initial refund call to Stripe failed.
+ */
+export const retryFailedRefunds = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    const stuckBounties = await ctx.runQuery(
+      internal.bounties.listCancelledWithFundedEscrow,
+      {}
+    );
+
+    let retried = 0;
+    for (const bounty of stuckBounties) {
+      try {
+        await ctx.runAction(internal.stripe.refundEscrow, {
+          bountyId: bounty._id,
+        });
+        retried++;
+      } catch (err) {
+        console.error(
+          `[retryFailedRefunds] Failed to refund bounty ${bounty._id}:`,
+          err instanceof Error ? err.message : String(err)
+        );
+      }
+    }
+
+    if (retried > 0) {
+      console.log(`[retryFailedRefunds] Retried ${retried} refunds`);
+    }
   },
 });
 

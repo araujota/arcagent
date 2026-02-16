@@ -384,28 +384,41 @@ export const runAutonomousGeneration = internalAction({
         console.warn("[autonomous] Failed to retrieve repo context:", error);
       }
 
-      // 2. Generate BDD (creates the generatedTests record internally)
+      // 2. Gather existing Gherkin from imported test suites as supplementary context
+      let existingGherkin: string | undefined;
+      const existingTestSuites = await ctx.runQuery(
+        internal.testSuites.listAllByBounty,
+        { bountyId: args.bountyId }
+      );
+      if (existingTestSuites && existingTestSuites.length > 0) {
+        existingGherkin = existingTestSuites
+          .map((ts) => ts.gherkinContent)
+          .join("\n\n");
+      }
+
+      // 3. Generate BDD (creates the generatedTests record internally)
       await ctx.runAction(internal.pipelines.generateBDD.generateBDD, {
         bountyId: args.bountyId,
         conversationId: args.conversationId,
         description: bounty.description,
         repoContext,
+        existingGherkin,
       });
 
-      // 3. Get the generated test record
+      // 4. Get the generated test record
       const generatedTest = await ctx.runQuery(
         internal.generatedTests.getByConversationIdInternal,
         { conversationId: args.conversationId }
       );
       if (!generatedTest) throw new Error("Generated test record not found after BDD generation");
 
-      // 4. Auto-approve
+      // 5. Auto-approve
       await ctx.runMutation(internal.generatedTests.updateStatus, {
         generatedTestId: generatedTest._id,
         status: "approved",
       });
 
-      // 5. Generate TDD
+      // 6. Generate TDD
       const conversation = await ctx.runQuery(
         internal.conversations.getById,
         { conversationId: args.conversationId }
@@ -428,13 +441,13 @@ export const runAutonomousGeneration = internalAction({
         primaryLanguage,
       });
 
-      // 6. Mark as published
+      // 7. Mark as published
       await ctx.runMutation(internal.generatedTests.updateStatus, {
         generatedTestId: generatedTest._id,
         status: "published",
       });
 
-      // 7. Create test suites (public + hidden)
+      // 8. Create test suites (public + hidden)
       // Re-fetch to get updated step definitions
       const updatedTest = await ctx.runQuery(
         internal.generatedTests.getByConversationIdInternal,
@@ -457,7 +470,7 @@ export const runAutonomousGeneration = internalAction({
         });
       }
 
-      // 8. Finalize conversation
+      // 9. Finalize conversation
       await ctx.runMutation(internal.conversations.updateStatus, {
         conversationId: args.conversationId,
         status: "finalized",

@@ -11,7 +11,9 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { BountyStatusBadge } from "./bounty-status-badge";
+import { TierBadge } from "@/components/shared/tier-badge";
 import { BountyWithCreator } from "@/lib/types";
+import type { TierLevel } from "@/lib/constants/tiers";
 
 export function BountyCard({ bounty }: { bounty: BountyWithCreator }) {
   const hasDeadline = bounty.deadline && bounty.deadline > Date.now();
@@ -24,9 +26,14 @@ export function BountyCard({ bounty }: { bounty: BountyWithCreator }) {
       <Card className="hover:border-primary/50 transition-colors h-full flex flex-col">
         <CardHeader className="pb-3">
           <div className="flex items-start justify-between gap-2">
-            <CardTitle className="text-base line-clamp-2">
-              {bounty.title}
-            </CardTitle>
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-base line-clamp-2">
+                {bounty.title}
+              </CardTitle>
+              {(bounty as any).requiredTier && (
+                <TierBadge tier={(bounty as any).requiredTier as TierLevel} size="sm" />
+              )}
+            </div>
             <BountyStatusBadge status={bounty.status} />
           </div>
         </CardHeader>

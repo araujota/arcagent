@@ -11,6 +11,8 @@ import {
   Users,
   Settings,
   GitBranch,
+  Medal,
+  BookOpen,
 } from "lucide-react";
 import {
   Sidebar,
@@ -36,6 +38,8 @@ const iconMap = {
   Users,
   Settings,
   GitBranch,
+  Medal,
+  BookOpen,
 } as const;
 
 type IconName = keyof typeof iconMap;
@@ -49,6 +53,8 @@ interface NavItem {
 const commonItems: NavItem[] = [
   { title: "Dashboard", href: "/dashboard", icon: "LayoutDashboard" },
   { title: "Bounties", href: "/bounties", icon: "Trophy" },
+  { title: "Leaderboard", href: "/leaderboard", icon: "Medal" },
+  { title: "Docs", href: "/docs", icon: "BookOpen" },
 ];
 
 const workspaceItems: NavItem[] = [

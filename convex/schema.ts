@@ -62,6 +62,26 @@ export default defineSchema({
     platformFeeCents: v.optional(v.number()),
     ztacoMode: v.optional(v.boolean()),
     relevantPaths: v.optional(v.array(v.string())),
+    // TOS fields
+    tosAccepted: v.optional(v.boolean()),
+    tosAcceptedAt: v.optional(v.number()),
+    tosVersion: v.optional(v.string()),
+    // PM tool traceability
+    pmIssueKey: v.optional(v.string()),
+    pmProvider: v.optional(v.union(
+      v.literal("jira"),
+      v.literal("linear"),
+      v.literal("asana"),
+      v.literal("monday")
+    )),
+    pmConnectionId: v.optional(v.id("pmConnections")),
+    requiredTier: v.optional(v.union(
+      v.literal("S"),
+      v.literal("A"),
+      v.literal("B"),
+      v.literal("C"),
+      v.literal("D")
+    )),
   })
     .index("by_status", ["status"])
     .index("by_creatorId", ["creatorId"])
@@ -73,6 +93,7 @@ export default defineSchema({
     version: v.number(),
     gherkinContent: v.string(),
     visibility: v.union(v.literal("public"), v.literal("hidden")),
+    source: v.optional(v.union(v.literal("manual"), v.literal("imported"), v.literal("generated"))),
   })
     .index("by_bountyId", ["bountyId"])
     .index("by_bountyId_and_visibility", ["bountyId", "visibility"]),
@@ -213,6 +234,10 @@ export default defineSchema({
     ),
     trackedBranch: v.optional(v.string()),
     webhookId: v.optional(v.string()),
+    detectedFeatureFiles: v.optional(v.array(v.object({
+      filePath: v.string(),
+      content: v.string(),
+    }))),
   })
     .index("by_bountyId", ["bountyId"])
     .index("by_status", ["status"]),
@@ -349,6 +374,30 @@ export default defineSchema({
     .index("by_userId", ["userId"])
     .index("by_status", ["status"]),
 
+  pmConnections: defineTable({
+    userId: v.id("users"),
+    provider: v.union(
+      v.literal("jira"),
+      v.literal("linear"),
+      v.literal("asana"),
+      v.literal("monday")
+    ),
+    displayName: v.string(),
+    domain: v.optional(v.string()),
+    email: v.optional(v.string()),
+    apiTokenHash: v.string(),
+    apiTokenPrefix: v.string(),
+    authMethod: v.union(v.literal("api_token"), v.literal("oauth")),
+    oauthAccessToken: v.optional(v.string()),
+    oauthRefreshToken: v.optional(v.string()),
+    oauthExpiresAt: v.optional(v.number()),
+    status: v.union(v.literal("active"), v.literal("revoked")),
+    createdAt: v.number(),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_userId_and_status", ["userId", "status"])
+    .index("by_userId_and_provider", ["userId", "provider"]),
+
   bountyClaims: defineTable({
     bountyId: v.id("bounties"),
     agentId: v.id("users"),
@@ -361,9 +410,8 @@ export default defineSchema({
     claimedAt: v.number(),
     expiresAt: v.number(),
     releasedAt: v.optional(v.number()),
-    forkRepositoryUrl: v.optional(v.string()),
-    forkAccessToken: v.optional(v.string()),
-    forkTokenExpiresAt: v.optional(v.number()),
+    featureBranchName: v.optional(v.string()),
+    featureBranchRepo: v.optional(v.string()),
   })
     .index("by_bountyId", ["bountyId"])
     .index("by_agentId", ["agentId"])
@@ -392,12 +440,93 @@ export default defineSchema({
     computedAt: v.number(),
   }),
 
+  // === Agent Tiering System ===
+
+  agentRatings: defineTable({
+    bountyId: v.id("bounties"),
+    agentId: v.id("users"),
+    creatorId: v.id("users"),
+    codeQuality: v.number(),
+    speed: v.number(),
+    mergedWithoutChanges: v.number(),
+    communication: v.number(),
+    testCoverage: v.number(),
+    comment: v.optional(v.string()),
+    tierEligible: v.boolean(),
+    createdAt: v.number(),
+  })
+    .index("by_agentId", ["agentId"])
+    .index("by_bountyId", ["bountyId"])
+    .index("by_agentId_and_createdAt", ["agentId", "createdAt"]),
+
+  agentStats: defineTable({
+    agentId: v.id("users"),
+    totalBountiesCompleted: v.number(),
+    totalBountiesClaimed: v.number(),
+    totalBountiesExpired: v.number(),
+    totalSubmissions: v.number(),
+    totalFirstAttemptPasses: v.number(),
+    totalGateWarnings: v.number(),
+    totalGatePasses: v.number(),
+    avgTimeToResolutionMs: v.number(),
+    avgSubmissionsPerBounty: v.number(),
+    firstAttemptPassRate: v.number(),
+    completionRate: v.number(),
+    gateQualityScore: v.number(),
+    avgCreatorRating: v.number(),
+    totalRatings: v.number(),
+    uniqueRaters: v.number(),
+    singleCreatorConcentration: v.number(),
+    compositeScore: v.number(),
+    tier: v.union(
+      v.literal("S"),
+      v.literal("A"),
+      v.literal("B"),
+      v.literal("C"),
+      v.literal("D"),
+      v.literal("unranked")
+    ),
+    lastComputedAt: v.number(),
+  })
+    .index("by_agentId", ["agentId"])
+    .index("by_compositeScore", ["compositeScore"])
+    .index("by_tier", ["tier"]),
+
+  devWorkspaces: defineTable({
+    claimId: v.id("bountyClaims"),
+    bountyId: v.id("bounties"),
+    agentId: v.id("users"),
+    workspaceId: v.string(),
+    workerHost: v.string(),
+    vmId: v.optional(v.string()),
+    status: v.union(
+      v.literal("provisioning"),
+      v.literal("ready"),
+      v.literal("error"),
+      v.literal("destroyed"),
+    ),
+    language: v.string(),
+    repositoryUrl: v.string(),
+    baseCommitSha: v.string(),
+    createdAt: v.number(),
+    readyAt: v.optional(v.number()),
+    expiresAt: v.number(),
+    destroyedAt: v.optional(v.number()),
+    destroyReason: v.optional(v.string()),
+    errorMessage: v.optional(v.string()),
+  })
+    .index("by_claimId", ["claimId"])
+    .index("by_agentId_and_status", ["agentId", "status"])
+    .index("by_workspaceId", ["workspaceId"])
+    .index("by_status", ["status"]),
+
   activityFeed: defineTable({
     type: v.union(
       v.literal("bounty_posted"),
       v.literal("bounty_claimed"),
       v.literal("bounty_resolved"),
-      v.literal("payout_sent")
+      v.literal("payout_sent"),
+      v.literal("agent_rated")
     ),
     bountyId: v.id("bounties"),
     bountyTitle: v.string(),

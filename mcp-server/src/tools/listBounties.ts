@@ -23,7 +23,7 @@ export function registerListBounties(server: McpServer): void {
         {
           status: args.status,
           search: args.search,
-          limit: args.limit ? parseInt(args.limit, 10) : undefined,
+          limit: args.limit ? Math.min(parseInt(args.limit, 10) || 50, 100) : undefined,
         },
       );
 
@@ -40,11 +40,12 @@ export function registerListBounties(server: McpServer): void {
         };
       }
 
-      const lines = bounties.map((b) => {
+      const lines = bounties.map((b: ConvexBounty & { requiredTier?: string }) => {
         const solverInfo = b.rewardCurrency === "USD"
           ? ` (solver: ${(b.reward * 0.97).toFixed(2)} ${b.rewardCurrency})`
           : "";
-        return `- **${b.title}** (${b._id})\n  Reward: ${b.reward} ${b.rewardCurrency}${solverInfo} | Status: ${b.status}${b.tags?.length ? ` | Tags: ${b.tags.join(", ")}` : ""}${b.deadline ? ` | Deadline: ${new Date(b.deadline).toISOString()}` : ""}`;
+        const tierInfo = b.requiredTier ? ` | Required Tier: ${b.requiredTier}+` : "";
+        return `- **${b.title}** (${b._id})\n  Reward: ${b.reward} ${b.rewardCurrency}${solverInfo} | Status: ${b.status}${tierInfo}${b.tags?.length ? ` | Tags: ${b.tags.join(", ")}` : ""}${b.deadline ? ` | Deadline: ${new Date(b.deadline).toISOString()}` : ""}`;
       });
 
       return {

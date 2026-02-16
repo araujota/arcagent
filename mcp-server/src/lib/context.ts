@@ -51,10 +51,16 @@ export function requireAuthUser(): AuthenticatedUser {
  */
 export function requireScope(scope: string): void {
   const user = getAuthUser();
-  if (!user) return; // stdio transport — no scopes to check
+  if (!user) {
+    // stdio transport — no scopes to check
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(`[scope] Running without auth — "${scope}" scope not enforced`);
+    }
+    return;
+  }
   if (!user.scopes.includes(scope)) {
     throw new Error(
-      `Insufficient permissions: this operation requires the "${scope}" scope`
+      `Insufficient permissions: this operation requires the "${scope}" scope. Generate a new API key with this scope to proceed.`
     );
   }
 }

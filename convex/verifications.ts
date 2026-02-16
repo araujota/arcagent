@@ -320,6 +320,81 @@ export const timeoutStale = internalMutation({
   },
 });
 
+/**
+ * Diff-based verification entry point.
+ * Dispatches a verification job that applies a diff to a clean clone
+ * instead of checking out a specific commit.
+ */
+export const runVerificationFromDiff = internalAction({
+  args: {
+    verificationId: v.id("verifications"),
+    submissionId: v.id("submissions"),
+    bountyId: v.id("bounties"),
+    baseRepoUrl: v.string(),
+    baseCommitSha: v.string(),
+    diffPatch: v.string(),
+    sourceWorkspaceId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const workerUrl = process.env.WORKER_API_URL;
+
+    if (workerUrl) {
+      await ctx.runAction(
+        internal.pipelines.dispatchVerification.dispatchVerificationFromDiff,
+        {
+          verificationId: args.verificationId,
+          submissionId: args.submissionId,
+          bountyId: args.bountyId,
+          baseRepoUrl: args.baseRepoUrl,
+          baseCommitSha: args.baseCommitSha,
+          diffPatch: args.diffPatch,
+          sourceWorkspaceId: args.sourceWorkspaceId,
+        },
+      );
+    } else {
+      // Fallback: run stub verification (for development)
+      console.warn(
+        "[DEV MODE] WORKER_API_URL not configured. Running stub diff verification.",
+      );
+
+      await ctx.runMutation(internal.verifications.updateResult, {
+        verificationId: args.verificationId,
+        status: "running",
+        startedAt: Date.now(),
+      });
+
+      await ctx.runMutation(internal.submissions.updateStatus, {
+        submissionId: args.submissionId,
+        status: "running",
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      await ctx.runMutation(internal.verifications.updateResult, {
+        verificationId: args.verificationId,
+        status: "passed",
+        result: "Stub diff verification passed (worker not configured)",
+        completedAt: Date.now(),
+      });
+
+      await ctx.runMutation(internal.submissions.updateStatus, {
+        submissionId: args.submissionId,
+        status: "passed",
+      });
+
+      await ctx.scheduler.runAfter(
+        0,
+        internal.verifications.triggerPayoutOnVerificationPass,
+        {
+          verificationId: args.verificationId,
+          bountyId: args.bountyId,
+          submissionId: args.submissionId,
+        },
+      );
+    }
+  },
+});
+
 export const getBySubmissionInternal = internalQuery({
   args: { submissionId: v.id("submissions") },
   handler: async (ctx, args) => {
@@ -433,13 +508,18 @@ export const triggerPayoutOnVerificationPass = internalAction({
         status: "completed",
       });
 
-      // Mark the active claim as completed (also triggers fork cleanup via P1-3)
+      // Mark the active claim as completed (also triggers branch cleanup via P1-3)
       const activeClaim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
         bountyId: args.bountyId,
       });
       if (activeClaim) {
         await ctx.runMutation(internal.bountyClaims.markCompleted, {
           claimId: activeClaim._id,
+        });
+
+        // Schedule agent stats recomputation after completion
+        await ctx.scheduler.runAfter(0, internal.agentStats.recomputeForAgent, {
+          agentId: activeClaim.agentId,
         });
       }
 

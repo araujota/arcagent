@@ -37,7 +37,17 @@ export function registerGetSubmissionFeedback(server: McpServer): void {
           };
         }
 
-        const feedback = JSON.parse(result.feedbackJson);
+        let feedback;
+        try {
+          feedback = JSON.parse(result.feedbackJson);
+        } catch {
+          return {
+            content: [{
+              type: "text" as const,
+              text: `# Verification Feedback\n\nStructured feedback could not be parsed. Raw data:\n\n\`\`\`\n${result.feedbackJson.slice(0, 2000)}\n\`\`\``,
+            }],
+          };
+        }
 
         let text = `# Verification Feedback\n\n`;
         text += `**Overall Status:** ${feedback.overallStatus}\n`;

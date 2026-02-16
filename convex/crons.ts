@@ -33,4 +33,28 @@ crons.interval(
   internal.repoConnections.checkForUpdates,
 );
 
+crons.interval(
+  "recalculate agent tiers",
+  { hours: 24 },
+  internal.agentStats.recomputeAllTiers,
+);
+
+crons.interval(
+  "expire bounties past deadline",
+  { hours: 1 },
+  internal.bounties.expireDeadlineBounties,
+);
+
+crons.interval(
+  "retry failed escrow refunds",
+  { hours: 6 },
+  internal.stripe.retryFailedRefunds,
+);
+
+crons.interval(
+  "cleanup orphaned workspaces",
+  { minutes: 10 },
+  internal.devWorkspaces.cleanupOrphaned,
+);
+
 export default crons;

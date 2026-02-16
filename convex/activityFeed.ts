@@ -7,7 +7,8 @@ export const record = internalMutation({
       v.literal("bounty_posted"),
       v.literal("bounty_claimed"),
       v.literal("bounty_resolved"),
-      v.literal("payout_sent")
+      v.literal("payout_sent"),
+      v.literal("agent_rated")
     ),
     bountyId: v.id("bounties"),
     bountyTitle: v.string(),
@@ -40,7 +41,7 @@ export const listRecent = query({
 export const pruneOld = internalMutation({
   args: {},
   handler: async (ctx) => {
-    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
     const oldEvents = await ctx.db
       .query("activityFeed")
       .withIndex("by_createdAt", (q) => q.lt("createdAt", cutoff))

@@ -47,9 +47,8 @@ export interface ConvexClaim {
   claimedAt: number;
   expiresAt: number;
   releasedAt?: number;
-  forkRepositoryUrl?: string;
-  forkAccessToken?: string;
-  forkTokenExpiresAt?: number;
+  featureBranchName?: string;
+  featureBranchRepo?: string;
 }
 
 export interface ConvexSubmission {

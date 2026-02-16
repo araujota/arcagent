@@ -1,7 +1,7 @@
 import { Queue, Worker, QueueEvents } from "bullmq";
 import IORedis from "ioredis";
 import { logger } from "../index";
-import { processVerificationJob } from "./jobProcessor";
+import { processVerificationJob, processVerificationFromDiff } from "./jobProcessor";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,6 +42,10 @@ export interface VerificationJobData {
   ztacoMode?: boolean;
   /** Attempt number for this submission (1-indexed). */
   attemptNumber?: number;
+  /** Diff patch to apply instead of checking out a specific commit. */
+  diffPatch?: string;
+  /** Source workspace ID (for tracking). */
+  sourceWorkspaceId?: string;
 }
 
 /** Possible outcome of a single gate. */
@@ -117,7 +121,12 @@ export async function createVerificationQueue(redisUrl: string): Promise<{
       logger.info("Processing verification job", {
         jobId: job.id,
         submissionId: job.data.submissionId,
+        isDiffBased: !!job.data.diffPatch,
       });
+      // Route to diff-based processor if a diffPatch is present
+      if (job.data.diffPatch) {
+        return processVerificationFromDiff(job);
+      }
       return processVerificationJob(job);
     },
     {

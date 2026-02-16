@@ -2,6 +2,10 @@ import { query, mutation, action, internalQuery, internalMutation } from "./_gen
 import { v } from "convex/values";
 import { getCurrentUser, requireAuth } from "./lib/utils";
 import { api, internal } from "./_generated/api";
+import { MIN_BOUNTY_REWARD, MIN_S_TIER_BOUNTY_REWARD } from "./lib/fees";
+
+const MAX_TITLE_LENGTH = 200;
+const MAX_DESCRIPTION_LENGTH = 50_000;
 
 export const list = query({
   args: {
@@ -160,19 +164,46 @@ export const create = mutation({
     status: v.optional(
       v.union(v.literal("draft"), v.literal("active"))
     ),
+    tosAccepted: v.optional(v.boolean()),
+    tosAcceptedAt: v.optional(v.number()),
+    tosVersion: v.optional(v.string()),
+    pmIssueKey: v.optional(v.string()),
+    pmProvider: v.optional(v.union(
+      v.literal("jira"), v.literal("linear"),
+      v.literal("asana"), v.literal("monday")
+    )),
+    requiredTier: v.optional(v.union(
+      v.literal("S"), v.literal("A"), v.literal("B"),
+      v.literal("C"), v.literal("D")
+    )),
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
 
     // Input validation
-    if (args.reward <= 0) throw new Error("Reward must be positive");
+    if (args.reward < MIN_BOUNTY_REWARD) {
+      throw new Error(`Minimum bounty reward is $${MIN_BOUNTY_REWARD}`);
+    }
+    if (args.requiredTier === "S" && args.reward < MIN_S_TIER_BOUNTY_REWARD) {
+      throw new Error(`S-Tier bounties require a minimum reward of $${MIN_S_TIER_BOUNTY_REWARD}`);
+    }
     if (args.title.trim().length === 0) throw new Error("Title is required");
+    if (args.title.length > MAX_TITLE_LENGTH) throw new Error(`Title must be ${MAX_TITLE_LENGTH} characters or fewer`);
     if (args.description.trim().length < 10) throw new Error("Description too short");
+    if (args.description.length > MAX_DESCRIPTION_LENGTH) throw new Error(`Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer`);
     if (args.deadline && args.deadline < Date.now()) throw new Error("Deadline must be in the future");
 
     // Web3 payments are not yet supported
     if (args.paymentMethod === "web3") {
       throw new Error("Web3 payments are coming soon. Please use Stripe.");
+    }
+
+    // SECURITY: Block direct publish of unfunded Stripe bounties.
+    // Creators must save as draft, fund escrow, then use updateStatus("active").
+    if (args.status === "active" && args.paymentMethod === "stripe") {
+      throw new Error(
+        "Cannot publish: escrow must be funded first. Save as draft, then fund and publish."
+      );
     }
 
     return await ctx.db.insert("bounties", {
@@ -186,6 +217,12 @@ export const create = mutation({
       deadline: args.deadline,
       repositoryUrl: args.repositoryUrl,
       tags: args.tags,
+      tosAccepted: args.tosAccepted,
+      tosAcceptedAt: args.tosAcceptedAt,
+      tosVersion: args.tosVersion,
+      pmIssueKey: args.pmIssueKey,
+      pmProvider: args.pmProvider,
+      requiredTier: args.requiredTier,
     });
   },
 });
@@ -203,6 +240,10 @@ export const update = mutation({
     deadline: v.optional(v.number()),
     repositoryUrl: v.optional(v.string()),
     tags: v.optional(v.array(v.string())),
+    requiredTier: v.optional(v.union(
+      v.literal("S"), v.literal("A"), v.literal("B"),
+      v.literal("C"), v.literal("D")
+    )),
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
@@ -210,6 +251,24 @@ export const update = mutation({
     if (!bounty) throw new Error("Bounty not found");
     if (bounty.creatorId !== user._id && user.role !== "admin") {
       throw new Error("Unauthorized");
+    }
+
+    // Input validation for optional fields
+    if (args.title !== undefined && args.title.length > MAX_TITLE_LENGTH) {
+      throw new Error(`Title must be ${MAX_TITLE_LENGTH} characters or fewer`);
+    }
+    if (args.description !== undefined && args.description.length > MAX_DESCRIPTION_LENGTH) {
+      throw new Error(`Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer`);
+    }
+
+    // Enforce minimum reward
+    const effectiveReward = args.reward ?? bounty.reward;
+    const effectiveTier = args.requiredTier !== undefined ? args.requiredTier : bounty.requiredTier;
+    if (effectiveReward < MIN_BOUNTY_REWARD) {
+      throw new Error(`Minimum bounty reward is $${MIN_BOUNTY_REWARD}`);
+    }
+    if (effectiveTier === "S" && effectiveReward < MIN_S_TIER_BOUNTY_REWARD) {
+      throw new Error(`S-Tier bounties require a minimum reward of $${MIN_S_TIER_BOUNTY_REWARD}`);
     }
 
     // SECURITY (H2): Freeze critical terms once an agent has claimed
@@ -276,6 +335,12 @@ export const updateStatus = mutation({
       bounty.escrowStatus !== "funded"
     ) {
       throw new Error("Cannot activate: escrow must be funded first");
+    }
+
+    // Enforce TOS acceptance on activation (checked here, not in create,
+    // because drafts don't require TOS — it's enforced at publish time)
+    if (args.status === "active" && !bounty.tosAccepted) {
+      throw new Error("You must accept the Bounty Creation Terms of Service before publishing");
     }
 
     await ctx.db.patch(args.bountyId, { status: args.status });
@@ -365,6 +430,7 @@ export const listForMcp = internalQuery({
       tags: b.tags,
       deadline: b.deadline,
       claimDurationHours: b.claimDurationHours,
+      requiredTier: b.requiredTier,
     }));
   },
 });
@@ -438,6 +504,7 @@ export const getForMcp = internalQuery({
       claimDurationHours: bounty.claimDurationHours ?? 4,
       platformFeePercent: bounty.platformFeePercent,
       relevantPaths: bounty.relevantPaths,
+      requiredTier: bounty.requiredTier,
     };
   },
 });
@@ -453,17 +520,44 @@ export const createFromMcp = internalMutation({
     deadline: v.optional(v.number()),
     tags: v.optional(v.array(v.string())),
     status: v.optional(v.union(v.literal("draft"), v.literal("active"))),
+    tosAccepted: v.optional(v.boolean()),
+    tosAcceptedAt: v.optional(v.number()),
+    tosVersion: v.optional(v.string()),
+    pmIssueKey: v.optional(v.string()),
+    pmProvider: v.optional(v.union(
+      v.literal("jira"), v.literal("linear"),
+      v.literal("asana"), v.literal("monday")
+    )),
+    pmConnectionId: v.optional(v.id("pmConnections")),
+    requiredTier: v.optional(v.union(
+      v.literal("S"), v.literal("A"), v.literal("B"),
+      v.literal("C"), v.literal("D")
+    )),
   },
   handler: async (ctx, args) => {
     // Input validation
-    if (args.reward <= 0) throw new Error("Reward must be positive");
+    if (args.reward < MIN_BOUNTY_REWARD) {
+      throw new Error(`Minimum bounty reward is $${MIN_BOUNTY_REWARD}`);
+    }
+    if (args.requiredTier === "S" && args.reward < MIN_S_TIER_BOUNTY_REWARD) {
+      throw new Error(`S-Tier bounties require a minimum reward of $${MIN_S_TIER_BOUNTY_REWARD}`);
+    }
     if (args.title.trim().length === 0) throw new Error("Title is required");
+    if (args.title.length > MAX_TITLE_LENGTH) throw new Error(`Title must be ${MAX_TITLE_LENGTH} characters or fewer`);
     if (args.description.trim().length < 10) throw new Error("Description too short");
+    if (args.description.length > MAX_DESCRIPTION_LENGTH) throw new Error(`Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer`);
     if (args.deadline && args.deadline < Date.now()) throw new Error("Deadline must be in the future");
 
     // Web3 payments are not yet supported
     if (args.paymentMethod === "web3") {
       throw new Error("Web3 payments are coming soon. Please use Stripe.");
+    }
+
+    // SECURITY: Block direct publish of unfunded Stripe bounties
+    if (args.status === "active" && args.paymentMethod === "stripe") {
+      throw new Error(
+        "Cannot publish: escrow must be funded first. Save as draft, then fund and publish."
+      );
     }
 
     const status = args.status ?? "active";
@@ -477,6 +571,13 @@ export const createFromMcp = internalMutation({
       paymentMethod: args.paymentMethod,
       deadline: args.deadline,
       tags: args.tags,
+      tosAccepted: args.tosAccepted,
+      tosAcceptedAt: args.tosAcceptedAt,
+      tosVersion: args.tosVersion,
+      pmIssueKey: args.pmIssueKey,
+      pmProvider: args.pmProvider,
+      pmConnectionId: args.pmConnectionId,
+      requiredTier: args.requiredTier,
     });
 
     if (status === "active") {
@@ -574,8 +675,11 @@ async function cancelBountyImpl(
     )
     .first();
   if (activeClaim) {
+    const expiresAt = activeClaim.expiresAt
+      ? new Date(activeClaim.expiresAt).toISOString()
+      : "unknown";
     throw new Error(
-      "Cannot cancel: an agent has an active claim on this bounty"
+      `Cannot cancel: an agent has an active claim on this bounty (expires ${expiresAt}). You can cancel after the claim expires or is released.`
     );
   }
 
@@ -652,6 +756,63 @@ export const cancelFromMcp = internalMutation({
   },
 });
 
+export const listCancelledWithFundedEscrow = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const cancelled = await ctx.db
+      .query("bounties")
+      .withIndex("by_status", (q) => q.eq("status", "cancelled"))
+      .collect();
+    return cancelled.filter((b) => b.escrowStatus === "funded");
+  },
+});
+
+/**
+ * Auto-expire active bounties past their deadline.
+ * Skips bounties with active claims (agent is working).
+ * Schedules refund if funded.
+ */
+export const expireDeadlineBounties = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+
+    const activeBounties = await ctx.db
+      .query("bounties")
+      .withIndex("by_status", (q) => q.eq("status", "active"))
+      .collect();
+
+    let expiredCount = 0;
+    for (const bounty of activeBounties) {
+      if (!bounty.deadline || bounty.deadline >= now) continue;
+
+      // Skip if there's an active claim
+      const activeClaim = await ctx.db
+        .query("bountyClaims")
+        .withIndex("by_bountyId_and_status", (q) =>
+          q.eq("bountyId", bounty._id).eq("status", "active")
+        )
+        .first();
+      if (activeClaim) continue;
+
+      await ctx.db.patch(bounty._id, { status: "cancelled" });
+
+      // Schedule escrow refund if funded
+      if (bounty.escrowStatus === "funded") {
+        await ctx.scheduler.runAfter(0, internal.stripe.refundEscrow, {
+          bountyId: bounty._id,
+        });
+      }
+
+      expiredCount++;
+    }
+
+    if (expiredCount > 0) {
+      console.log(`[expireDeadlineBounties] Expired ${expiredCount} bounties past deadline`);
+    }
+  },
+});
+
 export const getPublicView = internalQuery({
   args: { bountyId: v.id("bounties") },
   handler: async (ctx, args) => {
@@ -688,6 +849,22 @@ export const getPublicView = internalQuery({
       hiddenTestCount: hiddenTests.length,
       claimDurationHours: bounty.claimDurationHours,
     };
+  },
+});
+
+/**
+ * Fetch Gherkin content from a URL, validate it, and return the result.
+ */
+export const fetchGherkinFromUrl = action({
+  args: {
+    url: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const result = await ctx.runAction(
+      internal.pipelines.fetchGherkinUrl.fetchGherkinUrl,
+      { url: args.url }
+    );
+    return result;
   },
 });
 

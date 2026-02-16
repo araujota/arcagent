@@ -1,7 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { callConvex } from "../convex/client";
-import { createFork } from "../github/forkManager";
 import { ConvexBountyDetails } from "../lib/types";
 import { registerTool } from "../lib/toolHelper";
 import { getAuthUser, requireScope } from "../lib/context";
@@ -10,12 +9,11 @@ export function registerClaimBounty(server: McpServer): void {
   registerTool(
     server,
     "claim_bounty",
-    "Claim an exclusive lock on a bounty. Optionally forks the repository. Only one agent can claim a bounty at a time. Claims expire after the bounty's claim duration (default 4 hours).",
+    "Claim an exclusive lock on a bounty. A Firecracker microVM workspace is provisioned automatically with the repository pre-cloned. Only one agent can claim a bounty at a time. Claims expire after the bounty's claim duration (default 4 hours).",
     {
       bountyId: z.string().describe("The bounty ID to claim"),
-      forkRepo: z.string().optional().describe("Set to 'false' to skip forking (default: fork)"),
     },
-    async (args: { bountyId: string; forkRepo?: string }) => {
+    async (args: { bountyId: string }) => {
       // SECURITY (H4): Enforce scope
       requireScope("bounties:claim");
       // SECURITY (C1): Resolve agentId from auth context, not from params
@@ -34,9 +32,15 @@ export function registerClaimBounty(server: McpServer): void {
 
       const bounty = bountyResult.bounty;
 
-      let claimResult: { claimId: string };
+      let claimResult: {
+        claimId: string;
+        repoInfo: { owner: string; repo: string; baseBranch: string; repositoryUrl: string } | null;
+      };
       try {
-        claimResult = await callConvex<{ claimId: string }>(
+        claimResult = await callConvex<{
+          claimId: string;
+          repoInfo: { owner: string; repo: string; baseBranch: string; repositoryUrl: string } | null;
+        }>(
           "/api/mcp/claims/create",
           { bountyId: args.bountyId, agentId },
         );
@@ -48,49 +52,23 @@ export function registerClaimBounty(server: McpServer): void {
         };
       }
 
-      const claimId = claimResult.claimId;
+      const { claimId } = claimResult;
       let text = `# Bounty Claimed Successfully\n\n`;
       text += `**Claim ID:** ${claimId}\n`;
       text += `**Bounty:** ${bounty.title}\n`;
       text += `**Expires:** ${bounty.claimDurationHours} hours from now\n\n`;
 
-      const shouldFork = args.forkRepo !== "false";
-      if (shouldFork && bounty.repositoryUrl) {
-        try {
-          const match = bounty.repositoryUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
-          if (match) {
-            const [, owner, repo] = match;
-            const bountyIdSuffix = args.bountyId.slice(-6);
-            const agentIdSuffix = agentId.slice(-6);
+      text += `## Development Workspace\n\n`;
+      text += `A Firecracker microVM workspace is being provisioned with the repository pre-cloned.\n`;
+      text += `Use \`workspace_status\` to check when it's ready (~30-90 seconds).\n\n`;
 
-            const fork = await createFork(
-              owner!, repo!.replace(/\.git$/, ""), bountyIdSuffix, agentIdSuffix,
-            );
+      text += `## Available Tools\n\n`;
+      text += `- \`workspace_exec\` — Run shell commands (build, test, install packages)\n`;
+      text += `- \`workspace_read_file\` — Read source files\n`;
+      text += `- \`workspace_write_file\` — Write/create files\n`;
+      text += `- \`submit_solution\` — Submit your changes for verification\n\n`;
 
-            await callConvex("/api/mcp/claims/update-fork", {
-              claimId,
-              forkRepositoryUrl: fork.forkUrl,
-              forkAccessToken: "", // No token shared with agents
-              forkTokenExpiresAt: 0,
-            });
-
-            text += `## Repository Fork\n\n`;
-            text += `**Fork URL:** ${fork.forkUrl}\n`;
-            text += `**Clone:** \`${fork.cloneCommand}\`\n\n`;
-            text += `> **Note:** Push your changes to your own public repository, then submit that URL + commit hash.\n\n`;
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : "Fork creation failed";
-          text += `\n> **Warning:** Repository fork failed: ${message}\n`;
-          text += `> You can still work with your own repository.\n\n`;
-        }
-      }
-
-      text += `## Next Steps\n\n`;
-      text += `1. Clone the fork (or use your own repo)\n`;
-      text += `2. Implement the solution\n`;
-      text += `3. Push your changes\n`;
-      text += `4. Call \`submit_solution\` with the repository URL and commit hash\n`;
+      text += `All development happens inside the VM. You do not need to clone or push to any repository.\n`;
       text += `\nUse \`extend_claim\` if you need more time. Use \`release_claim\` to give up the bounty.`;
 
       return { content: [{ type: "text" as const, text }] };
