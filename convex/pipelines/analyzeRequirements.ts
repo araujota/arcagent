@@ -3,6 +3,114 @@ import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import { createLLMClient } from "../lib/llm";
 
+// ---------------------------------------------------------------------------
+// Extracted pure helpers (testable without Convex runtime)
+// ---------------------------------------------------------------------------
+
+export interface AnalysisResult {
+  ready: boolean;
+  scores?: Record<string, number>;
+  extractedCriteria?: string[];
+  questions?: Array<{
+    question: string;
+    reason: string;
+    dimension?: string;
+    options?: string[];
+  }>;
+  summary?: string;
+}
+
+export interface BuildAnalysisArgs {
+  description: string;
+  requirements?: string;
+  repoContext?: string;
+  previousMessages?: string;
+}
+
+/**
+ * Build the user message content for requirements analysis.
+ */
+export function buildAnalysisUserContent(args: BuildAnalysisArgs): string {
+  let content = `## Feature Request\n${args.description}`;
+
+  if (args.requirements) {
+    content += `\n\n## Additional Requirements\n${args.requirements}`;
+  }
+
+  if (args.repoContext) {
+    content += `\n\n## Repository Context\n${args.repoContext}`;
+  }
+
+  if (args.previousMessages) {
+    content += `\n\n## Previous Conversation\n${args.previousMessages}`;
+  }
+
+  return content;
+}
+
+/**
+ * Parse analysis LLM response into structured result.
+ */
+export function parseAnalysisResponse(response: string): AnalysisResult {
+  try {
+    const cleaned = response
+      .replace(/^```json\n?/, "")
+      .replace(/\n?```$/, "")
+      .trim();
+    return JSON.parse(cleaned);
+  } catch {
+    return {
+      ready: false,
+      questions: [
+        {
+          question:
+            "Could you provide more details about the expected behavior?",
+          reason: "The requirements need more specificity for test generation",
+        },
+      ],
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// System prompt (rubric-based)
+// ---------------------------------------------------------------------------
+
+const ANALYSIS_SYSTEM_PROMPT = `You are an expert BDD test architect. Analyze this feature request using the
+8-dimension rubric below. Score each dimension 1-3 (1=unclear, 2=partial, 3=clear).
+
+RUBRIC:
+1. ACTORS: Are all user roles/system actors identified?
+2. INPUTS: Are input fields, types, and valid ranges specified?
+3. OUTPUTS: Are expected outputs/responses defined?
+4. STATE PRECONDITIONS: Are required system states before the action clear?
+5. ERROR HANDLING: Are failure modes and expected error behavior described?
+6. EDGE CASES: Are boundary conditions or special cases mentioned?
+7. INTEGRATION POINTS: Are external dependencies (DB, API, services) identified?
+8. SECURITY CONSTRAINTS: Are auth/authz/validation requirements clear?
+
+If average score >= 2.0, requirements are ready. Otherwise, ask targeted questions
+for any dimension scoring 1.
+
+ALWAYS include "extractedCriteria": a numbered list of every testable acceptance
+criterion you can identify (even if inferred). These will be used to verify
+coverage of the generated test suite.
+
+Respond with JSON:
+{
+  "ready": boolean,
+  "scores": {"actors": N, "inputs": N, "outputs": N, "statePreconditions": N, "errorHandling": N, "edgeCases": N, "integrationPoints": N, "securityConstraints": N},
+  "extractedCriteria": ["Criterion 1: ...", "Criterion 2: ...", ...],
+  "summary": "..." (if ready),
+  "questions": [{"question": "...", "reason": "...", "dimension": "..."}] (if not ready)
+}
+
+Respond ONLY with valid JSON, no additional text.`;
+
+// ---------------------------------------------------------------------------
+// Convex internalAction handler (thin wrapper)
+// ---------------------------------------------------------------------------
+
 /**
  * Stage 1: Analyze requirements and detect ambiguity.
  * Determines if the bounty requirements are complete enough for test generation,
@@ -17,15 +125,7 @@ export const analyzeRequirements = internalAction({
     repoContext: v.optional(v.string()),
     previousMessages: v.optional(v.string()),
   },
-  handler: async (ctx, args): Promise<{
-    ready: boolean;
-    questions?: Array<{
-      question: string;
-      reason: string;
-      options?: string[];
-    }>;
-    summary?: string;
-  }> => {
+  handler: async (ctx, args): Promise<AnalysisResult> => {
     const llm = createLLMClient(
       process.env.LLM_PROVIDER,
       process.env.LLM_MODEL,
@@ -33,73 +133,22 @@ export const analyzeRequirements = internalAction({
       process.env.OPENAI_API_KEY
     );
 
-    const systemPrompt = `You are an expert BDD test architect. Analyze this feature request and the connected codebase. Determine if the requirements are complete enough to generate comprehensive Gherkin test specifications.
-
-Consider:
-- Are acceptance criteria explicit or implied?
-- Are edge cases addressed?
-- Are error handling expectations defined?
-- Does the codebase context reveal integration points that need testing?
-- Are there ambiguous terms that could be interpreted multiple ways?
-
-If the requirements are clear, respond with JSON: {"ready": true, "summary": "Brief summary of what will be tested"}
-If clarification is needed, respond with JSON: {"ready": false, "questions": [{"question": "...", "reason": "Why this matters", "options": ["option1", "option2"]}]}
-
-Respond ONLY with valid JSON, no additional text.`;
-
-    let userContent = `## Feature Request\n${args.description}`;
-
-    if (args.requirements) {
-      userContent += `\n\n## Additional Requirements\n${args.requirements}`;
-    }
-
-    if (args.repoContext) {
-      userContent += `\n\n## Repository Context\n${args.repoContext}`;
-    }
-
-    if (args.previousMessages) {
-      userContent += `\n\n## Previous Conversation\n${args.previousMessages}`;
-    }
+    const userContent = buildAnalysisUserContent({
+      description: args.description,
+      requirements: args.requirements,
+      repoContext: args.repoContext,
+      previousMessages: args.previousMessages,
+    });
 
     const response = await llm.chat(
       [
-        { role: "system", content: systemPrompt },
+        { role: "system", content: ANALYSIS_SYSTEM_PROMPT },
         { role: "user", content: userContent },
       ],
       { temperature: 0.3, maxTokens: 2000, responseFormat: "json" }
     );
 
-    // Parse the response
-    let result: {
-      ready: boolean;
-      questions?: Array<{
-        question: string;
-        reason: string;
-        options?: string[];
-      }>;
-      summary?: string;
-    };
-
-    try {
-      // Strip markdown code fences if present
-      const cleaned = response
-        .replace(/^```json\n?/, "")
-        .replace(/\n?```$/, "")
-        .trim();
-      result = JSON.parse(cleaned);
-    } catch {
-      // If parsing fails, assume we need clarification
-      result = {
-        ready: false,
-        questions: [
-          {
-            question:
-              "Could you provide more details about the expected behavior?",
-            reason: "The requirements need more specificity for test generation",
-          },
-        ],
-      };
-    }
+    const result = parseAnalysisResponse(response);
 
     // Store the analysis as a conversation message
     await ctx.runMutation(internal.conversations.addMessage, {

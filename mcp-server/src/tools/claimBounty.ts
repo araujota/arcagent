@@ -64,8 +64,13 @@ export function registerClaimBounty(server: McpServer): void {
 
       text += `## Available Tools\n\n`;
       text += `- \`workspace_exec\` — Run shell commands (build, test, install packages)\n`;
-      text += `- \`workspace_read_file\` — Read source files\n`;
-      text += `- \`workspace_write_file\` — Write/create files\n`;
+      text += `- \`workspace_exec_stream\` — Run long commands (npm test, cargo build) with streaming output\n`;
+      text += `- \`workspace_read_file\` — Read a single source file\n`;
+      text += `- \`workspace_batch_read\` — Read multiple files in one call (much faster)\n`;
+      text += `- \`workspace_write_file\` — Write/create a single file\n`;
+      text += `- \`workspace_batch_write\` — Write multiple files in one call\n`;
+      text += `- \`workspace_search\` — Search for patterns across files (structured grep)\n`;
+      text += `- \`workspace_list_files\` — List files with optional glob filter\n`;
       text += `- \`submit_solution\` — Submit your changes for verification\n\n`;
 
       text += `All development happens inside the VM. You do not need to clone or push to any repository.\n`;

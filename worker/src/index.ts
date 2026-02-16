@@ -6,6 +6,7 @@ import { authMiddleware } from "./api/auth";
 import { cleanupStaleCryptDevices } from "./vm/encryptedOverlay";
 import { createWorkspaceRoutes } from "./workspace/routes";
 import { destroyAllSessions, startIdleChecker } from "./workspace/sessionManager";
+import { vmPool } from "./vm/vmPool";
 
 // ---------------------------------------------------------------------------
 // Logger
@@ -66,6 +67,11 @@ async function main(): Promise<void> {
   // Start idle workspace checker
   startIdleChecker();
 
+  // Initialize warm VM pool (background, non-blocking)
+  vmPool.initialize().catch((err) => {
+    logger.warn("Warm VM pool initialization failed", { error: String(err) });
+  });
+
   const server = app.listen(port, () => {
     logger.info(`Worker API server listening on port ${port}`);
   });
@@ -75,6 +81,7 @@ async function main(): Promise<void> {
     logger.info(`Received ${signal} – shutting down gracefully`);
     server.close();
     await destroyAllSessions();
+    await vmPool.drainAll();
     await worker.close();
     await closeQueue(queue);
     process.exit(0);

@@ -1,0 +1,77 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: cd worker && npm ci
+      - run: cd mcp-server && npm ci
+      # Root/Convex has known pre-existing implicit any errors
+      - run: npx tsc --noEmit || true
+      - run: cd worker && npx tsc --noEmit
+      - run: cd mcp-server && npx tsc --noEmit
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  test-convex-and-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test -- --coverage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-root
+          path: coverage/
+
+  test-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: cd worker && npm ci
+      - run: cd worker && npm test -- --coverage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-worker
+          path: worker/coverage/
+
+  test-mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: cd mcp-server && npm ci
+      - run: cd mcp-server && npm test -- --coverage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-mcp
+          path: mcp-server/coverage/

@@ -83,9 +83,9 @@ export const BDD_FRAMEWORK_MAP: Record<
     configFile: "cucumber.js",
   },
   python: {
-    framework: "pytest-bdd",
-    runner: "pytest",
-    configFile: "pytest.ini",
+    framework: "behave",
+    runner: "behave",
+    configFile: "behave.ini",
   },
   go: { framework: "godog", runner: "go test", configFile: "godog.go" },
   rust: {

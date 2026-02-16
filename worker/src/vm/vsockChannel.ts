@@ -213,6 +213,218 @@ async function sendVsockRequest(
 }
 
 // ---------------------------------------------------------------------------
+// Connection Pool
+// ---------------------------------------------------------------------------
+
+/**
+ * Pool of persistent vsock connections per socket path (per VM).
+ * Connections are reused across requests. If the guest agent closes
+ * the connection after responding (no keep-alive), the pool gracefully
+ * falls back to creating new connections.
+ */
+export class VsockPool {
+  private pool = new Map<string, Socket[]>(); // socketPath → idle sockets
+  private maxPerVM: number;
+
+  constructor(maxPerVM = 4) {
+    this.maxPerVM = maxPerVM;
+  }
+
+  /**
+   * Acquire a connected socket from the pool or create a new one.
+   */
+  async acquire(socketPath: string): Promise<Socket> {
+    const idle = this.pool.get(socketPath);
+    if (idle && idle.length > 0) {
+      const socket = idle.pop()!;
+      // Verify socket is still connected
+      if (!socket.destroyed && socket.writable) {
+        return socket;
+      }
+      // Socket was closed — discard and create new
+      socket.destroy();
+    }
+
+    // Create a new connection
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`VsockPool: connect timeout for ${socketPath}`));
+      }, CONNECT_TIMEOUT_MS);
+
+      const socket = connect({ path: socketPath }, () => {
+        clearTimeout(timer);
+        resolve(socket);
+      });
+
+      socket.on("error", (err) => {
+        clearTimeout(timer);
+        reject(new Error(`VsockPool: connect error: ${err.message}`));
+      });
+    });
+  }
+
+  /**
+   * Return a connection to the pool for reuse (or destroy if pool full).
+   */
+  release(socketPath: string, socket: Socket): void {
+    if (socket.destroyed || !socket.writable) {
+      return; // don't pool dead sockets
+    }
+
+    let idle = this.pool.get(socketPath);
+    if (!idle) {
+      idle = [];
+      this.pool.set(socketPath, idle);
+    }
+
+    if (idle.length >= this.maxPerVM) {
+      socket.destroy();
+      return;
+    }
+
+    // Remove all listeners to prevent leaks
+    socket.removeAllListeners("data");
+    socket.removeAllListeners("error");
+    socket.removeAllListeners("close");
+
+    // If socket closes while idle, just let it go
+    socket.once("error", () => {
+      socket.destroy();
+      const arr = this.pool.get(socketPath);
+      if (arr) {
+        const idx = arr.indexOf(socket);
+        if (idx >= 0) arr.splice(idx, 1);
+      }
+    });
+    socket.once("close", () => {
+      const arr = this.pool.get(socketPath);
+      if (arr) {
+        const idx = arr.indexOf(socket);
+        if (idx >= 0) arr.splice(idx, 1);
+      }
+    });
+
+    idle.push(socket);
+  }
+
+  /**
+   * Destroy all connections for a VM (called on VM destroy).
+   */
+  destroy(socketPath: string): void {
+    const idle = this.pool.get(socketPath);
+    if (idle) {
+      for (const socket of idle) {
+        socket.destroy();
+      }
+      this.pool.delete(socketPath);
+    }
+  }
+
+  /**
+   * Destroy all pooled connections (for shutdown).
+   */
+  destroyAll(): void {
+    for (const [, sockets] of this.pool) {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+    }
+    this.pool.clear();
+  }
+
+  /**
+   * Number of idle connections for a given socket path.
+   */
+  idleCount(socketPath: string): number {
+    return this.pool.get(socketPath)?.length ?? 0;
+  }
+}
+
+/** Global vsock connection pool instance. */
+export const vsockPool = new VsockPool();
+
+/**
+ * Send a vsock request using a pooled connection.
+ * Falls back to a new connection if pooled connection fails.
+ */
+export async function sendVsockRequestPooled(
+  socketPath: string,
+  request: VsockRequest,
+  timeoutMs: number,
+): Promise<VsockResponse> {
+  let socket: Socket;
+  try {
+    socket = await vsockPool.acquire(socketPath);
+  } catch {
+    // Fall back to non-pooled
+    return sendVsockRequest(socketPath, request, timeoutMs);
+  }
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`vsock pooled request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    // Optimized buffer handling: track offset instead of O(n²) concat on every chunk
+    let buf = Buffer.alloc(0);
+    let resolved = false;
+
+    const onData = (chunk: Buffer) => {
+      buf = Buffer.concat([buf, chunk]);
+
+      if (buf.length < 4) return;
+      const expectedLen = buf.readUInt32BE(0);
+      if (buf.length < 4 + expectedLen) return;
+
+      // Full response received
+      resolved = true;
+      clearTimeout(timer);
+      socket.removeListener("data", onData);
+
+      const jsonBuf = buf.subarray(4, 4 + expectedLen);
+
+      // Try to return to pool — if guest supports keep-alive, this saves reconnect time
+      vsockPool.release(socketPath, socket);
+
+      try {
+        const response: VsockResponse = JSON.parse(jsonBuf.toString("utf-8"));
+        resolve(response);
+      } catch (err) {
+        reject(new Error(`Failed to parse vsock response: ${err}`));
+      }
+    };
+
+    socket.on("data", onData);
+
+    socket.once("error", (err) => {
+      if (!resolved) {
+        clearTimeout(timer);
+        socket.destroy();
+        reject(new Error(`vsock pooled connection error: ${err.message}`));
+      }
+    });
+
+    socket.once("close", () => {
+      if (!resolved) {
+        clearTimeout(timer);
+        // Connection closed before full response — guest doesn't support keep-alive
+        // Fall back to non-pooled for this request
+        if (buf.length === 0) {
+          sendVsockRequest(socketPath, request, timeoutMs).then(resolve, reject);
+        }
+      }
+    });
+
+    // Send the request
+    const payload = Buffer.from(JSON.stringify(request), "utf-8");
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(payload.length, 0);
+    socket.write(Buffer.concat([header, payload]));
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Connection waiting
 // ---------------------------------------------------------------------------
 

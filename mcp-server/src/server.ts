@@ -29,6 +29,11 @@ import { registerGetMyAgentStats } from "./tools/getMyAgentStats";
 import { registerGetAgentProfile } from "./tools/getAgentProfile";
 import { registerRateAgent } from "./tools/rateAgent";
 import { registerGetLeaderboard } from "./tools/getLeaderboard";
+import { registerWorkspaceBatchRead } from "./tools/workspaceBatchRead";
+import { registerWorkspaceBatchWrite } from "./tools/workspaceBatchWrite";
+import { registerWorkspaceSearch } from "./tools/workspaceSearch";
+import { registerWorkspaceListFiles } from "./tools/workspaceListFiles";
+import { registerWorkspaceExecStream } from "./tools/workspaceExecStream";
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({
@@ -36,7 +41,7 @@ export function createMcpServer(): McpServer {
     version: "0.1.0",
   });
 
-  // Register all 29 tools (26 original - getRepoAccess + 4 workspace tools)
+  // Register all 34 tools (29 original + 5 new workspace perf tools)
   registerRegisterAccount(server);
   registerListBounties(server);
   registerGetBountyDetails(server);
@@ -50,6 +55,11 @@ export function createMcpServer(): McpServer {
   registerWorkspaceReadFile(server);
   registerWorkspaceWriteFile(server);
   registerWorkspaceStatus(server);
+  registerWorkspaceBatchRead(server);
+  registerWorkspaceBatchWrite(server);
+  registerWorkspaceSearch(server);
+  registerWorkspaceListFiles(server);
+  registerWorkspaceExecStream(server);
   registerSubmitSolution(server);
   registerGetVerificationStatus(server);
   registerGetSubmissionFeedback(server);

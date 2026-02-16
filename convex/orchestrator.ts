@@ -162,6 +162,18 @@ export const generateBDDDirect = action({
       conversationId: args.conversationId,
     });
 
+    // Fetch feature file exemplars from repo connection
+    let existingFeatureExemplars: string | undefined;
+    const repoConnection = await ctx.runQuery(api.repoConnections.getByBountyId, {
+      bountyId: args.bountyId,
+    });
+    if (repoConnection?.detectedFeatureFiles && repoConnection.detectedFeatureFiles.length > 0) {
+      existingFeatureExemplars = repoConnection.detectedFeatureFiles
+        .slice(0, 2)
+        .map((f: { filePath: string; content: string }) => `# ${f.filePath}\n${f.content}`)
+        .join("\n\n");
+    }
+
     const result = await ctx.runAction(
       internal.pipelines.generateBDD.generateBDD,
       {
@@ -169,6 +181,7 @@ export const generateBDDDirect = action({
         conversationId: args.conversationId,
         description: bounty.description,
         repoContext: conversation?.repoContextSnapshot || undefined,
+        existingFeatureExemplars,
       }
     );
 
@@ -351,6 +364,7 @@ export const checkRepoAndStartGeneration = internalAction({
 /**
  * Runs the full NL→BDD→TDD chain in one shot (autonomous mode).
  * No human interaction or clarification rounds.
+ * Includes validateTests call with 1-retry regeneration loop.
  */
 export const runAutonomousGeneration = internalAction({
   args: {
@@ -366,6 +380,7 @@ export const runAutonomousGeneration = internalAction({
 
       // 1. Retrieve repo context
       let repoContext: string | undefined;
+      let parsedContext: { repoMapText?: string; relevantChunks?: Array<{ filePath: string; content: string }> } | null = null;
       try {
         const context = await ctx.runAction(
           internal.pipelines.retrieveContext.retrieveContext,
@@ -375,6 +390,12 @@ export const runAutonomousGeneration = internalAction({
           }
         );
         repoContext = JSON.stringify(context);
+        // Parse back to get typed access to relevantChunks
+        try {
+          parsedContext = JSON.parse(repoContext);
+        } catch {
+          // ignore parse failure
+        }
 
         await ctx.runMutation(internal.conversations.updateRepoContext, {
           conversationId: args.conversationId,
@@ -384,7 +405,52 @@ export const runAutonomousGeneration = internalAction({
         console.warn("[autonomous] Failed to retrieve repo context:", error);
       }
 
-      // 2. Gather existing Gherkin from imported test suites as supplementary context
+      // 1b. Fetch feature file exemplars from repo connection
+      const repoConnection = await ctx.runQuery(
+        internal.repoConnections.getByBountyIdInternal,
+        { bountyId: args.bountyId }
+      );
+
+      let existingFeatureExemplars: string | undefined;
+      if (repoConnection?.detectedFeatureFiles && repoConnection.detectedFeatureFiles.length > 0) {
+        existingFeatureExemplars = repoConnection.detectedFeatureFiles
+          .slice(0, 2)
+          .map((f: { filePath: string; content: string }) => `# ${f.filePath}\n${f.content}`)
+          .join("\n\n");
+      }
+
+      // 1c. Extract test file exemplars from RAG chunks
+      let existingTestExemplars: string | undefined;
+      if (parsedContext?.relevantChunks) {
+        const testChunks = parsedContext.relevantChunks
+          .filter((c) => /\.(test|spec|steps)\./i.test(c.filePath))
+          .slice(0, 3);
+        if (testChunks.length > 0) {
+          existingTestExemplars = testChunks
+            .map((c) => `### ${c.filePath}\n${c.content}`)
+            .join("\n\n");
+        }
+      }
+
+      // 2. Run requirements analysis to extract criteria
+      let extractedCriteria: string[] | undefined;
+      try {
+        const analysisResult = await ctx.runAction(
+          internal.pipelines.analyzeRequirements.analyzeRequirements,
+          {
+            bountyId: args.bountyId,
+            conversationId: args.conversationId,
+            description: bounty.description,
+            requirements: bounty.title,
+            repoContext,
+          }
+        );
+        extractedCriteria = analysisResult.extractedCriteria;
+      } catch (error) {
+        console.warn("[autonomous] Requirements analysis failed, continuing without criteria:", error);
+      }
+
+      // 3. Gather existing Gherkin from imported test suites as supplementary context
       let existingGherkin: string | undefined;
       const existingTestSuites = await ctx.runQuery(
         internal.testSuites.listAllByBounty,
@@ -396,39 +462,36 @@ export const runAutonomousGeneration = internalAction({
           .join("\n\n");
       }
 
-      // 3. Generate BDD (creates the generatedTests record internally)
+      // 4. Generate BDD (creates the generatedTests record internally)
       await ctx.runAction(internal.pipelines.generateBDD.generateBDD, {
         bountyId: args.bountyId,
         conversationId: args.conversationId,
         description: bounty.description,
         repoContext,
         existingGherkin,
+        existingFeatureExemplars,
+        extractedCriteria,
       });
 
-      // 4. Get the generated test record
-      const generatedTest = await ctx.runQuery(
+      // 5. Get the generated test record
+      let generatedTest = await ctx.runQuery(
         internal.generatedTests.getByConversationIdInternal,
         { conversationId: args.conversationId }
       );
       if (!generatedTest) throw new Error("Generated test record not found after BDD generation");
 
-      // 5. Auto-approve
+      // 6. Auto-approve
       await ctx.runMutation(internal.generatedTests.updateStatus, {
         generatedTestId: generatedTest._id,
         status: "approved",
       });
 
-      // 6. Generate TDD
+      // 7. Generate TDD
       const conversation = await ctx.runQuery(
         internal.conversations.getById,
         { conversationId: args.conversationId }
       );
 
-      // Detect primary language from repo connection
-      const repoConnection = await ctx.runQuery(
-        internal.repoConnections.getByBountyIdInternal,
-        { bountyId: args.bountyId }
-      );
       const primaryLanguage = repoConnection?.languages?.[0] || "typescript";
 
       await ctx.runAction(internal.pipelines.generateTDD.generateTDD, {
@@ -439,38 +502,111 @@ export const runAutonomousGeneration = internalAction({
         gherkinHidden: generatedTest.gherkinHidden,
         repoContext: conversation?.repoContextSnapshot || undefined,
         primaryLanguage,
+        existingTestExemplars,
       });
 
-      // 7. Mark as published
+      // 8. Validate tests + 1-retry regeneration loop
+      const updatedTestForValidation = await ctx.runQuery(
+        internal.generatedTests.getByConversationIdInternal,
+        { conversationId: args.conversationId }
+      );
+
+      if (updatedTestForValidation) {
+        const validationResult = await ctx.runAction(
+          internal.pipelines.validateTests.validateTests,
+          {
+            bountyId: args.bountyId,
+            conversationId: args.conversationId,
+            generatedTestId: generatedTest._id,
+            gherkinPublic: updatedTestForValidation.gherkinPublic,
+            gherkinHidden: updatedTestForValidation.gherkinHidden,
+            stepDefinitions: updatedTestForValidation.stepDefinitions || "",
+            extractedCriteria,
+          }
+        );
+
+        // If validation indicates regeneration is needed, retry once
+        if (validationResult.needsRegeneration) {
+          console.log("[autonomous] Validation flagged gaps — retrying BDD generation");
+
+          const gapDescription = [
+            ...(validationResult.uncoveredCriteria || []).map(
+              (c: string) => `Uncovered criterion: ${c}`
+            ),
+            ...(validationResult.parsedReview?.missingScenarios || []).map(
+              (s: string) => `Missing scenario: ${s}`
+            ),
+          ].join("\n");
+
+          const supplementaryPrompt = gapDescription
+            ? `\n\nThe previous generation had coverage gaps. Please also cover:\n${gapDescription}`
+            : "";
+
+          // Re-generate BDD with gap info appended to description
+          await ctx.runAction(internal.pipelines.generateBDD.generateBDD, {
+            bountyId: args.bountyId,
+            conversationId: args.conversationId,
+            description: bounty.description + supplementaryPrompt,
+            repoContext,
+            existingGherkin,
+            existingFeatureExemplars,
+            extractedCriteria,
+          });
+
+          // Re-fetch and re-generate TDD
+          const retryTest = await ctx.runQuery(
+            internal.generatedTests.getByConversationIdInternal,
+            { conversationId: args.conversationId }
+          );
+          if (retryTest) {
+            generatedTest = retryTest;
+            await ctx.runMutation(internal.generatedTests.updateStatus, {
+              generatedTestId: retryTest._id,
+              status: "approved",
+            });
+            await ctx.runAction(internal.pipelines.generateTDD.generateTDD, {
+              bountyId: args.bountyId,
+              conversationId: args.conversationId,
+              generatedTestId: retryTest._id,
+              gherkinPublic: retryTest.gherkinPublic,
+              gherkinHidden: retryTest.gherkinHidden,
+              repoContext: conversation?.repoContextSnapshot || undefined,
+              primaryLanguage,
+              existingTestExemplars,
+            });
+          }
+        }
+      }
+
+      // 9. Mark as published
       await ctx.runMutation(internal.generatedTests.updateStatus, {
         generatedTestId: generatedTest._id,
         status: "published",
       });
 
-      // 8. Create test suites (public + hidden)
-      // Re-fetch to get updated step definitions
-      const updatedTest = await ctx.runQuery(
+      // 10. Create test suites (public + hidden)
+      const finalTest = await ctx.runQuery(
         internal.generatedTests.getByConversationIdInternal,
         { conversationId: args.conversationId }
       );
 
-      if (updatedTest) {
+      if (finalTest) {
         await ctx.runMutation(internal.testSuites.createInternal, {
           bountyId: args.bountyId,
           title: `${bounty.title} - Public Tests`,
-          gherkinContent: updatedTest.gherkinPublic,
+          gherkinContent: finalTest.gherkinPublic,
           visibility: "public",
         });
 
         await ctx.runMutation(internal.testSuites.createInternal, {
           bountyId: args.bountyId,
           title: `${bounty.title} - Hidden Tests`,
-          gherkinContent: updatedTest.gherkinHidden,
+          gherkinContent: finalTest.gherkinHidden,
           visibility: "hidden",
         });
       }
 
-      // 9. Finalize conversation
+      // 11. Finalize conversation
       await ctx.runMutation(internal.conversations.updateStatus, {
         conversationId: args.conversationId,
         status: "finalized",

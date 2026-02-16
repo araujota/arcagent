@@ -28,7 +28,7 @@ interface CacheEntry {
 // Cache
 // ---------------------------------------------------------------------------
 
-const TTL_MS = 30_000; // 30 seconds
+const TTL_MS = 120_000; // 120 seconds — workspace status rarely changes during active use
 const cache = new Map<string, CacheEntry>();
 
 function cacheKey(agentId: string, bountyId: string): string {

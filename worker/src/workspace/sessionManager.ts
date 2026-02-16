@@ -9,6 +9,7 @@ import { logger } from "../index";
 import { createFirecrackerVM, destroyFirecrackerVM, VMHandle } from "../vm/firecracker";
 import { getVMConfig, VMResourceConfig } from "../vm/vmConfig";
 import { sanitizeShellArg } from "../lib/shellSanitize";
+import { vmPool } from "../vm/vmPool";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,6 +40,10 @@ export interface DiffOutput {
   hasChanges: boolean;
 }
 
+export interface CapacityError extends Error {
+  retryAfterMs: number;
+}
+
 export interface ProvisionOptions {
   workspaceId: string;
   claimId: string;
@@ -60,6 +65,7 @@ const WORKSPACE_IDLE_TIMEOUT_MS = parseInt(
   10,
 ); // 30 min default
 const IDLE_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 min
+const ERROR_SESSION_CLEANUP_MS = 5 * 60 * 1000; // 5 min
 const MAX_DIFF_SIZE = 10 * 1024 * 1024; // 10 MiB
 const MAX_CHANGED_FILES = 500;
 
@@ -106,14 +112,25 @@ export async function cleanupOrphanedWorkspaces(): Promise<void> {
 export async function provisionWorkspace(
   opts: ProvisionOptions,
 ): Promise<WorkspaceSession> {
-  // Capacity check
-  const activeCount = Array.from(sessions.values()).filter(
+  // Capacity check — include retry info based on nearest expiry
+  const activeSessions = Array.from(sessions.values()).filter(
     (s) => s.status !== "destroyed",
-  ).length;
-  if (activeCount >= MAX_DEV_VMS) {
-    throw new Error(
+  );
+  if (activeSessions.length >= MAX_DEV_VMS) {
+    const now = Date.now();
+    // Find the nearest TTL expiry for a retry hint
+    const nearestExpiry = activeSessions
+      .filter((s) => s.expiresAt > now)
+      .reduce((min, s) => Math.min(min, s.expiresAt), Infinity);
+    const retryAfterMs = nearestExpiry === Infinity
+      ? 60_000 // fallback: suggest 60s
+      : Math.max(nearestExpiry - now + 1000, 5000); // add 1s buffer
+
+    const err = new Error(
       "Worker at capacity. Please try again later.",
     );
+    (err as CapacityError).retryAfterMs = retryAfterMs;
+    throw err;
   }
 
   const vmConfig = getDevVMConfig(opts.language);
@@ -143,13 +160,24 @@ export async function provisionWorkspace(
   sessions.set(opts.workspaceId, session);
 
   try {
-    // Create VM with dev-class resources
-    const vm = await createFirecrackerVM({
-      jobId: opts.workspaceId,
-      rootfsImage: vmConfig.rootfsImage,
-      vcpuCount: vmConfig.vcpuCount,
-      memSizeMib: vmConfig.memSizeMib,
-    });
+    // Try warm pool first, fall back to fresh VM boot
+    let vm: VMHandle;
+    const warmVM = await vmPool.acquire(opts.language).catch(() => null);
+    if (warmVM) {
+      vm = warmVM;
+      logger.info("Using warm VM for workspace", {
+        workspaceId: opts.workspaceId,
+        language: opts.language,
+        vmId: vm.vmId,
+      });
+    } else {
+      vm = await createFirecrackerVM({
+        jobId: opts.workspaceId,
+        rootfsImage: vmConfig.rootfsImage,
+        vcpuCount: vmConfig.vcpuCount,
+        memSizeMib: vmConfig.memSizeMib,
+      });
+    }
     session.vmHandle = vm;
 
     // Clone repo (as root for initial setup)
@@ -266,35 +294,33 @@ export async function extractDiff(
 
   const vm = session.vmHandle;
 
-  // Stage all changes
-  await vm.exec("cd /workspace && git add -A", 30_000, "agent");
+  // Single exec call: stage + diff + stat + names using delimiter-separated output
+  // Reduces 4 sequential vsock round-trips to 1
+  const combinedCmd =
+    `cd /workspace && git add -A && ` +
+    `echo '---DIFF---' && git diff --cached HEAD && ` +
+    `echo '---STAT---' && git diff --cached --stat HEAD && ` +
+    `echo '---NAMES---' && git diff --cached --name-only HEAD`;
 
-  // Get unified diff
-  const diffResult = await vm.exec(
-    "cd /workspace && git diff --cached HEAD",
-    60_000,
-    "agent",
-  );
+  const combinedResult = await vm.exec(combinedCmd, 60_000, "agent");
+  const output = combinedResult.stdout;
 
-  // Get diff stats
-  const statResult = await vm.exec(
-    "cd /workspace && git diff --cached --stat HEAD",
-    30_000,
-    "agent",
-  );
+  // Split on delimiter markers
+  const diffStart = output.indexOf("---DIFF---\n");
+  const statStart = output.indexOf("---STAT---\n");
+  const namesStart = output.indexOf("---NAMES---\n");
 
-  // Get changed file names
-  const namesResult = await vm.exec(
-    "cd /workspace && git diff --cached --name-only HEAD",
-    30_000,
-    "agent",
-  );
+  const diffPatch = diffStart >= 0 && statStart >= 0
+    ? output.substring(diffStart + "---DIFF---\n".length, statStart).trimEnd()
+    : "";
+  const diffStat = statStart >= 0 && namesStart >= 0
+    ? output.substring(statStart + "---STAT---\n".length, namesStart).trimEnd()
+    : "";
+  const namesRaw = namesStart >= 0
+    ? output.substring(namesStart + "---NAMES---\n".length).trimEnd()
+    : "";
 
-  const diffPatch = diffResult.stdout;
-  const changedFiles = namesResult.stdout
-    .trim()
-    .split("\n")
-    .filter(Boolean);
+  const changedFiles = namesRaw.split("\n").filter(Boolean);
 
   // Validate diff size
   if (Buffer.byteLength(diffPatch, "utf-8") > MAX_DIFF_SIZE) {
@@ -310,7 +336,7 @@ export async function extractDiff(
 
   return {
     diffPatch,
-    diffStat: statResult.stdout,
+    diffStat,
     changedFiles,
     hasChanges: changedFiles.length > 0,
   };
@@ -368,13 +394,22 @@ export function startIdleChecker(): void {
   idleCheckTimer = setInterval(() => {
     const now = Date.now();
     for (const [id, session] of sessions) {
-      if (session.status !== "ready") continue;
-      if (now - session.lastActivityAt > WORKSPACE_IDLE_TIMEOUT_MS) {
+      // Clean up idle ready sessions
+      if (session.status === "ready" && now - session.lastActivityAt > WORKSPACE_IDLE_TIMEOUT_MS) {
         logger.info("Destroying idle workspace", {
           workspaceId: id,
           idleMs: now - session.lastActivityAt,
         });
         destroyWorkspace(id, "idle_timeout").catch(() => {});
+        continue;
+      }
+      // Phase 4A: Clean up error sessions older than 5 minutes
+      if (session.status === "error" && now - session.createdAt > ERROR_SESSION_CLEANUP_MS) {
+        logger.info("Cleaning up error workspace", {
+          workspaceId: id,
+          ageMs: now - session.createdAt,
+        });
+        destroyWorkspace(id, "error_cleanup").catch(() => {});
       }
     }
   }, IDLE_CHECK_INTERVAL_MS);

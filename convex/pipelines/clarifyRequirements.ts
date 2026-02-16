@@ -71,12 +71,13 @@ export const clarifyRequirements = internalAction({
     );
 
     if (result.ready) {
-      // Trigger BDD generation
+      // Trigger BDD generation with extracted criteria from analysis
       await ctx.scheduler.runAfter(0, internal.pipelines.generateBDD.generateBDD, {
         bountyId: args.bountyId,
         conversationId: args.conversationId,
         description: args.description,
         repoContext: args.repoContext,
+        extractedCriteria: result.extractedCriteria,
       });
     }
 

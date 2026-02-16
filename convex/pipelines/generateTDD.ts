@@ -4,6 +4,132 @@ import { internal } from "../_generated/api";
 import { createLLMClient } from "../lib/llm";
 import { BDD_FRAMEWORK_MAP } from "../lib/languageDetector";
 
+// ---------------------------------------------------------------------------
+// Extracted pure helpers (testable without Convex runtime)
+// ---------------------------------------------------------------------------
+
+/**
+ * Map language to file extension.
+ */
+export function getExtension(language: string): string {
+  const extMap: Record<string, string> = {
+    typescript: "ts",
+    javascript: "js",
+    python: "py",
+    go: "go",
+    rust: "rs",
+    java: "java",
+    ruby: "rb",
+    php: "php",
+    csharp: "cs",
+    kotlin: "kt",
+    c: "c",
+    cpp: "cpp",
+    swift: "swift",
+  };
+  return extMap[language] || "ts";
+}
+
+export interface BuildTDDPromptArgs {
+  gherkin: string;
+  label: string;
+  framework: string;
+  language: string;
+  runner: string;
+  configFile: string;
+  repoMapText?: string;
+  relevantChunksText?: string;
+  existingTestExemplars?: string;
+}
+
+/**
+ * Build the prompt for step definition generation.
+ */
+export function buildTDDPrompt(args: BuildTDDPromptArgs): string {
+  const repoSection = args.repoMapText
+    ? `## Repository Structure:\n${args.repoMapText}\n`
+    : "";
+
+  const codeSection = args.relevantChunksText
+    ? `## Relevant Source Code:\n${args.relevantChunksText}\n`
+    : "";
+
+  const exemplarSection = args.existingTestExemplars
+    ? `## Existing Test Code Style (match this project's conventions)
+${args.existingTestExemplars}
+
+Match the exact patterns above — same import style, same assertion library,
+same naming conventions, same setup/teardown approach.
+`
+    : "";
+
+  return `Generate executable step definitions for these Gherkin features.
+
+## Target Framework: ${args.framework}
+## Language: ${args.language}
+## Test Runner: ${args.runner}
+## Config File: ${args.configFile}
+
+${repoSection}${codeSection}${exemplarSection}
+## Gherkin Features (${args.label}):
+${args.gherkin}
+
+## Instructions
+- Generate step definition files that implement each Given/When/Then step
+- Reference actual module paths, function names, and types from the codebase
+- Include necessary imports
+- Use the ${args.framework} step definition syntax
+- Generate test configuration file (${args.configFile})
+- Include setup/teardown hooks if needed
+- Step definitions should be in ${args.language}
+- Group step definitions by feature file
+
+CRITICAL: Every Given, When, Then, And, and But step in the Gherkin MUST have
+a matching step definition. After generating, mentally verify that no steps
+are unmatched. If a step needs a helper function that doesn't exist in the
+codebase, generate it as a test utility.
+
+Output as JSON:
+{
+  "files": [
+    {"path": "tests/steps/feature_steps.${getExtension(args.language)}", "content": "..."},
+    {"path": "tests/support/world.${getExtension(args.language)}", "content": "..."},
+    {"path": "${args.configFile}", "content": "..."}
+  ],
+  "framework": "${args.framework}",
+  "runCommand": "..."
+}`;
+}
+
+/**
+ * Parse TDD generation LLM response.
+ */
+export function parseTDDResponse(
+  response: string,
+  defaultFramework: string
+): {
+  stepDefs: string;
+  framework: string;
+} {
+  try {
+    const cleaned = response
+      .replace(/^```json\n?/, "")
+      .replace(/\n?```$/, "")
+      .trim();
+    const parsed = JSON.parse(cleaned);
+    return {
+      stepDefs: JSON.stringify(parsed.files || []),
+      framework: parsed.framework || defaultFramework,
+    };
+  } catch {
+    return { stepDefs: response, framework: defaultFramework };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Convex internalAction handler (thin wrapper)
+// ---------------------------------------------------------------------------
+
 /**
  * Stage 4: TDD Generation (Step Definitions).
  * Generates executable step definitions for the Gherkin features.
@@ -18,6 +144,7 @@ export const generateTDD = internalAction({
     gherkinHidden: v.string(),
     repoContext: v.optional(v.string()),
     primaryLanguage: v.optional(v.string()),
+    existingTestExemplars: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     try {
@@ -59,39 +186,17 @@ export const generateTDD = internalAction({
 
       // Generate step definitions separately for public and hidden scenarios
       const generateStepDefs = async (gherkin: string, label: string) => {
-        const prompt = `Generate executable step definitions for these Gherkin features.
-
-## Target Framework: ${frameworkConfig.framework}
-## Language: ${language}
-## Test Runner: ${frameworkConfig.runner}
-## Config File: ${frameworkConfig.configFile}
-
-${repoMapText ? `## Repository Structure:\n${repoMapText}\n` : ""}
-${relevantChunksText ? `## Relevant Source Code:\n${relevantChunksText}\n` : ""}
-
-## Gherkin Features (${label}):
-${gherkin}
-
-## Instructions
-- Generate step definition files that implement each Given/When/Then step
-- Reference actual module paths, function names, and types from the codebase
-- Include necessary imports
-- Use the ${frameworkConfig.framework} step definition syntax
-- Generate test configuration file (${frameworkConfig.configFile})
-- Include setup/teardown hooks if needed
-- Step definitions should be in ${language}
-- Group step definitions by feature file
-
-Output as JSON:
-{
-  "files": [
-    {"path": "tests/steps/feature_steps.${getExtension(language)}", "content": "..."},
-    {"path": "tests/support/world.${getExtension(language)}", "content": "..."},
-    {"path": "${frameworkConfig.configFile}", "content": "..."}
-  ],
-  "framework": "${frameworkConfig.framework}",
-  "runCommand": "..."
-}`;
+        const prompt = buildTDDPrompt({
+          gherkin,
+          label,
+          framework: frameworkConfig.framework,
+          language,
+          runner: frameworkConfig.runner,
+          configFile: frameworkConfig.configFile,
+          repoMapText: repoMapText || undefined,
+          relevantChunksText: relevantChunksText || undefined,
+          existingTestExemplars: args.existingTestExemplars,
+        });
 
         const response = await llm.chat(
           [
@@ -101,22 +206,10 @@ Output as JSON:
               content: "Generate the step definitions and test configuration.",
             },
           ],
-          { temperature: 0.3, maxTokens: 8000 }
+          { temperature: 0.3, maxTokens: 10000 }
         );
 
-        try {
-          const cleaned = response
-            .replace(/^```json\n?/, "")
-            .replace(/\n?```$/, "")
-            .trim();
-          const parsed = JSON.parse(cleaned);
-          return {
-            stepDefs: JSON.stringify(parsed.files || []),
-            framework: parsed.framework || frameworkConfig.framework,
-          };
-        } catch {
-          return { stepDefs: response, framework: frameworkConfig.framework };
-        }
+        return parseTDDResponse(response, frameworkConfig.framework);
       };
 
       const publicResult = await generateStepDefs(args.gherkinPublic, "public");
@@ -172,22 +265,3 @@ Output as JSON:
     }
   },
 });
-
-function getExtension(language: string): string {
-  const extMap: Record<string, string> = {
-    typescript: "ts",
-    javascript: "js",
-    python: "py",
-    go: "go",
-    rust: "rs",
-    java: "java",
-    ruby: "rb",
-    php: "php",
-    csharp: "cs",
-    kotlin: "kt",
-    c: "c",
-    cpp: "cpp",
-    swift: "swift",
-  };
-  return extMap[language] || "ts";
-}
