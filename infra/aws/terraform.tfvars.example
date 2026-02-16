@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# ArcAgent Worker — Terraform Variables Example
+# ---------------------------------------------------------------------------
+# Copy this file to terraform.tfvars and fill in your values.
+# NEVER commit terraform.tfvars — it contains secrets.
+# ---------------------------------------------------------------------------
+
+aws_region   = "us-east-1"
+environment  = "production"
+
+# EC2 — must be .metal for KVM/Firecracker support
+instance_type = "m5.metal"
+worker_count  = 1
+ssh_key_name  = "your-key-pair-name"
+
+# Restrict SSH access to your IP (leave empty to disable SSH)
+ssh_allowed_cidrs = ["YOUR_IP/32"]
+
+# Secrets — from your Convex deployment
+# WORKER_SHARED_SECRET must match the value set in Convex env as WORKER_API_SECRET
+worker_shared_secret = "your-worker-shared-secret"
+# CONVEX_URL is used by the worker to post verification results back to Convex
+convex_url           = "https://your-app.convex.cloud"
+
+# VM capacity
+max_dev_vms    = 10
+warm_pool_size = 2
+max_warm_vms   = 4
+
+# Worker concurrency (parallel BullMQ verification jobs)
+worker_concurrency = 2
+
+# Idle workspace timeout (ms) — default 30 min
+workspace_idle_timeout_ms = 1800000
+
+# Firecracker
+firecracker_version = "1.7.0"
+harden_egress       = true
+
+# Node.js version for the worker runtime
+node_version = "20"
+
+# Root volume size (needs space for rootfs images, overlays, etc.)
+root_volume_size_gb = 200
+
+# ---------------------------------------------------------------------------
+# Env vars you must also set in the Convex dashboard:
+#
+#   WORKER_API_URL    = <terraform output worker_host_urls>
+#   WORKER_API_SECRET = <same as worker_shared_secret above>
+#
+# These are used by Convex to call the worker for provisioning + verification.
+# ---------------------------------------------------------------------------

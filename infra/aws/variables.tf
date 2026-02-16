@@ -1,0 +1,108 @@
+# ---------------------------------------------------------------------------
+# Input variables
+# ---------------------------------------------------------------------------
+
+variable "aws_region" {
+  description = "AWS region to deploy into"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "environment" {
+  description = "Environment name (e.g. production, staging)"
+  type        = string
+  default     = "production"
+}
+
+variable "instance_type" {
+  description = "EC2 instance type — must be .metal for KVM/Firecracker support"
+  type        = string
+  default     = "m5.metal"
+
+  validation {
+    condition     = can(regex("\\.metal$", var.instance_type))
+    error_message = "Instance type must be a .metal variant for KVM support."
+  }
+}
+
+variable "worker_count" {
+  description = "Number of worker instances to deploy"
+  type        = number
+  default     = 1
+}
+
+variable "ssh_key_name" {
+  description = "Name of an existing EC2 key pair for SSH access"
+  type        = string
+}
+
+variable "ssh_allowed_cidrs" {
+  description = "CIDR blocks allowed to SSH into worker instances"
+  type        = list(string)
+  default     = []
+}
+
+variable "worker_shared_secret" {
+  description = "Shared secret for Convex ↔ Worker authentication (WORKER_SHARED_SECRET)"
+  type        = string
+  sensitive   = true
+}
+
+variable "convex_url" {
+  description = "Convex deployment URL (e.g. https://your-app.convex.cloud)"
+  type        = string
+}
+
+variable "root_volume_size_gb" {
+  description = "Root EBS volume size in GB (stores rootfs images, overlays, etc.)"
+  type        = number
+  default     = 200
+}
+
+variable "max_dev_vms" {
+  description = "Maximum concurrent development VMs per worker"
+  type        = number
+  default     = 10
+}
+
+variable "warm_pool_size" {
+  description = "Number of warm VMs to keep per language"
+  type        = number
+  default     = 2
+}
+
+variable "max_warm_vms" {
+  description = "Maximum total warm VMs across all languages"
+  type        = number
+  default     = 4
+}
+
+variable "firecracker_version" {
+  description = "Firecracker release version to install"
+  type        = string
+  default     = "1.7.0"
+}
+
+variable "node_version" {
+  description = "Node.js major version to install"
+  type        = string
+  default     = "20"
+}
+
+variable "harden_egress" {
+  description = "Enable hardened egress filtering (DNS resolver + SNI proxy)"
+  type        = bool
+  default     = true
+}
+
+variable "worker_concurrency" {
+  description = "Number of parallel BullMQ verification jobs per worker"
+  type        = number
+  default     = 2
+}
+
+variable "workspace_idle_timeout_ms" {
+  description = "Idle workspace timeout in milliseconds (default 30 min)"
+  type        = number
+  default     = 1800000
+}
