@@ -1,4 +1,4 @@
-import { internalAction, internalMutation } from "./_generated/server";
+import { action, internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { calculatePlatformFee, PLATFORM_FEE_RATE } from "./lib/fees";
@@ -218,6 +218,10 @@ export const updateBountyEscrow = internalMutation({
 
     // SECURITY (C3): Enforce escrow state machine
     const currentStatus = bounty.escrowStatus ?? "unfunded";
+
+    // Idempotent no-op: same status → same status is allowed
+    if (currentStatus === args.escrowStatus) return;
+
     const allowed = VALID_ESCROW_TRANSITIONS[currentStatus] ?? [];
     if (!allowed.includes(args.escrowStatus)) {
       throw new Error(
@@ -456,6 +460,8 @@ export const refundEscrow = internalAction({
     const refund = await stripe.refunds.create({
       payment_intent: bounty.stripePaymentIntentId,
       metadata: { bountyId: args.bountyId },
+    }, {
+      idempotencyKey: `refund_${args.bountyId}_${bounty.stripePaymentIntentId}`,
     });
 
     await ctx.runMutation(internal.stripe.updateBountyEscrow, {
@@ -505,6 +511,67 @@ export const retryFailedRefunds = internalAction({
 });
 
 // ---------------------------------------------------------------------------
+// Retry failed payouts
+// ---------------------------------------------------------------------------
+
+/**
+ * Retries payouts for bounties where escrow release failed (e.g., agent hadn't
+ * completed Connect onboarding). Checks every 15 minutes, gives up after 7 days.
+ */
+export const retryFailedPayouts = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    const failedPayments = await ctx.runQuery(
+      internal.payments.getFailedPayouts,
+      {}
+    );
+
+    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+    let retried = 0;
+
+    for (const payment of failedPayments) {
+      // Skip if older than 7 days — mark for manual review
+      if (Date.now() - payment.createdAt > SEVEN_DAYS_MS) {
+        console.warn(
+          `[retryFailedPayouts] Payment ${payment._id} is >7 days old, skipping. Requires manual review.`
+        );
+        continue;
+      }
+
+      try {
+        await ctx.runAction(internal.stripe.releaseEscrow, {
+          bountyId: payment.bountyId,
+          recipientUserId: payment.recipientId,
+          paymentId: payment._id,
+        });
+
+        // Mark bounty as completed if not already
+        const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+          bountyId: payment.bountyId,
+        });
+        if (bounty && bounty.status !== "completed") {
+          await ctx.runMutation(internal.bounties.updateStatusInternal, {
+            bountyId: payment.bountyId,
+            status: "completed",
+          });
+        }
+
+        retried++;
+      } catch (err) {
+        console.error(
+          `[retryFailedPayouts] Failed to retry payment ${payment._id}:`,
+          err instanceof Error ? err.message : String(err)
+        );
+      }
+    }
+
+    if (retried > 0) {
+      console.log(`[retryFailedPayouts] Retried ${retried} payouts`);
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Public Actions (for onboarding / settings pages)
 // ---------------------------------------------------------------------------
 
@@ -541,5 +608,77 @@ export const createConnectOnboardingForCurrentUser = internalAction({
       userId: args.userId,
       email: args.email,
     });
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Public Actions (Clerk-authed, for web UI)
+// ---------------------------------------------------------------------------
+
+/** Helper: get user by Clerk subject ID */
+export const getUserByClerkSubject = internalQuery({
+  args: { clerkId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("users")
+      .withIndex("by_clerkId", (q) => q.eq("clerkId", args.clerkId))
+      .unique();
+  },
+});
+
+/**
+ * Public action: create a SetupIntent for the current user.
+ * Returns a client secret for Stripe hosted setup page.
+ */
+export const setupPaymentMethod = action({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Authentication required");
+
+    const user = await ctx.runQuery(internal.stripe.getUserByClerkSubject, {
+      clerkId: identity.subject,
+    });
+    if (!user) throw new Error("User not found");
+
+    const result = await ctx.runAction(internal.stripe.createSetupIntent, {
+      userId: user._id,
+      email: user.email,
+      name: user.name,
+    });
+
+    const appUrl = process.env.APP_URL || "http://localhost:3000";
+    return {
+      clientSecret: result.clientSecret,
+      setupIntentId: result.setupIntentId,
+      returnUrl: `${appUrl}/settings?setup_complete=true`,
+    };
+  },
+});
+
+/**
+ * Public action: create or resume Stripe Connect onboarding.
+ * Returns the onboarding URL to redirect the user to.
+ */
+export const setupPayoutAccount = action({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Authentication required");
+
+    const user = await ctx.runQuery(internal.stripe.getUserByClerkSubject, {
+      clerkId: identity.subject,
+    });
+    if (!user) throw new Error("User not found");
+
+    const result = await ctx.runAction(internal.stripe.createConnectAccount, {
+      userId: user._id,
+      email: user.email,
+    });
+
+    return {
+      onboardingUrl: result.onboardingUrl,
+      accountId: result.accountId,
+    };
   },
 });

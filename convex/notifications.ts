@@ -1,6 +1,7 @@
-import { internalMutation, internalQuery } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { Id } from "./_generated/dataModel";
+import { getCurrentUser, requireAuth } from "./lib/utils";
 
 export const createForNewBounty = internalMutation({
   args: {
@@ -68,6 +69,40 @@ export const markRead = internalMutation({
     for (const id of args.notificationIds) {
       const notification = await ctx.db.get(id);
       if (notification) {
+        await ctx.db.patch(id, { read: true });
+      }
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Public queries / mutations (Clerk-authed)
+// ---------------------------------------------------------------------------
+
+export const listMyUnread = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await getCurrentUser(ctx);
+    if (!user) return [];
+
+    return await ctx.db
+      .query("notifications")
+      .withIndex("by_userId_and_read", (q) =>
+        q.eq("userId", user._id).eq("read", false)
+      )
+      .order("desc")
+      .take(20);
+  },
+});
+
+export const markAsRead = mutation({
+  args: { notificationIds: v.array(v.id("notifications")) },
+  handler: async (ctx, args) => {
+    const user = requireAuth(await getCurrentUser(ctx));
+
+    for (const id of args.notificationIds) {
+      const notification = await ctx.db.get(id);
+      if (notification && notification.userId === user._id) {
         await ctx.db.patch(id, { read: true });
       }
     }

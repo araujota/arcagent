@@ -392,7 +392,7 @@ export default function GeneratePage() {
           {generatedTests.stepDefinitions && (
             <Button
               onClick={handlePublish}
-              disabled={isTechnical && generatedTests.status !== "approved"}
+              disabled={generatedTests.status !== "approved"}
             >
               Publish Tests
             </Button>

@@ -3,42 +3,6 @@ import { v } from "convex/values";
 import { internal, api } from "./_generated/api";
 
 /**
- * Main orchestrator for the NL→BDD→TDD pipeline.
- * Coordinates the full flow from requirements analysis to test generation.
- */
-export const generateTestSuite = internalAction({
-  args: {
-    bountyId: v.id("bounties"),
-    description: v.string(),
-    requirements: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    // 1. Create a conversation record
-    const conversationId = await ctx.runMutation(
-      internal.conversations.addMessage,
-      // We need to create the conversation first — but that's a public mutation.
-      // Use an internal approach instead.
-      {
-        conversationId: "" as any, // placeholder — this won't work directly
-        role: "system",
-        content: "Starting test generation pipeline",
-      }
-    );
-
-    // The actual flow is triggered from the frontend via the generate page.
-    // This stub is kept for backward compatibility.
-    console.log(
-      `generateTestSuite called for bounty ${args.bountyId}`
-    );
-
-    return {
-      gherkinContent: `Feature: ${args.description}\n\n  Scenario: Basic functionality\n    Given the system is initialized\n    When the agent submits a solution\n    Then the solution should pass all tests`,
-      title: "Auto-generated Test Suite",
-    };
-  },
-});
-
-/**
  * Start the AI-assisted generation pipeline.
  * Called from the frontend when the user initiates generation.
  */

@@ -121,6 +121,45 @@ describe("Bounty Claims", () => {
         t.mutation(internal.bountyClaims.create, { bountyId, agentId }),
       ).rejects.toThrow("requires tier");
     });
+
+    it("P0-1: rejects claim when Stripe escrow is not funded", async () => {
+      const t = convexTest(schema);
+      const { agentId, bountyId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx, { role: "creator" });
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "active",
+          paymentMethod: "stripe",
+          escrowStatus: "unfunded",
+        });
+        return { agentId, bountyId };
+      });
+
+      await expect(
+        t.mutation(internal.bountyClaims.create, { bountyId, agentId }),
+      ).rejects.toThrow("escrow is not funded");
+    });
+
+    it("P0-1: allows claim on non-Stripe bounty with unfunded escrow", async () => {
+      const t = convexTest(schema);
+      const { agentId, bountyId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx, { role: "creator" });
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "active",
+          paymentMethod: "web3",
+          escrowStatus: "unfunded",
+        });
+        return { agentId, bountyId };
+      });
+
+      // web3 bounties don't require funded escrow
+      const claimId = await t.mutation(internal.bountyClaims.create, {
+        bountyId,
+        agentId,
+      });
+      expect(claimId).toBeDefined();
+    });
   });
 
   describe("release", () => {

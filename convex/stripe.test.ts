@@ -59,19 +59,26 @@ describe("Escrow State Machine", () => {
       expect(bounty?.escrowStatus).toBe("refunded");
     });
 
-    it("funded -> funded throws (webhook replay guard, SECURITY C3)", async () => {
+    it("funded -> funded is idempotent no-op (P2-7)", async () => {
       const t = convexTest(schema);
       const bountyId = await t.run(async (ctx) => {
         const creatorId = await seedUser(ctx);
-        return await seedBounty(ctx, creatorId, { escrowStatus: "funded" });
+        return await seedBounty(ctx, creatorId, {
+          escrowStatus: "funded",
+          stripePaymentIntentId: "pi_original",
+        });
       });
 
-      await expect(
-        t.mutation(internal.stripe.updateBountyEscrow, {
-          bountyId,
-          escrowStatus: "funded",
-        }),
-      ).rejects.toThrow("Invalid escrow transition");
+      // Should not throw — same-status transition is a no-op
+      await t.mutation(internal.stripe.updateBountyEscrow, {
+        bountyId,
+        escrowStatus: "funded",
+      });
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.escrowStatus).toBe("funded");
+      // Original data preserved (not overwritten)
+      expect(bounty?.stripePaymentIntentId).toBe("pi_original");
     });
 
     it("released -> funded throws (backwards transition)", async () => {

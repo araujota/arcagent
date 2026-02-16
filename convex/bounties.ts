@@ -274,7 +274,7 @@ export const update = mutation({
     // SECURITY (H2): Freeze critical terms once an agent has claimed
     const frozenStatuses = ["in_progress", "completed"];
     if (frozenStatuses.includes(bounty.status)) {
-      const frozenFields = ["reward", "rewardCurrency", "description", "paymentMethod"] as const;
+      const frozenFields = ["reward", "rewardCurrency", "description", "paymentMethod", "repositoryUrl"] as const;
       for (const field of frozenFields) {
         if (args[field] !== undefined && args[field] !== bounty[field]) {
           throw new Error(
@@ -560,7 +560,7 @@ export const createFromMcp = internalMutation({
       );
     }
 
-    const status = args.status ?? "active";
+    const status = args.status ?? "draft";
     const bountyId = await ctx.db.insert("bounties", {
       title: args.title,
       description: args.description,
@@ -794,6 +794,19 @@ export const expireDeadlineBounties = internalMutation({
         )
         .first();
       if (activeClaim) continue;
+
+      // Skip if there's a pending/running submission (verification in progress)
+      const activeSubmission = await ctx.db
+        .query("submissions")
+        .withIndex("by_bountyId", (q) => q.eq("bountyId", bounty._id))
+        .filter((q: any) =>
+          q.or(
+            q.eq(q.field("status"), "pending"),
+            q.eq(q.field("status"), "running")
+          )
+        )
+        .first();
+      if (activeSubmission) continue;
 
       await ctx.db.patch(bounty._id, { status: "cancelled" });
 

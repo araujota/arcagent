@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useAction } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import { useRouter } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
@@ -16,6 +16,9 @@ export default function OnboardingPage() {
   const completeOnboarding = useMutation(api.users.completeOnboarding);
   const updateOnboardingStep = useMutation(api.users.updateOnboardingStep);
   const generateApiKey = useMutation(api.apiKeys.generateForCurrentUser);
+  const setupPaymentMethod = useAction(api.stripe.setupPaymentMethod);
+  const setupPayoutAccount = useAction(api.stripe.setupPayoutAccount);
+  const [settingUpStripe, setSettingUpStripe] = useState(false);
 
   const [step, setStep] = useState(1);
   const [isTechnical, setIsTechnical] = useState<boolean | null>(null);
@@ -152,12 +155,31 @@ export default function OnboardingPage() {
             <Card>
               <CardContent className="pt-6 text-center space-y-4">
                 <p className="text-sm text-muted-foreground">
-                  Payment setup will be available when Stripe Elements loads.
-                  You can also set this up later in Settings.
+                  Add a payment method to fund bounties. You&apos;ll be redirected to
+                  Stripe&apos;s secure setup page.
                 </p>
-                <Button variant="outline" onClick={handleNext}>
-                  Skip for now
-                </Button>
+                <div className="flex justify-center gap-3">
+                  <Button
+                    variant="default"
+                    disabled={settingUpStripe}
+                    onClick={async () => {
+                      setSettingUpStripe(true);
+                      try {
+                        const result = await setupPaymentMethod();
+                        window.location.href = `https://checkout.stripe.com/setup/${result.setupIntentId}?client_secret=${result.clientSecret}&return_url=${encodeURIComponent(result.returnUrl)}`;
+                      } catch {
+                        toast.error("Failed to set up payment. You can try again in Settings.");
+                        setSettingUpStripe(false);
+                      }
+                    }}
+                  >
+                    <CreditCard className="h-4 w-4 mr-2" />
+                    {settingUpStripe ? "Redirecting..." : "Add Payment Method"}
+                  </Button>
+                  <Button variant="outline" onClick={handleNext}>
+                    Skip for now
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           </div>
@@ -178,12 +200,31 @@ export default function OnboardingPage() {
             <Card>
               <CardContent className="pt-6 text-center space-y-4">
                 <p className="text-sm text-muted-foreground">
-                  Stripe Connect onboarding will redirect you to Stripe.
-                  You can also set this up later in Settings.
+                  Connect your Stripe account to receive payouts when you solve
+                  bounties. You&apos;ll be redirected to Stripe&apos;s onboarding.
                 </p>
-                <Button variant="outline" onClick={handleNext}>
-                  Skip for now
-                </Button>
+                <div className="flex justify-center gap-3">
+                  <Button
+                    variant="default"
+                    disabled={settingUpStripe}
+                    onClick={async () => {
+                      setSettingUpStripe(true);
+                      try {
+                        const result = await setupPayoutAccount();
+                        window.location.href = result.onboardingUrl;
+                      } catch {
+                        toast.error("Failed to set up payouts. You can try again in Settings.");
+                        setSettingUpStripe(false);
+                      }
+                    }}
+                  >
+                    <Wallet className="h-4 w-4 mr-2" />
+                    {settingUpStripe ? "Redirecting..." : "Connect Stripe Account"}
+                  </Button>
+                  <Button variant="outline" onClick={handleNext}>
+                    Skip for now
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           </div>

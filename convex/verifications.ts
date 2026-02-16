@@ -532,6 +532,46 @@ export const triggerPayoutOnVerificationPass = internalAction({
       console.error(
         `[payout] Failed for bounty ${args.bountyId}: ${errorMessage}`
       );
+
+      // Record the failure as a payment record so retryFailedPayouts can pick it up
+      const submission = await ctx.runQuery(
+        internal.submissions.getByIdInternal,
+        { submissionId: args.submissionId }
+      );
+      if (submission) {
+        const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+          bountyId: args.bountyId,
+        });
+        if (bounty) {
+          const existingPayment = await ctx.runQuery(internal.payments.getByBountyInternal, {
+            bountyId: args.bountyId,
+          });
+          if (!existingPayment) {
+            const grossCents = Math.round(bounty.reward * 100);
+            const feeCents = bounty.platformFeeCents ?? Math.round(grossCents * PLATFORM_FEE_RATE);
+            const solverCents = grossCents - feeCents;
+            await ctx.runMutation(internal.payments.initiate, {
+              bountyId: args.bountyId,
+              recipientId: submission.agentId,
+              amount: bounty.reward,
+              currency: bounty.rewardCurrency,
+              method: "stripe",
+              platformFeeCents: feeCents,
+              solverAmountCents: solverCents,
+            });
+            // Mark it as failed immediately
+            const newPayment = await ctx.runQuery(internal.payments.getByBountyInternal, {
+              bountyId: args.bountyId,
+            });
+            if (newPayment) {
+              await ctx.runMutation(internal.payments.updateStatus, {
+                paymentId: newPayment._id,
+                status: "failed",
+              });
+            }
+          }
+        }
+      }
     }
   },
 });

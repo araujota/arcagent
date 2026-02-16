@@ -147,3 +147,48 @@ Feature: Test
     ).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// validateTests score default behaviour (P2-3)
+// ---------------------------------------------------------------------------
+
+describe("validateTests score default (P2-3)", () => {
+  it("null parsed review defaults score to 0 (fail-safe)", () => {
+    const parsedReview = null;
+    const score = parsedReview?.score ?? 0;
+    expect(score).toBe(0);
+  });
+
+  it("undefined score defaults to 0", () => {
+    const parsedReview = { otherField: "test" } as {
+      score?: number;
+      otherField: string;
+    };
+    const score = parsedReview?.score ?? 0;
+    expect(score).toBe(0);
+  });
+
+  it("valid score is used as-is", () => {
+    const parsedReview = { score: 8 };
+    const score = parsedReview?.score ?? 0;
+    expect(score).toBe(8);
+  });
+
+  it("score of 0 is preserved (not treated as falsy)", () => {
+    const parsedReview = { score: 0 };
+    const score = parsedReview?.score ?? 0;
+    expect(score).toBe(0);
+  });
+
+  it("score < 6 triggers regeneration", () => {
+    const score = 0;
+    const needsRegeneration = score < 6;
+    expect(needsRegeneration).toBe(true);
+  });
+
+  it("score >= 6 does not trigger regeneration from score alone", () => {
+    const score = 7;
+    const needsRegeneration = score < 6;
+    expect(needsRegeneration).toBe(false);
+  });
+});

@@ -313,11 +313,13 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
                     AI Generate Tests
                   </Button>
                   <Button
-                    onClick={() => handleSubmit(false)}
+                    onClick={() => handleSubmit(config.paymentMethod === "stripe" ? true : false)}
                     disabled={isSubmitting || !isCertified}
                     title={!isCertified ? "Accept the Terms of Service to publish" : undefined}
                   >
-                    {isSubmitting ? "Publishing..." : "Publish Bounty"}
+                    {isSubmitting
+                      ? config.paymentMethod === "stripe" ? "Saving..." : "Publishing..."
+                      : config.paymentMethod === "stripe" ? "Save & Fund" : "Publish Bounty"}
                   </Button>
                 </>
               ) : (

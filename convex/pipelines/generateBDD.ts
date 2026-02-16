@@ -303,17 +303,30 @@ export const generateBDD = internalAction({
         }),
       });
 
-      // Store generated tests
-      await ctx.runMutation(internal.generatedTests.create, {
-        bountyId: args.bountyId,
-        conversationId: args.conversationId,
-        gherkinPublic,
-        gherkinHidden,
-        stepDefinitions: "", // Generated in next stage
-        testFramework: "cucumber-js", // Default, will be updated
-        testLanguage: "typescript", // Default, will be updated
-        llmModel: llm.model,
-      });
+      // Store generated tests — upsert to avoid orphan records on retry
+      const existing = await ctx.runQuery(
+        internal.generatedTests.getByConversationIdInternal,
+        { conversationId: args.conversationId }
+      );
+
+      if (existing) {
+        await ctx.runMutation(internal.generatedTests.updateGherkinInternal, {
+          generatedTestId: existing._id,
+          gherkinPublic,
+          gherkinHidden,
+        });
+      } else {
+        await ctx.runMutation(internal.generatedTests.create, {
+          bountyId: args.bountyId,
+          conversationId: args.conversationId,
+          gherkinPublic,
+          gherkinHidden,
+          stepDefinitions: "", // Generated in next stage
+          testFramework: "cucumber-js", // Default, will be updated
+          testLanguage: "typescript", // Default, will be updated
+          llmModel: llm.model,
+        });
+      }
 
       // Update conversation status
       await ctx.runMutation(internal.conversations.updateStatus, {

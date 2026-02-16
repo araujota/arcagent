@@ -285,6 +285,40 @@ describe("Bounty Status Transitions", () => {
         }),
       ).rejects.toThrow("Web3 payments are coming soon");
     });
+
+    it("P1-1: defaults status to 'draft' when not specified", async () => {
+      const t = convexTest(schema);
+      const creatorId = await t.run(async (ctx) => seedUser(ctx));
+
+      const bountyId = await t.mutation(internal.bounties.createFromMcp, {
+        creatorId,
+        title: "No explicit status",
+        description: "A test bounty description that is long enough",
+        reward: 100,
+        rewardCurrency: "USD",
+        paymentMethod: "stripe",
+      });
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.status).toBe("draft");
+    });
+
+    it("P1-1: Stripe bounty with status='active' and unfunded escrow throws", async () => {
+      const t = convexTest(schema);
+      const creatorId = await t.run(async (ctx) => seedUser(ctx));
+
+      await expect(
+        t.mutation(internal.bounties.createFromMcp, {
+          creatorId,
+          title: "Active unfunded",
+          description: "A test bounty description that is long enough",
+          reward: 100,
+          rewardCurrency: "USD",
+          paymentMethod: "stripe",
+          status: "active",
+        }),
+      ).rejects.toThrow();
+    });
   });
 
   describe("cancelFromMcp", () => {
@@ -396,4 +430,122 @@ describe("Bounty Status Transitions", () => {
       expect(result.escrowRefundScheduled).toBe(true);
     });
   });
+
+  describe("expireDeadlineBounties", () => {
+    it("cancels active bounties past deadline", async () => {
+      const t = convexTest(schema);
+      const bountyId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        return await seedBounty(ctx, creatorId, {
+          status: "active",
+          deadline: Date.now() - 1000,
+          escrowStatus: "unfunded",
+        });
+      });
+
+      await t.mutation(internal.bounties.expireDeadlineBounties, {});
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.status).toBe("cancelled");
+    });
+
+    it("skips bounties without deadline", async () => {
+      const t = convexTest(schema);
+      const bountyId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        return await seedBounty(ctx, creatorId, {
+          status: "active",
+          escrowStatus: "unfunded",
+        });
+      });
+
+      await t.mutation(internal.bounties.expireDeadlineBounties, {});
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.status).toBe("active");
+    });
+
+    it("skips bounties with future deadline", async () => {
+      const t = convexTest(schema);
+      const bountyId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        return await seedBounty(ctx, creatorId, {
+          status: "active",
+          deadline: Date.now() + 86400000,
+          escrowStatus: "unfunded",
+        });
+      });
+
+      await t.mutation(internal.bounties.expireDeadlineBounties, {});
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.status).toBe("active");
+    });
+
+    it("P1-2: skips bounties with active claim", async () => {
+      const t = convexTest(schema);
+      const bountyId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "active",
+          deadline: Date.now() - 1000,
+          escrowStatus: "unfunded",
+        });
+        await seedClaim(ctx, bountyId, agentId, { status: "active" });
+        return bountyId;
+      });
+
+      await t.mutation(internal.bounties.expireDeadlineBounties, {});
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.status).toBe("active");
+    });
+
+    it("P1-2: skips bounties with pending submission", async () => {
+      const t = convexTest(schema);
+      const bountyId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "active",
+          deadline: Date.now() - 1000,
+          escrowStatus: "unfunded",
+        });
+        await seedSubmission(ctx, bountyId, agentId, { status: "pending" });
+        return bountyId;
+      });
+
+      await t.mutation(internal.bounties.expireDeadlineBounties, {});
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.status).toBe("active");
+    });
+
+    it("P1-2: skips bounties with running submission", async () => {
+      const t = convexTest(schema);
+      const bountyId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "active",
+          deadline: Date.now() - 1000,
+          escrowStatus: "unfunded",
+        });
+        await seedSubmission(ctx, bountyId, agentId, { status: "running" });
+        return bountyId;
+      });
+
+      await t.mutation(internal.bounties.expireDeadlineBounties, {});
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.status).toBe("active");
+    });
+  });
+
+  // P2-6: "update frozen fields" test skipped — the `update` mutation in
+  // convex/bounties.ts is a public Clerk-authed mutation (not internalMutation),
+  // so it cannot be called via `t.mutation(internal.bounties.updateInternal, ...)`
+  // in convex-test. There is no `updateInternal` export. The frozen-field logic
+  // is enforced in the public `update` mutation at line ~274 of bounties.ts.
 });

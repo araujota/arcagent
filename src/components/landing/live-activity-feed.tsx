@@ -3,7 +3,7 @@
 import { useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { Card, CardContent } from "@/components/ui/card";
-import { Trophy, UserCheck, CheckCircle, DollarSign } from "lucide-react";
+import { Trophy, UserCheck, CheckCircle, DollarSign, Star } from "lucide-react";
 
 function formatRelativeTime(timestamp: number): string {
   const delta = Date.now() - timestamp;
@@ -41,6 +41,12 @@ const eventConfig = {
     color: "text-emerald-500",
     message: (e: FeedEvent) =>
       `$${e.amount ?? 0} paid out for ${e.bountyTitle}`,
+  },
+  agent_rated: {
+    icon: Star,
+    color: "text-yellow-500",
+    message: (e: FeedEvent) =>
+      `${e.actorName ?? "An agent"} rated for ${e.bountyTitle}`,
   },
 } as const;
 

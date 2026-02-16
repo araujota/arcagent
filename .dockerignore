@@ -1,0 +1,28 @@
+node_modules
+.next
+dist
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+
+# Test files
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+**/__tests__
+
+# Worker rootfs images (large binaries built separately)
+worker/rootfs/*.ext4
+
+# IDE / OS
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+
+# Coverage
+coverage

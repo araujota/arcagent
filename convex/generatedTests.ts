@@ -103,6 +103,23 @@ export const getByBountyIdInternal = internalQuery({
   },
 });
 
+/** Internal mutation to update Gherkin on an existing record (upsert support for retry) */
+export const updateGherkinInternal = internalMutation({
+  args: {
+    generatedTestId: v.id("generatedTests"),
+    gherkinPublic: v.string(),
+    gherkinHidden: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.generatedTestId, {
+      gherkinPublic: args.gherkinPublic,
+      gherkinHidden: args.gherkinHidden,
+      stepDefinitions: "", // Reset for re-generation
+      status: "draft",
+    });
+  },
+});
+
 export const create = internalMutation({
   args: {
     bountyId: v.id("bounties"),

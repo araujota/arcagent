@@ -55,6 +55,17 @@ export const getByIdInternal = internalQuery({
   },
 });
 
+/** List failed payout payments (for retry mechanism) */
+export const getFailedPayouts = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    return await ctx.db
+      .query("payments")
+      .withIndex("by_status", (q) => q.eq("status", "failed"))
+      .collect();
+  },
+});
+
 export const initiate = internalMutation({
   args: {
     bountyId: v.id("bounties"),

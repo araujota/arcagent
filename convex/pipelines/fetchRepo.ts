@@ -25,6 +25,16 @@ export const fetchRepo = internalAction({
   },
   handler: async (ctx, args) => {
     try {
+      // Guard against concurrent re-index
+      const conn = await ctx.runQuery(
+        internal.repoConnections.getByBountyIdInternal,
+        { bountyId: args.bountyId }
+      );
+      if (conn && (conn.status === "fetching" || conn.status === "parsing" || conn.status === "indexing")) {
+        console.log(`[fetchRepo] Re-index already in progress for bounty ${args.bountyId}, skipping`);
+        return;
+      }
+
       // Update status to fetching
       await ctx.runMutation(internal.repoConnections.updateStatus, {
         repoConnectionId: args.repoConnectionId,

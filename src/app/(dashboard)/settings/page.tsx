@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery, useAction } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import { useCurrentUser } from "@/hooks/use-current-user";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,8 @@ export default function SettingsPage() {
   const apiKeys = useQuery(api.apiKeys.listMyKeys);
   const generateApiKey = useMutation(api.apiKeys.generateForCurrentUser);
   const revokeApiKey = useMutation(api.apiKeys.revokeKey);
+  const setupPaymentMethod = useAction(api.stripe.setupPaymentMethod);
+  const setupPayoutAccount = useAction(api.stripe.setupPayoutAccount);
 
   const [name, setName] = useState("");
   const [walletAddress, setWalletAddress] = useState("");
@@ -34,6 +36,8 @@ export default function SettingsPage() {
   const [keyCopied, setKeyCopied] = useState(false);
   const [generatingKey, setGeneratingKey] = useState(false);
   const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null);
+  const [settingUpPayment, setSettingUpPayment] = useState(false);
+  const [settingUpPayout, setSettingUpPayout] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -104,6 +108,32 @@ export default function SettingsPage() {
       toast.error("Failed to revoke API key");
     } finally {
       setRevokingKeyId(null);
+    }
+  };
+
+  const handleSetupPayment = async () => {
+    setSettingUpPayment(true);
+    try {
+      const result = await setupPaymentMethod();
+      // Redirect to Stripe hosted setup using the client secret
+      window.location.href = `https://checkout.stripe.com/setup/${result.setupIntentId}?client_secret=${result.clientSecret}&return_url=${encodeURIComponent(result.returnUrl)}`;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to set up payment method");
+    } finally {
+      setSettingUpPayment(false);
+    }
+  };
+
+  const handleSetupPayout = async () => {
+    setSettingUpPayout(true);
+    try {
+      const result = await setupPayoutAccount();
+      // Redirect to Stripe Connect onboarding
+      window.location.href = result.onboardingUrl;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to set up payout account");
+    } finally {
+      setSettingUpPayout(false);
     }
   };
 
@@ -243,8 +273,8 @@ export default function SettingsPage() {
                   Payment method on file
                 </span>
               </div>
-              <Button variant="outline" size="sm" disabled>
-                Update Card
+              <Button variant="outline" size="sm" onClick={handleSetupPayment} disabled={settingUpPayment}>
+                {settingUpPayment ? "Redirecting..." : "Update Card"}
               </Button>
             </div>
           ) : (
@@ -252,13 +282,10 @@ export default function SettingsPage() {
               <p className="text-sm text-muted-foreground">
                 No payment method on file. Add a card to fund bounties.
               </p>
-              <Button variant="outline" disabled>
+              <Button variant="outline" onClick={handleSetupPayment} disabled={settingUpPayment}>
                 <CreditCard className="h-4 w-4 mr-2" />
-                Add Payment Method
+                {settingUpPayment ? "Redirecting to Stripe..." : "Add Payment Method"}
               </Button>
-              <p className="text-xs text-muted-foreground">
-                Stripe Elements integration coming soon.
-              </p>
             </div>
           )}
         </CardContent>
@@ -291,9 +318,9 @@ export default function SettingsPage() {
                   Stripe onboarding not finished
                 </span>
               </div>
-              <Button variant="outline" size="sm" disabled>
+              <Button variant="outline" size="sm" onClick={handleSetupPayout} disabled={settingUpPayout}>
                 <ExternalLink className="h-4 w-4 mr-2" />
-                Complete Onboarding
+                {settingUpPayout ? "Redirecting..." : "Complete Onboarding"}
               </Button>
             </div>
           ) : (
@@ -301,13 +328,10 @@ export default function SettingsPage() {
               <p className="text-sm text-muted-foreground">
                 No payout account connected. Set up Stripe Connect to receive payments.
               </p>
-              <Button variant="outline" disabled>
+              <Button variant="outline" onClick={handleSetupPayout} disabled={settingUpPayout}>
                 <ExternalLink className="h-4 w-4 mr-2" />
-                Connect Stripe Account
+                {settingUpPayout ? "Redirecting to Stripe..." : "Connect Stripe Account"}
               </Button>
-              <p className="text-xs text-muted-foreground">
-                Stripe Connect onboarding coming soon.
-              </p>
             </div>
           )}
         </CardContent>

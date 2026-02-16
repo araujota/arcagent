@@ -51,9 +51,9 @@ export const create = mutation({
       throw new Error("Unauthorized");
     }
 
-    // Validate repository URL format
-    if (!/^https?:\/\/(github\.com|gitlab\.com|bitbucket\.org)\/[\w.-]+\/[\w.-]+/.test(args.repositoryUrl)) {
-      throw new Error("Invalid repository URL. Please use a GitHub, GitLab, or Bitbucket URL.");
+    // Validate repository URL format — only GitHub is currently supported
+    if (!/^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+/.test(args.repositoryUrl)) {
+      throw new Error("Only GitHub repositories are currently supported");
     }
 
     // Check for existing connection

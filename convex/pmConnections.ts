@@ -116,21 +116,7 @@ export const getByIdInternal = internalQuery({
   },
 });
 
-/**
- * Test a PM connection by attempting to fetch a known resource.
- * Since we hash the token, the caller must provide the raw token for testing.
- */
-export const testConnection = mutation({
-  args: {
-    provider: providerValidator,
-    domain: v.optional(v.string()),
-    email: v.optional(v.string()),
-    apiToken: v.string(),
-  },
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  handler: async (ctx, _args) => {
-    requireAuth(await getCurrentUser(ctx));
-    // Actual validation happens in the action — this just confirms auth
-    return { valid: true, message: "Token format accepted. Use a fetch to verify." };
-  },
-});
+// NOTE: testConnection was removed because tokens are hashed at storage time
+// and cannot be reversed for API validation. Real-time connection testing
+// requires encrypted (not hashed) token storage, which is a planned future feature.
+// For now, token validity is verified implicitly when the connection is used.

@@ -17,6 +17,11 @@ export const create = internalMutation({
       throw new Error("Bounty is not active");
     }
 
+    // SECURITY (P0-1): Prevent claiming unfunded Stripe bounties
+    if (bounty.paymentMethod === "stripe" && bounty.escrowStatus !== "funded") {
+      throw new Error("Cannot claim: bounty escrow is not funded");
+    }
+
     // SECURITY: Anti-sybil — agents cannot claim their own bounties
     if (bounty.creatorId === args.agentId) {
       throw new Error("You cannot claim your own bounty");
@@ -88,13 +93,20 @@ export const create = internalMutation({
       actorName: agent?.name ?? "An agent",
     });
 
-    // Provision dev workspace if repo connection is ready
+    // Provision dev workspace — proceed regardless of repoConn status.
+    // The VM can clone the repo directly using the URL + commitSha from the bounty.
     const repoConn = await ctx.db
       .query("repoConnections")
       .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
       .first();
 
-    if (repoConn && repoConn.status === "ready") {
+    const repositoryUrl = repoConn?.repositoryUrl ?? bounty.repositoryUrl ?? "";
+    if (repositoryUrl) {
+      if (repoConn && repoConn.status !== "ready") {
+        console.warn(
+          `[bountyClaims] Provisioning workspace while repo status is "${repoConn.status}" for bounty ${args.bountyId}`
+        );
+      }
       const workspaceId = crypto.randomUUID();
       const wsDocId = await ctx.db.insert("devWorkspaces", {
         claimId,
@@ -103,9 +115,9 @@ export const create = internalMutation({
         workspaceId,
         workerHost: "",
         status: "provisioning",
-        language: repoConn.languages?.[0] ?? "typescript",
-        repositoryUrl: repoConn.repositoryUrl,
-        baseCommitSha: repoConn.commitSha ?? "",
+        language: repoConn?.languages?.[0] ?? "typescript",
+        repositoryUrl,
+        baseCommitSha: repoConn?.commitSha ?? "",
         createdAt: Date.now(),
         expiresAt,
       });
@@ -115,9 +127,9 @@ export const create = internalMutation({
         claimId,
         bountyId: args.bountyId,
         agentId: args.agentId,
-        repositoryUrl: repoConn.repositoryUrl,
-        commitSha: repoConn.commitSha ?? "",
-        language: repoConn.languages?.[0] ?? "typescript",
+        repositoryUrl,
+        commitSha: repoConn?.commitSha ?? "",
+        language: repoConn?.languages?.[0] ?? "typescript",
         expiresAt,
       });
     }

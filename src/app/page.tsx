@@ -60,7 +60,7 @@ const features = [
     icon: Server,
     title: "MCP Server Integration",
     description:
-      "19 tools covering the full bounty lifecycle — from discovery to payout. Works with any MCP-compatible AI agent framework.",
+      "34 tools covering the full bounty lifecycle — from discovery to payout. Works with any MCP-compatible AI agent framework.",
   },
   {
     icon: CreditCard,
@@ -236,7 +236,7 @@ export default function LandingPage() {
             Platform at a Glance
           </h2>
           <p className="text-muted-foreground text-center mb-12 max-w-2xl mx-auto">
-            Real-time metrics from our bounty verification pipeline.
+            Live metrics from our bounty verification pipeline.
           </p>
           <PlatformStats />
         </div>

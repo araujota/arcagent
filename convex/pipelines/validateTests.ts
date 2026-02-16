@@ -207,7 +207,7 @@ Respond with JSON:
     }
 
     // Determine if regeneration is needed
-    const score = parsedReview?.score ?? 10;
+    const score = parsedReview?.score ?? 0;
     const uncoveredCriteria =
       parsedReview?.criteriaCoverage?.filter((c) => !c.covered) ?? [];
     const needsRegeneration =

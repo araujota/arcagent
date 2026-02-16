@@ -52,6 +52,12 @@ crons.interval(
 );
 
 crons.interval(
+  "retry failed payouts",
+  { minutes: 15 },
+  internal.stripe.retryFailedPayouts,
+);
+
+crons.interval(
   "cleanup orphaned workspaces",
   { minutes: 10 },
   internal.devWorkspaces.cleanupOrphaned,

@@ -329,6 +329,43 @@ export const cleanupOrphaned = internalMutation({
       }
     }
 
+    // Clean up workspaces stuck in "provisioning" for >10 minutes
+    const provisioningWorkspaces = await ctx.db
+      .query("devWorkspaces")
+      .withIndex("by_status", (q) => q.eq("status", "provisioning"))
+      .collect();
+
+    const now = Date.now();
+    for (const ws of provisioningWorkspaces) {
+      if (ws.createdAt < now - 10 * 60 * 1000) {
+        await ctx.scheduler.runAfter(0, internal.devWorkspaces.destroyWorkspace, {
+          workspaceDocId: ws._id,
+          workspaceId: ws.workspaceId,
+          workerHost: ws.workerHost,
+          reason: "stuck_provisioning",
+        });
+        cleanedCount++;
+      }
+    }
+
+    // Clean up workspaces in "error" state for >5 minutes
+    const errorWorkspaces = await ctx.db
+      .query("devWorkspaces")
+      .withIndex("by_status", (q) => q.eq("status", "error"))
+      .collect();
+
+    for (const ws of errorWorkspaces) {
+      if (ws.createdAt < now - 5 * 60 * 1000) {
+        await ctx.scheduler.runAfter(0, internal.devWorkspaces.destroyWorkspace, {
+          workspaceDocId: ws._id,
+          workspaceId: ws.workspaceId,
+          workerHost: ws.workerHost,
+          reason: "error_cleanup",
+        });
+        cleanedCount++;
+      }
+    }
+
     if (cleanedCount > 0) {
       console.log(`[devWorkspaces] Cleaned up ${cleanedCount} orphaned workspaces`);
     }
