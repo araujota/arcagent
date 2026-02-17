@@ -1,14 +1,14 @@
 # Environment Setup
 
-This guide covers every environment variable needed to run arcagent across its three services.
+This guide covers every environment variable needed to run arcagent.
 
 ## Who configures what
 
-**You (the platform operator)** own every variable in this document. You run the Next.js frontend, Convex backend, Worker, and MCP Server — all the infrastructure. Every secret, API key, and service URL below is yours to configure.
+**You (the platform operator)** run three services: the Next.js frontend, Convex backend, and Worker. You also publish the `arcagent-mcp` npm package so agents can install it. Every secret, API key, and service URL in this document is yours to configure.
 
 **Your users (bounty creators and agents using the web UI)** configure nothing. They sign up via Clerk, and the platform handles everything.
 
-**Agent hosts (AI agents using the MCP server)** need exactly one thing:
+**Agent hosts (AI agents using the MCP server)** install the published npm package and need exactly one thing:
 
 | Variable | Description | How they get it |
 |----------|-------------|-----------------|
@@ -30,7 +30,7 @@ This is the key agents place in their Claude Desktop config:
 }
 ```
 
-The published `arcagent-mcp` npm package connects to your hosted MCP server (HTTP transport). The agent never sees or needs `MCP_SHARED_SECRET`, `CONVEX_URL`, Stripe keys, or any other platform secret. Their `ARCAGENT_API_KEY` is the only credential they manage.
+The published `arcagent-mcp` npm package runs a local MCP server (stdio transport) that authenticates directly with the Convex backend using the API key as a bearer token. The agent never sees or needs `MCP_SHARED_SECRET`, `CONVEX_URL`, Stripe keys, or any other platform secret. Their `ARCAGENT_API_KEY` is the only credential they manage.
 
 ---
 
@@ -41,10 +41,9 @@ These values must match across services. Generate each once and reuse:
 ```bash
 # Worker <-> Convex authentication
 export WORKER_SHARED_SECRET=$(openssl rand -hex 32)
-
-# MCP Server <-> Convex authentication
-export MCP_SHARED_SECRET=$(openssl rand -hex 32)
 ```
+
+> **Note:** `MCP_SHARED_SECRET` is not needed in production. Agents authenticate directly via their `ARCAGENT_API_KEY`, which is validated by hashing the key and looking it up in the database. `MCP_SHARED_SECRET` is only useful during local development if you want to run the MCP server from source without a valid API key.
 
 ---
 
@@ -78,7 +77,7 @@ Set via `npx convex env set VARIABLE_NAME "value"` or in the Convex Dashboard un
 | Variable | Required | Description | How to get it |
 |----------|----------|-------------|---------------|
 | `WORKER_SHARED_SECRET` | Yes | HMAC-verified auth for worker result posts | `openssl rand -hex 32` — must match worker `.env` |
-| `MCP_SHARED_SECRET` | Yes | Bearer token auth for MCP server calls | `openssl rand -hex 32` — must match mcp-server `.env` |
+| `MCP_SHARED_SECRET` | No | Bearer token auth for local dev MCP server (not needed in production — agents use `ARCAGENT_API_KEY`) | `openssl rand -hex 32` |
 
 ### GitHub
 
@@ -159,18 +158,52 @@ Create `worker/.env`.
 
 ---
 
-## MCP Server
+## MCP Server (npm package — not operator-hosted)
 
-Create `mcp-server/.env`.
+The MCP server is **not** a service you run in production. It is an npm package (`arcagent-mcp`) that agents install and run locally on their own machines via `npx arcagent-mcp`. The package connects directly to your Convex backend using the agent's `ARCAGENT_API_KEY`.
+
+### How agents use it
+
+Agents add this to their Claude Desktop config — no other setup needed:
+
+```json
+{
+  "mcpServers": {
+    "arcagent": {
+      "command": "npx",
+      "args": ["-y", "arcagent-mcp"],
+      "env": {
+        "ARCAGENT_API_KEY": "arc_..."
+      }
+    }
+  }
+}
+```
+
+### Publishing the package
+
+Before agents can `npx arcagent-mcp`, you must build and publish the package:
+
+1. **Set `DEFAULT_CONVEX_URL`** in `mcp-server/src/index.ts` to your production Convex deployment URL
+2. **Build**: `cd mcp-server && npm run build`
+3. **Publish**: `cd mcp-server && npm publish`
+
+The published package includes only the compiled `dist/` directory and defaults to your production Convex URL. Agents never need `CONVEX_URL`, `MCP_SHARED_SECRET`, or any other platform secret.
+
+### Local development only
+
+When developing the MCP server from source (not production), create `mcp-server/.env`:
 
 | Variable | Required | Description | How to get it |
 |----------|----------|-------------|---------------|
 | `CONVEX_URL` | Yes | Convex deployment URL | Same as `NEXT_PUBLIC_CONVEX_URL` |
-| `MCP_SHARED_SECRET` | Yes | Auth with Convex HTTP endpoints | Must match value set in Convex env |
-| `CLERK_SECRET_KEY` | Yes | Clerk Backend API key for creating unified user accounts during agent registration | Clerk Dashboard > API Keys > Secret key (same value as the frontend `CLERK_SECRET_KEY`) |
+| `MCP_SHARED_SECRET` | Or `ARCAGENT_API_KEY` | Infrastructure-level auth (bypasses per-key DB lookup) | `openssl rand -hex 32` — set in Convex env too |
+| `ARCAGENT_API_KEY` | Or `MCP_SHARED_SECRET` | Authenticate as a specific user (same as npx mode) | Generated in Settings > API Keys |
+| `CLERK_SECRET_KEY` | For registration | Clerk Backend API key for agent registration endpoint | Clerk Dashboard > API Keys > Secret key |
+| `WORKER_SHARED_SECRET` | For workspaces | Auth with worker for dev workspace operations | Must match value set in worker env |
 | `MCP_PORT` | No | HTTP server port (default: `3002`) | Only used when `MCP_TRANSPORT=http` |
-| `MCP_TRANSPORT` | No | `"stdio"` (default, for Claude Desktop) or `"http"` (for remote agents) | Set based on deployment mode |
-| `GITHUB_BOT_TOKEN` | No | Creates feature branches and grants push access for agents working on bounties. Must have write access to creator repos. | GitHub > Developer settings > Fine-grained PAT. Scopes: `repo` |
+| `MCP_TRANSPORT` | No | `"stdio"` (default) or `"http"` (for remote agents) | Set based on transport mode |
+| `GITHUB_BOT_TOKEN` | No | Creates feature branches on creator repos | GitHub > Developer settings > Fine-grained PAT. Scopes: `repo` |
 
 ---
 
@@ -181,16 +214,13 @@ Create `mcp-server/.env`.
 git clone <repo-url> && cd arcagent
 npm install
 cd worker && npm install && cd ..
-cd mcp-server && npm install && cd ..
 
 # 2. Set up Convex
 npx convex dev  # Creates project, generates .env.local with NEXT_PUBLIC_CONVEX_URL
 
 # 3. Set shared secrets
 WORKER_SECRET=$(openssl rand -hex 32)
-MCP_SECRET=$(openssl rand -hex 32)
 npx convex env set WORKER_SHARED_SECRET "$WORKER_SECRET"
-npx convex env set MCP_SHARED_SECRET "$MCP_SECRET"
 
 # 4. Set required Convex env vars
 npx convex env set CLERK_JWT_ISSUER_DOMAIN "your-app.clerk.accounts.dev"
@@ -214,17 +244,13 @@ WORKER_SHARED_SECRET=$WORKER_SECRET
 REDIS_URL=redis://localhost:6379
 EOF
 
-# 7. Create mcp-server/.env
-cat > mcp-server/.env <<EOF
-CONVEX_URL=$(grep NEXT_PUBLIC_CONVEX_URL .env.local | cut -d= -f2)
-MCP_SHARED_SECRET=$MCP_SECRET
-CLERK_SECRET_KEY=$(grep CLERK_SECRET_KEY .env.local | cut -d= -f2)
-EOF
-
-# 8. Run all services
+# 7. Run services
 npm run dev          # Next.js + Convex (port 3000)
 cd worker && npm run dev   # Worker (port 3001)
-cd mcp-server && npm run dev  # MCP stdio (or MCP_TRANSPORT=http for port 3002)
+
+# 8. Publish the MCP package (so agents can npx arcagent-mcp)
+# First update DEFAULT_CONVEX_URL in mcp-server/src/index.ts to your Convex URL
+cd mcp-server && npm install && npm run build && npm publish
 ```
 
 ## Clerk Configuration
@@ -247,7 +273,9 @@ The `<SignIn />` and `<SignUp />` components automatically render all enabled so
 |-------|-------|-----|
 | `CLERK_JWT_ISSUER_DOMAIN not configured` | Missing Convex env var | `npx convex env set CLERK_JWT_ISSUER_DOMAIN "your-app.clerk.accounts.dev"` |
 | `STRIPE_SECRET_KEY not configured` | Missing Convex env var | `npx convex env set STRIPE_SECRET_KEY "sk_test_..."` |
-| `MCP_SHARED_SECRET not configured` or `Invalid shared secret` | Secret mismatch between MCP server and Convex | Regenerate: `openssl rand -hex 32`, set in both Convex env and `mcp-server/.env` |
+| `MCP_SHARED_SECRET not configured` or `Invalid shared secret` | Secret mismatch (local dev only) | Regenerate: `openssl rand -hex 32`, set in both Convex env and `mcp-server/.env` |
+| `Either MCP_SHARED_SECRET or ARCAGENT_API_KEY is required` | No auth configured for MCP server | Set `ARCAGENT_API_KEY` in Claude Desktop config (production) or `MCP_SHARED_SECRET` in `mcp-server/.env` (local dev) |
+| `Invalid ARCAGENT_API_KEY` or `API key validation failed` | API key revoked, expired, or incorrect | Generate a new key in Settings > API Keys |
 | `WORKER_SHARED_SECRET` / HMAC verification failed | Secret mismatch between worker and Convex | Regenerate: `openssl rand -hex 32`, set in both Convex env and `worker/.env` |
 | `connect ECONNREFUSED 127.0.0.1:6379` | Redis not running | Start Redis: `redis-server` or `brew services start redis` |
 | `Cannot find module 'firecracker'` / Firecracker timeout | Missing Firecracker binary or not on Linux | Firecracker requires a Linux host with KVM. See worker Firecracker env vars above. |
@@ -259,15 +287,15 @@ After setup, verify each service starts correctly:
 - [ ] **Convex**: `npx convex dev` starts without errors, dashboard accessible at the deployment URL
 - [ ] **Next.js**: `npm run dev:next` starts, `http://localhost:3000` loads the sign-in page
 - [ ] **Worker**: `cd worker && npm run dev` starts, logs "Worker listening on port 3001"
-- [ ] **MCP Server**: `cd mcp-server && npm run dev` starts without errors (stdio mode outputs nothing on success; HTTP mode logs "MCP server listening on port 3002")
+- [ ] **MCP Package**: After publishing, `ARCAGENT_API_KEY=arc_... npx arcagent-mcp` starts and logs "Authenticated as ..." to stderr
 
 ### Secret Rotation Procedure
 
-If you need to rotate a shared secret:
+If you need to rotate `WORKER_SHARED_SECRET`:
 
 1. **Generate** a new secret: `openssl rand -hex 32`
-2. **Update Convex** env: `npx convex env set SECRET_NAME "new-value"`
-3. **Update the service** `.env` file with the same new value
-4. **Restart** the affected service (worker or MCP server)
+2. **Update Convex** env: `npx convex env set WORKER_SHARED_SECRET "new-value"`
+3. **Update** `worker/.env` with the same new value
+4. **Restart** the worker service
 
-Note: There is no built-in secret expiry mechanism. Rotate secrets if you suspect a compromise or as part of regular security hygiene.
+Agent API keys are rotated by agents themselves via Settings > API Keys (revoke old key, generate new one). No operator action needed.

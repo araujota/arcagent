@@ -1,14 +1,14 @@
-import { createClerkClient } from "@clerk/backend";
-
 const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
 
-function getClerkClient() {
+async function getClerkClient() {
   if (!CLERK_SECRET_KEY) {
     throw new Error(
       "CLERK_SECRET_KEY is required for agent registration. " +
         "Set it in your mcp-server/.env file.",
     );
   }
+  // Dynamic import so @clerk/backend isn't required at install time (npx users)
+  const { createClerkClient } = await import("@clerk/backend");
   return createClerkClient({ secretKey: CLERK_SECRET_KEY });
 }
 
@@ -24,7 +24,7 @@ export async function findOrCreateClerkUser(
   email: string,
   githubUsername?: string,
 ): Promise<{ clerkId: string; isExisting: boolean }> {
-  const clerk = getClerkClient();
+  const clerk = await getClerkClient();
 
   // Check if user already exists by email
   const existingUsers = await clerk.users.getUserList({

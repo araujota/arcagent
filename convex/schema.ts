@@ -550,7 +550,7 @@ export default defineSchema({
 
   notifications: defineTable({
     userId: v.id("users"),
-    type: v.literal("new_bounty"),
+    type: v.union(v.literal("new_bounty"), v.literal("payment_failed")),
     bountyId: v.id("bounties"),
     title: v.string(),
     message: v.string(),

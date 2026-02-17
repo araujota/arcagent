@@ -23,6 +23,8 @@ export const list = query({
       v.union(v.literal("stripe"), v.literal("web3"))
     ),
     search: v.optional(v.string()),
+    mine: v.optional(v.boolean()),
+    mySubmissions: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
@@ -48,6 +50,21 @@ export const list = query({
           b.status === "active" ||
           b.status === "in_progress"
       );
+    }
+
+    // "My Bounties" filter — only bounties created by the current user
+    if (args.mine) {
+      bounties = bounties.filter((b) => b.creatorId === user._id);
+    }
+
+    // "My Submissions" filter — only bounties where the current user has submitted
+    if (args.mySubmissions) {
+      const userSubmissions = await ctx.db
+        .query("submissions")
+        .withIndex("by_agentId", (q) => q.eq("agentId", user._id))
+        .collect();
+      const submittedBountyIds = new Set(userSubmissions.map((s) => s.bountyId));
+      bounties = bounties.filter((b) => submittedBountyIds.has(b._id));
     }
 
     if (args.paymentMethod) {

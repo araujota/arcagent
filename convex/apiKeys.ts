@@ -88,9 +88,12 @@ export const generateForCurrentUser = mutation({
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
 
-    // Generate a random API key
-    const rawKey = `arc_${generateRandomString(48)}`;
-    const keyPrefix = rawKey.slice(0, 12);
+    // Generate a random API key: arc_ + 32 hex chars = 36 chars total
+    const randomPart = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    const rawKey = `arc_${randomPart}`;
+    const keyPrefix = rawKey.slice(0, 8);
 
     // Hash the key with SHA-256
     const encoder = new TextEncoder();
@@ -163,10 +166,3 @@ export const revokeKey = mutation({
     await ctx.db.patch(args.apiKeyId, { status: "revoked" });
   },
 });
-
-function generateRandomString(length: number): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  const array = new Uint8Array(length);
-  crypto.getRandomValues(array);
-  return Array.from(array, (b) => chars[b % chars.length]).join("");
-}

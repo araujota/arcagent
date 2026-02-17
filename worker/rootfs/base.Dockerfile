@@ -4,8 +4,15 @@
 # Minimal Alpine Linux with essential tools for cloning repositories and
 # running CI gates.  Language-specific images extend this base.
 #
+# BUILD ORDER: The vsock-agent Go binary must be compiled BEFORE building
+# this image. Use `make` in the rootfs/ directory — the Makefile handles
+# building vsock-agent (via ../vsock-agent/) as a prerequisite.
+#
 # Build:
-#   docker build -t arcagent-rootfs-base -f rootfs/base.Dockerfile rootfs/
+#   cd worker/rootfs && make          # builds vsock-agent then rootfs images
+#   # Or manually:
+#   make -C ../vsock-agent build      # step 1: compile Go binary
+#   docker build -t arcagent-rootfs-base -f base.Dockerfile .  # step 2
 #
 # Export as ext4:
 #   docker run --rm arcagent-rootfs-base tar -C / -cf - . | \

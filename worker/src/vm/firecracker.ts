@@ -65,6 +65,10 @@ const TAP_PREFIX = "fc-tap-";
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000; // 2 minutes
 /** Enable vsock-based communication (set to "false" to fall back to SSH). */
 const USE_VSOCK = process.env.FC_USE_VSOCK !== "false";
+/** SSH key path for SSH fallback (when vsock is disabled). */
+const SSH_KEY_PATH = process.env.FC_SSH_KEY_PATH ?? "/root/.ssh/id_ed25519";
+/** SSH port on guest (when vsock is disabled). */
+const GUEST_SSH_PORT = parseInt(process.env.FC_GUEST_SSH_PORT ?? "22", 10);
 
 // ---------------------------------------------------------------------------
 // VM lifecycle
@@ -121,7 +125,8 @@ export async function createFirecrackerVM(
   let dnsResolver: DnsResolverHandle | null = null;
   let egressProxy: EgressProxyHandle | null = null;
   const vmConfig = getVMConfig(opts.rootfsImage.replace(/\.ext4$/, "").replace(/-\d+$/, ""));
-  const hardenEgress = process.env.FC_HARDEN_EGRESS === "true";
+  const hardenEgress = process.env.FC_HARDEN_EGRESS !== "false"
+    && (process.env.FC_HARDEN_EGRESS === "true" || process.env.NODE_ENV === "production");
 
   if (hardenEgress && vmConfig.allowedDomains.length > 0) {
     const gatewayIp = "10.0.0.1";
@@ -196,8 +201,8 @@ export async function createFirecrackerVM(
     // The socket itself will have restrictive permissions
   }
 
-  // 4. Launch Firecracker via jailer
-  const fcProcess = execFileAsync(JAILER_BIN, [
+  // 4. Launch Firecracker via jailer (raw execFile to capture PID)
+  const fcChild = execFile(JAILER_BIN, [
     "--id",
     vmId,
     "--exec-file",
@@ -211,8 +216,15 @@ export async function createFirecrackerVM(
     configPath,
     "--no-api",
   ]);
+  const firecrackerPid = fcChild.pid;
 
-  const vmProcessRef = fcProcess;
+  const vmProcessRef = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    let stdout = "", stderr = "";
+    fcChild.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
+    fcChild.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+    fcChild.on("close", (code) => code === 0 ? resolve({ stdout, stderr }) : reject(new Error(`Firecracker exited ${code}: ${stderr}`)));
+    fcChild.on("error", reject);
+  });
 
   // 5. Wait for communication channel
   if (USE_VSOCK) {
@@ -286,6 +298,7 @@ export async function createFirecrackerVM(
   (handle as VMHandleInternal).__configPath = configPath;
   (handle as VMHandleInternal).__sshKeyPath = vmSshKeyPath;
   (handle as VMHandleInternal).__processRef = vmProcessRef;
+  (handle as VMHandleInternal).__firecrackerPid = firecrackerPid;
   (handle as VMHandleInternal).__vsockSocketPath = vsockSocketPath;
   (handle as VMHandleInternal).__encryptedOverlay = encryptedOverlay ?? undefined;
   (handle as VMHandleInternal).__dnsResolver = dnsResolver ?? undefined;

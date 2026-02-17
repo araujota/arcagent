@@ -42,11 +42,11 @@ export const dispatchVerification = internalAction({
   handler: async (ctx, args) => {
     try {
       const workerUrl = process.env.WORKER_API_URL;
-      const workerSecret = process.env.WORKER_API_SECRET;
+      const workerSecret = process.env.WORKER_SHARED_SECRET ?? process.env.WORKER_API_SECRET;
 
       if (!workerUrl || !workerSecret) {
         throw new Error(
-          "WORKER_API_URL and WORKER_API_SECRET must be configured"
+          "WORKER_API_URL and WORKER_SHARED_SECRET must be configured"
         );
       }
 
@@ -211,11 +211,11 @@ export const dispatchVerificationFromDiff = internalAction({
   handler: async (ctx, args) => {
     try {
       const workerUrl = process.env.WORKER_API_URL;
-      const workerSecret = process.env.WORKER_API_SECRET;
+      const workerSecret = process.env.WORKER_SHARED_SECRET ?? process.env.WORKER_API_SECRET;
 
       if (!workerUrl || !workerSecret) {
         throw new Error(
-          "WORKER_API_URL and WORKER_API_SECRET must be configured",
+          "WORKER_API_URL and WORKER_SHARED_SECRET must be configured",
         );
       }
 

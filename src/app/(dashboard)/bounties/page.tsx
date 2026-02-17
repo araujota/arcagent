@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import Link from "next/link";
 
 function BountyExplorerContent() {
-  const { status, paymentMethod, search } = useBountyFilters();
+  const { status, paymentMethod, search, mine, mySubmissions } = useBountyFilters();
 
   const bounties = useQuery(api.bounties.list, {
     status: status as
@@ -25,6 +25,8 @@ function BountyExplorerContent() {
       | undefined,
     paymentMethod: paymentMethod as "stripe" | "web3" | undefined,
     search,
+    mine: mine || undefined,
+    mySubmissions: mySubmissions || undefined,
   });
 
   if (bounties === undefined) {

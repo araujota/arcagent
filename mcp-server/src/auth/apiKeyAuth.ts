@@ -28,9 +28,9 @@ export async function validateApiKey(
   if (!apiKey.startsWith("arc_")) {
     throw new ApiKeyFormatError("API key must start with 'arc_'");
   }
-  if (apiKey.length !== 36) {
+  if (apiKey.length < 36 || apiKey.length > 52) {
     throw new ApiKeyFormatError(
-      `API key must be 36 characters (got ${apiKey.length})`
+      `API key must be between 36 and 52 characters (got ${apiKey.length})`
     );
   }
 

@@ -4,12 +4,12 @@ Zero-trust bounty verification for the agentic economy. Bounty creators post cod
 
 ## Architecture
 
-| Service | Directory | Stack | Port |
-|---------|-----------|-------|------|
-| **Next.js App** | `src/` | React 19, App Router, shadcn/ui, Clerk auth | 3000 |
-| **Convex Backend** | `convex/` | Database, serverless functions, HTTP endpoints | — |
-| **Worker** | `worker/` | Express, BullMQ, Redis, Firecracker microVMs | 3001 |
-| **MCP Server** | `mcp-server/` | MCP protocol, stdio + HTTP transports | 3002 |
+| Service | Directory | Stack | Notes |
+|---------|-----------|-------|-------|
+| **Next.js App** | `src/` | React 19, App Router, shadcn/ui, Clerk auth | Port 3000 |
+| **Convex Backend** | `convex/` | Database, serverless functions, HTTP endpoints | Hosted by Convex |
+| **Worker** | `worker/` | Express, BullMQ, Redis, Firecracker microVMs | Port 3001 |
+| **MCP Server** | `mcp-server/` | MCP protocol, stdio + HTTP transports | Published as `arcagent-mcp` npm package — runs on agent machines, not operator infrastructure |
 
 ## Features
 
@@ -24,19 +24,20 @@ Zero-trust bounty verification for the agentic economy. Bounty creators post cod
 
 ## Quick Start
 
-See [setup.md](./setup.md) for full environment setup with all services.
+See [setup.md](./setup.md) for full environment setup.
 
 ```bash
 # Clone and install
 git clone <repo-url> && cd arcagent
 npm install
 cd worker && npm install && cd ..
-cd mcp-server && npm install && cd ..
 
-# Start development (see setup.md for env vars)
+# Start services (see setup.md for env vars)
 npm run dev              # Next.js + Convex (port 3000)
 cd worker && npm run dev # Worker (port 3001)
-cd mcp-server && npm run dev  # MCP server (stdio)
+
+# Publish the MCP package for agents (one-time, after setting DEFAULT_CONVEX_URL)
+cd mcp-server && npm install && npm run build && npm publish
 ```
 
 ## Development Commands
@@ -55,10 +56,10 @@ npx tsc --noEmit         # Type-check
 cd worker && npm run dev      # tsx watch
 cd worker && npm run build    # tsc
 
-# MCP Server — agent interface
-cd mcp-server && npm run dev                     # stdio transport
-cd mcp-server && MCP_TRANSPORT=http npm run dev   # HTTP transport
-cd mcp-server && npm run build                    # tsc
+# MCP Server — development only (production agents use npx arcagent-mcp)
+cd mcp-server && npm run dev                     # stdio transport (local dev)
+cd mcp-server && MCP_TRANSPORT=http npm run dev   # HTTP transport (local dev)
+cd mcp-server && npm run build                    # Build for publishing
 ```
 
 ## Documentation
@@ -74,7 +75,7 @@ See the [Environment Variables section in README's original location](./setup.md
 | Secret | Services | Purpose |
 |--------|----------|---------|
 | `WORKER_SHARED_SECRET` | Convex + Worker | HMAC auth for verification results |
-| `MCP_SHARED_SECRET` | Convex + MCP Server | Bearer token auth for agent API calls |
+| `ARCAGENT_API_KEY` | Agent machines (via `npx arcagent-mcp`) | Per-user API key — the only credential agents need |
 | `STRIPE_SECRET_KEY` | Convex | Escrow charges and Connect payouts |
 | `GITHUB_API_TOKEN` | Convex + Worker | Repo indexing and cloning |
 | `ANTHROPIC_API_KEY` | Convex | AI test generation pipeline |

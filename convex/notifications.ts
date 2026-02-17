@@ -42,6 +42,27 @@ export const createForNewBounty = internalMutation({
   },
 });
 
+export const createPaymentFailed = internalMutation({
+  args: {
+    userId: v.id("users"),
+    bountyId: v.id("bounties"),
+    title: v.string(),
+    paymentIntentId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const message = `Payment failed for bounty "${args.title}". Please update your payment method and try again.`;
+    await ctx.db.insert("notifications", {
+      userId: args.userId,
+      type: "payment_failed",
+      bountyId: args.bountyId,
+      title: args.title,
+      message,
+      read: false,
+      createdAt: Date.now(),
+    });
+  },
+});
+
 export const listUnread = internalQuery({
   args: {
     userId: v.id("users"),

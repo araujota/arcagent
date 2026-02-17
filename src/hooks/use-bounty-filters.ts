@@ -13,6 +13,8 @@ export function useBountyFilters() {
   const paymentMethod =
     (searchParams.get("paymentMethod") as PaymentMethod) || undefined;
   const search = searchParams.get("search") || undefined;
+  const mine = searchParams.get("mine") === "true" || undefined;
+  const mySubmissions = searchParams.get("submissions") === "true" || undefined;
 
   const setFilter = useCallback(
     (key: string, value: string | undefined) => {
@@ -42,6 +44,16 @@ export function useBountyFilters() {
     [setFilter]
   );
 
+  const setMine = useCallback(
+    (value: boolean | undefined) => setFilter("mine", value ? "true" : undefined),
+    [setFilter]
+  );
+
+  const setMySubmissions = useCallback(
+    (value: boolean | undefined) => setFilter("submissions", value ? "true" : undefined),
+    [setFilter]
+  );
+
   const clearFilters = useCallback(() => {
     router.push(pathname);
   }, [router, pathname]);
@@ -50,9 +62,13 @@ export function useBountyFilters() {
     status,
     paymentMethod,
     search,
+    mine,
+    mySubmissions,
     setStatus,
     setPaymentMethod,
     setSearch,
+    setMine,
+    setMySubmissions,
     clearFilters,
   };
 }

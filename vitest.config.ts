@@ -11,6 +11,14 @@ export default defineConfig({
     globals: true,
     setupFiles: ["src/__tests__/setup.ts"],
     include: ["convex/**/*.test.ts", "src/**/*.test.{ts,tsx}"],
+    // convex-test limitation: ctx.scheduler.runAfter() fires writes after the
+    // transaction completes, producing harmless "Write outside of transaction"
+    // rejections. Suppress them so they don't fail the suite.
+    onUnhandledError(error) {
+      if (error.message?.includes("Write outside of transaction")) {
+        return false;
+      }
+    },
     coverage: {
       provider: "v8",
       include: ["convex/**/*.ts", "src/components/**/*.{ts,tsx}"],

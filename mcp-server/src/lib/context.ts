@@ -15,6 +15,21 @@ export interface AuthContext {
 const authStore = new AsyncLocalStorage<AuthContext>();
 
 /**
+ * Module-level fallback for stdio transport.
+ * AsyncLocalStorage doesn't survive across event handler boundaries
+ * in long-lived stdio connections, so we store the user here.
+ */
+let stdioUser: AuthenticatedUser | undefined;
+
+/**
+ * Set the authenticated user for stdio transport mode.
+ * Called once at startup after validating the ARCAGENT_API_KEY.
+ */
+export function setStdioAuthUser(user: AuthenticatedUser): void {
+  stdioUser = user;
+}
+
+/**
  * Run a callback within an authenticated context.
  * Used by the HTTP transport handler after validating the API key.
  */
@@ -24,10 +39,10 @@ export function runWithAuth<T>(user: AuthenticatedUser, fn: () => T): T {
 
 /**
  * Get the authenticated user from the current context.
- * Returns undefined if no auth context is set (e.g., stdio transport).
+ * Checks AsyncLocalStorage first (HTTP), then stdio fallback.
  */
 export function getAuthUser(): AuthenticatedUser | undefined {
-  return authStore.getStore()?.user;
+  return authStore.getStore()?.user ?? stdioUser;
 }
 
 /**

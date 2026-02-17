@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../../../../convex/_generated/api";
 import { Id } from "../../../../../convex/_generated/dataModel";
 import { useCurrentUser } from "@/hooks/use-current-user";
@@ -214,6 +214,36 @@ function CancelBountyDialog({
   );
 }
 
+function FundEscrowButton({
+  bountyId,
+}: {
+  bountyId: Id<"bounties">;
+}) {
+  const fundEscrow = useAction(api.stripe.fundEscrow);
+  const [funding, setFunding] = useState(false);
+
+  const handleFund = async () => {
+    setFunding(true);
+    try {
+      await fundEscrow({ bountyId });
+      toast.success("Escrow funded successfully!");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to fund escrow"
+      );
+    } finally {
+      setFunding(false);
+    }
+  };
+
+  return (
+    <Button onClick={handleFund} disabled={funding} variant="outline">
+      <DollarSign className="h-4 w-4 mr-2" />
+      {funding ? "Processing..." : "Fund Escrow"}
+    </Button>
+  );
+}
+
 function PublishDraftButton({
   bountyId,
   escrowStatus,
@@ -415,6 +445,9 @@ export default function BountyDetailPage() {
 
         <div className="flex items-center gap-2">
           <ShareBountyButton bountyId={bountyId} />
+          {user && bounty.creatorId === user._id && bounty.status === "draft" && bounty.escrowStatus !== "funded" && (
+            <FundEscrowButton bountyId={bountyId} />
+          )}
           {user && bounty.creatorId === user._id && bounty.status === "draft" && (
             <PublishDraftButton bountyId={bountyId} escrowStatus={bounty.escrowStatus} />
           )}

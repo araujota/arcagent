@@ -10,6 +10,8 @@ import { createFirecrackerVM, destroyFirecrackerVM, VMHandle } from "../vm/firec
 import { getVMConfig, VMResourceConfig } from "../vm/vmConfig";
 import { sanitizeShellArg } from "../lib/shellSanitize";
 import { vmPool } from "../vm/vmPool";
+import { sessionStore } from "./sessionStore";
+import { workspaceHeartbeat } from "./heartbeat";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,6 +79,9 @@ const MAX_CHANGED_FILES = 500;
 
 const sessions = new Map<string, WorkspaceSession>();
 let idleCheckTimer: NodeJS.Timeout | null = null;
+
+let workerInstanceId = "unknown";
+export function setWorkerInstanceId(id: string) { workerInstanceId = id; }
 
 // ---------------------------------------------------------------------------
 // Startup cleanup
@@ -161,6 +166,33 @@ export async function provisionWorkspace(
   };
   sessions.set(opts.workspaceId, session);
 
+  // Persist initial session state to Redis
+  await sessionStore.save({
+    workspaceId: opts.workspaceId,
+    vmId: "",
+    vsockSocketPath: "",
+    tapDevice: "",
+    overlayPath: "",
+    claimId: opts.claimId,
+    bountyId: opts.bountyId,
+    agentId: opts.agentId,
+    language: opts.language,
+    baseRepoUrl: opts.repoUrl,
+    baseCommitSha: opts.commitSha,
+    status: "provisioning",
+    createdAt: session.createdAt,
+    expiresAt: opts.expiresAt,
+    lastActivityAt: session.lastActivityAt,
+    lastHeartbeatAt: Date.now(),
+    firecrackerPid: 0,
+    workerInstanceId,
+  }).catch((err) => {
+    logger.warn("Failed to save session to Redis", {
+      workspaceId: opts.workspaceId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+
   try {
     // Try warm pool first, fall back to fresh VM boot
     let vm: VMHandle;
@@ -203,6 +235,41 @@ export async function provisionWorkspace(
     session.readyAt = Date.now();
     session.lastActivityAt = Date.now();
 
+    // Persist full session state to Redis with VM metadata
+    const vmInt = vm as unknown as Record<string, unknown>;
+    await sessionStore.save({
+      workspaceId: opts.workspaceId,
+      vmId: vm.vmId,
+      vsockSocketPath: (vmInt.__vsockSocketPath as string) ?? "",
+      tapDevice: (vmInt.__tapDevice as string) ?? "",
+      overlayPath: (vmInt.__overlayPath as string) ?? "",
+      claimId: opts.claimId,
+      bountyId: opts.bountyId,
+      agentId: opts.agentId,
+      language: opts.language,
+      baseRepoUrl: opts.repoUrl,
+      baseCommitSha: opts.commitSha,
+      status: "ready",
+      createdAt: session.createdAt,
+      readyAt: session.readyAt,
+      expiresAt: opts.expiresAt,
+      lastActivityAt: session.lastActivityAt,
+      lastHeartbeatAt: Date.now(),
+      firecrackerPid: (vmInt.__firecrackerPid as number) ?? 0,
+      workerInstanceId,
+    }).catch((err) => {
+      logger.warn("Failed to update session in Redis", {
+        workspaceId: opts.workspaceId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+
+    // Start heartbeat monitoring for this workspace
+    const vsockPath = (vmInt.__vsockSocketPath as string) ?? "";
+    if (vsockPath) {
+      workspaceHeartbeat.startMonitoring(opts.workspaceId, vsockPath, vm.vmId);
+    }
+
     // Schedule destroy timer at expiresAt
     const ttl = opts.expiresAt - Date.now();
     if (ttl > 0) {
@@ -233,6 +300,9 @@ export async function provisionWorkspace(
       error: session.errorMessage,
     });
 
+    // Update Redis with error status
+    await sessionStore.updateStatus(opts.workspaceId, "error").catch(() => {});
+
     // Clean up VM if it was created
     if (session.vmHandle) {
       await destroyFirecrackerVM(session.vmHandle).catch(() => {});
@@ -262,6 +332,9 @@ export async function destroyWorkspace(
 
   logger.info("Destroying workspace", { workspaceId, reason });
 
+  // Stop heartbeat monitoring before VM destroy
+  workspaceHeartbeat.stopMonitoring(workspaceId);
+
   // Clear destroy timer
   if (session.destroyTimer) {
     clearTimeout(session.destroyTimer);
@@ -279,8 +352,15 @@ export async function destroyWorkspace(
   }
 
   session.status = "destroyed";
+
+  // Update Redis with destroyed status
+  await sessionStore.updateStatus(workspaceId, "destroyed").catch(() => {});
+
   // Keep in map for a while so status queries work, then GC
-  setTimeout(() => sessions.delete(workspaceId), 5 * 60 * 1000);
+  setTimeout(() => {
+    sessions.delete(workspaceId);
+    sessionStore.delete(workspaceId).catch(() => {});
+  }, 5 * 60 * 1000);
 }
 
 /**
@@ -375,6 +455,7 @@ export function touchActivity(workspaceId: string): void {
   const session = sessions.get(workspaceId);
   if (session) {
     session.lastActivityAt = Date.now();
+    sessionStore.updateActivity(workspaceId).catch(() => {});
   }
 }
 

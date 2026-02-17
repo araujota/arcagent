@@ -227,6 +227,60 @@ function verifyMcpSecret(request: Request): boolean {
   return constantTimeEqual(token, secret);
 }
 
+// ---------------------------------------------------------------------------
+// Dual auth: shared secret (self-hosted) OR API key (npx users)
+// ---------------------------------------------------------------------------
+
+interface McpAuthResult {
+  authenticated: boolean;
+  userId?: string;
+  authMethod: "shared_secret" | "api_key" | "none";
+}
+
+async function verifyMcpAuth(
+  ctx: { runQuery: Function; runMutation: Function },
+  request: Request
+): Promise<McpAuthResult> {
+  // Fast path: shared secret (existing self-hosted mode)
+  if (verifyMcpSecret(request)) {
+    return { authenticated: true, authMethod: "shared_secret" };
+  }
+
+  // Slow path: API key bearer token (npx / external agent mode)
+  const header = request.headers.get("authorization");
+  if (!header?.startsWith("Bearer arc_")) {
+    return { authenticated: false, authMethod: "none" };
+  }
+
+  const apiKey = header.slice("Bearer ".length);
+  if (apiKey.length < 36 || apiKey.length > 52) {
+    return { authenticated: false, authMethod: "none" };
+  }
+
+  const encoder = new TextEncoder();
+  const hashBuffer = await crypto.subtle.digest(
+    "SHA-256",
+    encoder.encode(apiKey)
+  );
+  const keyHash = Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+  const result = await ctx.runQuery(internal.apiKeys.validateByHash, {
+    keyHash,
+  });
+  if (!result) return { authenticated: false, authMethod: "none" };
+
+  await ctx.runMutation(internal.apiKeys.updateLastUsed, {
+    apiKeyId: result.apiKeyId,
+  });
+  return {
+    authenticated: true,
+    userId: result.userId,
+    authMethod: "api_key",
+  };
+}
+
 function verifyWorkerSecret(request: Request): boolean {
   const secret = process.env.WORKER_SHARED_SECRET;
   if (!secret) return false;
@@ -260,10 +314,48 @@ function mcpJson(data: unknown, status = 200): Response {
 }
 
 // --- Auth: Validate API key ---
+// Supports two paths:
+// 1. Shared secret + keyHash in body (existing self-hosted mode)
+// 2. Bearer arc_... token directly (npx mode — hashes server-side)
 http.route({
   path: "/api/mcp/auth/validate",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
+    // Path 2: Direct API key bearer token (npx mode)
+    const authHeader = request.headers.get("authorization");
+    if (authHeader?.startsWith("Bearer arc_")) {
+      const auth = await verifyMcpAuth(ctx, request);
+      if (!auth.authenticated || !auth.userId) {
+        return mcpJson({ valid: false }, 200);
+      }
+      const user = await ctx.runQuery(internal.users.getByIdInternal, {
+        userId: auth.userId as Id<"users">,
+      });
+      if (!user) return mcpJson({ valid: false }, 200);
+
+      // Look up scopes from the API key
+      const apiKey = authHeader.slice("Bearer ".length);
+      const encoder = new TextEncoder();
+      const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(apiKey));
+      const keyHash = Array.from(new Uint8Array(hashBuffer))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+      const keyResult = await ctx.runQuery(internal.apiKeys.validateByHash, { keyHash });
+
+      return mcpJson({
+        valid: true,
+        userId: auth.userId,
+        user: {
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+        },
+        scopes: keyResult?.scopes ?? [],
+      });
+    }
+
+    // Path 1: Shared secret + keyHash in body (existing self-hosted mode)
     if (!verifyMcpSecret(request)) return mcpUnauthorized();
 
     const body = await request.json();
@@ -352,7 +444,8 @@ http.route({
   path: "/api/mcp/bounties/list",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
     const { status, tags, minReward, maxReward, search, limit } = body as {
@@ -382,7 +475,8 @@ http.route({
   path: "/api/mcp/bounties/get",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
     const { bountyId } = body as { bountyId: string };
@@ -402,11 +496,12 @@ http.route({
   path: "/api/mcp/bounties/create",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
     const {
-      creatorId,
+      creatorId: bodyCreatorId,
       title,
       description,
       reward,
@@ -422,7 +517,7 @@ http.route({
       pmProvider,
       pmConnectionId,
     } = body as {
-      creatorId: string;
+      creatorId?: string;
       title: string;
       description: string;
       reward: number;
@@ -439,6 +534,9 @@ http.route({
       pmConnectionId?: string;
       requiredTier?: "S" | "A" | "B" | "C" | "D";
     };
+
+    // SECURITY (C1): API key auth overrides creatorId from body
+    const creatorId = auth.authMethod === "api_key" ? auth.userId! : bodyCreatorId;
 
     if (!creatorId || !title || !description || !reward || !rewardCurrency || !paymentMethod) {
       return mcpError("Missing required fields: creatorId, title, description, reward, rewardCurrency, paymentMethod");
@@ -503,13 +601,17 @@ http.route({
   path: "/api/mcp/bounties/cancel",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { bountyId, creatorId } = body as {
+    const { bountyId, creatorId: bodyCreatorId } = body as {
       bountyId: string;
-      creatorId: string;
+      creatorId?: string;
     };
+
+    // SECURITY (C1): API key auth overrides creatorId from body
+    const creatorId = auth.authMethod === "api_key" ? auth.userId! : bodyCreatorId;
 
     if (!bountyId || !creatorId) {
       return mcpError("Missing required fields: bountyId, creatorId");
@@ -535,7 +637,8 @@ http.route({
   path: "/api/mcp/bounties/generation-status",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
     const { bountyId } = body as { bountyId: string };
@@ -607,7 +710,8 @@ http.route({
   path: "/api/mcp/bounties/test-suites",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
     const { bountyId } = body as { bountyId: string };
@@ -645,13 +749,16 @@ http.route({
   path: "/api/mcp/claims/create",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { bountyId, agentId } = body as {
+    const { bountyId, agentId: bodyAgentId } = body as {
       bountyId: string;
-      agentId: string;
+      agentId?: string;
     };
+    // SECURITY (C1): API key auth overrides agentId from body
+    const agentId = auth.authMethod === "api_key" ? auth.userId! : bodyAgentId;
     if (!bountyId || !agentId) return mcpError("Missing bountyId or agentId");
 
     try {
@@ -692,13 +799,16 @@ http.route({
   path: "/api/mcp/claims/release",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { claimId, agentId } = body as {
+    const { claimId, agentId: bodyAgentId } = body as {
       claimId: string;
-      agentId: string;
+      agentId?: string;
     };
+    // SECURITY (C1): API key auth overrides agentId from body
+    const agentId = auth.authMethod === "api_key" ? auth.userId! : bodyAgentId;
     if (!claimId || !agentId) return mcpError("Missing claimId or agentId");
 
     try {
@@ -719,13 +829,16 @@ http.route({
   path: "/api/mcp/claims/extend",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { claimId, agentId } = body as {
+    const { claimId, agentId: bodyAgentId } = body as {
       claimId: string;
-      agentId: string;
+      agentId?: string;
     };
+    // SECURITY (C1): API key auth overrides agentId from body
+    const agentId = auth.authMethod === "api_key" ? auth.userId! : bodyAgentId;
     if (!claimId || !agentId) return mcpError("Missing claimId or agentId");
 
     try {
@@ -749,7 +862,8 @@ http.route({
   path: "/api/mcp/claims/update-branch",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
     const { claimId, featureBranchName, featureBranchRepo } =
@@ -782,17 +896,21 @@ http.route({
   path: "/api/mcp/submissions/create",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { bountyId, agentId, repositoryUrl, commitHash, description } =
+    const { bountyId, agentId: bodyAgentId, repositoryUrl, commitHash, description } =
       body as {
         bountyId: string;
-        agentId: string;
+        agentId?: string;
         repositoryUrl: string;
         commitHash: string;
         description?: string;
       };
+
+    // SECURITY (C1): API key auth overrides agentId from body
+    const agentId = auth.authMethod === "api_key" ? auth.userId! : bodyAgentId;
 
     if (!bountyId || !agentId || !repositoryUrl || !commitHash) {
       return mcpError("Missing required fields");
@@ -840,14 +958,18 @@ http.route({
   path: "/api/mcp/submissions/list",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { agentId, bountyId, status } = body as {
-      agentId: string;
+    const { agentId: bodyAgentId, bountyId, status } = body as {
+      agentId?: string;
       bountyId?: string;
       status?: "pending" | "running" | "passed" | "failed";
     };
+
+    // SECURITY (C1): API key auth overrides agentId from body
+    const agentId = auth.authMethod === "api_key" ? auth.userId! : bodyAgentId;
 
     if (!agentId) return mcpError("Missing agentId");
 
@@ -869,7 +991,8 @@ http.route({
   path: "/api/mcp/verifications/get",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
     const { verificationId, submissionId } = body as {
@@ -911,7 +1034,8 @@ http.route({
   path: "/api/mcp/verifications/feedback",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
     const { bountyId } = body as { bountyId: string };
@@ -956,7 +1080,8 @@ http.route({
   path: "/api/mcp/ratings/submit",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
     const {
@@ -1008,7 +1133,8 @@ http.route({
   path: "/api/mcp/agents/stats",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
     const { agentId } = body as { agentId: string };
@@ -1040,10 +1166,13 @@ http.route({
   path: "/api/mcp/agents/my-stats",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { userId } = body as { userId: string };
+    const { userId: bodyUserId } = body as { userId?: string };
+    // SECURITY (C1): API key auth overrides userId from body
+    const userId = auth.authMethod === "api_key" ? auth.userId! : bodyUserId;
     if (!userId) return mcpError("Missing userId");
 
     const stats = await ctx.runQuery(internal.agentStats.getByAgentInternal, {
@@ -1059,7 +1188,8 @@ http.route({
   path: "/api/mcp/agents/leaderboard",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
     const { limit } = body as { limit?: number };
@@ -1081,14 +1211,18 @@ http.route({
   path: "/api/mcp/stripe/setup-intent",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { userId, email, name } = body as {
-      userId: string;
+    const { userId: bodyUserId, email, name } = body as {
+      userId?: string;
       email: string;
       name: string;
     };
+
+    // SECURITY (C1): API key auth overrides userId from body
+    const userId = auth.authMethod === "api_key" ? auth.userId! : bodyUserId;
 
     if (!userId || !email || !name) {
       return mcpError("Missing required fields: userId, email, name");
@@ -1114,13 +1248,17 @@ http.route({
   path: "/api/mcp/stripe/connect-onboarding",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { userId, email } = body as {
-      userId: string;
+    const { userId: bodyUserId, email } = body as {
+      userId?: string;
       email: string;
     };
+
+    // SECURITY (C1): API key auth overrides userId from body
+    const userId = auth.authMethod === "api_key" ? auth.userId! : bodyUserId;
 
     if (!userId || !email) {
       return mcpError("Missing required fields: userId, email");
@@ -1148,13 +1286,17 @@ http.route({
   path: "/api/mcp/stripe/fund-escrow",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { bountyId, userId } = body as {
+    const { bountyId, userId: bodyUserId } = body as {
       bountyId: string;
-      userId: string;
+      userId?: string;
     };
+
+    // SECURITY (C1): API key auth overrides userId from body
+    const userId = auth.authMethod === "api_key" ? auth.userId! : bodyUserId;
 
     if (!bountyId || !userId) {
       return mcpError("Missing required fields: bountyId, userId");
@@ -1191,10 +1333,13 @@ http.route({
   path: "/api/mcp/workspace/lookup",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { agentId, bountyId } = body as { agentId: string; bountyId: string };
+    const { agentId: bodyAgentId, bountyId } = body as { agentId?: string; bountyId: string };
+    // SECURITY (C1): API key auth overrides agentId from body
+    const agentId = auth.authMethod === "api_key" ? auth.userId! : bodyAgentId;
     if (!agentId || !bountyId) return mcpError("Missing agentId or bountyId");
 
     const ws = await ctx.runQuery(internal.devWorkspaces.getActiveByAgentAndBounty, {
@@ -1221,7 +1366,8 @@ http.route({
   path: "/api/mcp/workspace/update-status",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyWorkerSecret(request) && !verifyMcpSecret(request)) {
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated && !verifyWorkerSecret(request)) {
       return mcpUnauthorized();
     }
 
@@ -1258,16 +1404,20 @@ http.route({
   path: "/api/mcp/submissions/create-from-workspace",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { bountyId, agentId, workspaceId, diffPatch, description } = body as {
+    const { bountyId, agentId: bodyAgentId, workspaceId, diffPatch, description } = body as {
       bountyId: string;
-      agentId: string;
+      agentId?: string;
       workspaceId: string;
       diffPatch: string;
       description?: string;
     };
+
+    // SECURITY (C1): API key auth overrides agentId from body
+    const agentId = auth.authMethod === "api_key" ? auth.userId! : bodyAgentId;
 
     if (!bountyId || !agentId || !workspaceId || !diffPatch) {
       return mcpError("Missing required fields: bountyId, agentId, workspaceId, diffPatch");
@@ -1329,10 +1479,13 @@ http.route({
   path: "/api/mcp/notifications/list",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { userId, limit } = body as { userId: string; limit?: number };
+    const { userId: bodyUserId, limit } = body as { userId?: string; limit?: number };
+    // SECURITY (C1): API key auth overrides userId from body
+    const userId = auth.authMethod === "api_key" ? auth.userId! : bodyUserId;
     if (!userId) return mcpError("Missing userId");
 
     const notifications = await ctx.runQuery(
@@ -1348,7 +1501,8 @@ http.route({
   path: "/api/mcp/notifications/mark-read",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
     const { notificationIds } = body as { notificationIds: string[] };
@@ -1567,7 +1721,8 @@ http.route({
   path: "/api/mcp/workspace/crash-reports",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
     const { bountyId } = body as { bountyId: string };
@@ -1854,11 +2009,23 @@ http.route({
         break;
       }
       case "payment_intent.payment_failed": {
-        const pi = event.data.object as { id: string; metadata?: { bountyId?: string } };
+        const pi = event.data.object as { id: string; metadata?: { bountyId?: string; convexUserId?: string } };
         if (pi.metadata?.bountyId) {
           console.warn(
             `Payment failed for bounty ${pi.metadata.bountyId}: ${pi.id}`
           );
+          // Look up bounty to get creator and title for the notification
+          const failedBounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+            bountyId: pi.metadata.bountyId as Id<"bounties">,
+          });
+          if (failedBounty) {
+            await ctx.runMutation(internal.notifications.createPaymentFailed, {
+              userId: failedBounty.creatorId,
+              bountyId: failedBounty._id,
+              title: failedBounty.title,
+              paymentIntentId: pi.id,
+            });
+          }
         }
         break;
       }

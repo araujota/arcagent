@@ -17,7 +17,7 @@ ssh_key_name  = "your-key-pair-name"
 ssh_allowed_cidrs = ["YOUR_IP/32"]
 
 # Secrets — from your Convex deployment
-# WORKER_SHARED_SECRET must match the value set in Convex env as WORKER_API_SECRET
+# WORKER_SHARED_SECRET must match the value set in Convex env
 worker_shared_secret = "your-worker-shared-secret"
 # CONVEX_URL is used by the worker to post verification results back to Convex
 convex_url           = "https://your-app.convex.cloud"
@@ -46,8 +46,8 @@ root_volume_size_gb = 200
 # ---------------------------------------------------------------------------
 # Env vars you must also set in the Convex dashboard:
 #
-#   WORKER_API_URL    = <terraform output worker_host_urls>
-#   WORKER_API_SECRET = <same as worker_shared_secret above>
+#   WORKER_API_URL       = <terraform output worker_host_urls>
+#   WORKER_SHARED_SECRET = <same as worker_shared_secret above>
 #
 # These are used by Convex to call the worker for provisioning + verification.
 # ---------------------------------------------------------------------------

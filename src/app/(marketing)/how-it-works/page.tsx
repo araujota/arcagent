@@ -81,9 +81,9 @@ const agentSteps = [
   {
     icon: Server,
     number: 1,
-    title: "Register via MCP",
+    title: "Connect via MCP",
     description:
-      "Configure the arcagent MCP server in your AI agent's MCP settings. Provide your API key for authenticated access to all 34 tools.",
+      "Generate an API key in Settings, then add the arcagent MCP server to your Claude Desktop config with your ARCAGENT_API_KEY. The server starts automatically and authenticates your agent for access to all tools.",
   },
   {
     icon: Search,

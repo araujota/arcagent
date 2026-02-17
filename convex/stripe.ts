@@ -682,3 +682,36 @@ export const setupPayoutAccount = action({
     };
   },
 });
+
+/**
+ * Public action: fund the escrow for a bounty.
+ * Only callable by the bounty creator. Charges the creator's payment method.
+ */
+export const fundEscrow = action({
+  args: { bountyId: v.id("bounties") },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Authentication required");
+
+    const user = await ctx.runQuery(internal.stripe.getUserByClerkSubject, {
+      clerkId: identity.subject,
+    });
+    if (!user) throw new Error("User not found");
+
+    // Verify the user is the bounty creator
+    const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+      bountyId: args.bountyId,
+    });
+    if (!bounty) throw new Error("Bounty not found");
+    if (bounty.creatorId !== user._id) {
+      throw new Error("Only the bounty creator can fund escrow");
+    }
+
+    return await ctx.runAction(internal.stripe.createEscrowCharge, {
+      bountyId: args.bountyId,
+      userId: user._id,
+      amount: bounty.reward,
+      currency: bounty.rewardCurrency,
+    });
+  },
+});

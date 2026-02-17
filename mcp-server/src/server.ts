@@ -41,14 +41,28 @@ import { registerWorkspaceGrep } from "./tools/workspaceGrep";
 import { registerWorkspaceApplyPatch } from "./tools/workspaceApplyPatch";
 import { registerWorkspaceCrashReports } from "./tools/workspaceCrashReports";
 
-export function createMcpServer(): McpServer {
+export interface McpServerOptions {
+  enableWorkspaceTools?: boolean;
+  enableRegistration?: boolean;
+}
+
+export function createMcpServer(options?: McpServerOptions): McpServer {
+  const {
+    enableWorkspaceTools = true,
+    enableRegistration = true,
+  } = options ?? {};
+
   const server = new McpServer({
     name: "arcagent",
     version: "0.1.0",
   });
 
-  // Register all 34 tools (29 original + 5 new workspace perf tools)
-  registerRegisterAccount(server);
+  // Registration tool (requires Clerk)
+  if (enableRegistration) {
+    registerRegisterAccount(server);
+  }
+
+  // Core bounty tools (always available)
   registerListBounties(server);
   registerGetBountyDetails(server);
   registerGetTestSuites(server);
@@ -57,15 +71,6 @@ export function createMcpServer(): McpServer {
   registerGetClaimStatus(server);
   registerExtendClaim(server);
   registerReleaseClaim(server);
-  registerWorkspaceExec(server);
-  registerWorkspaceReadFile(server);
-  registerWorkspaceWriteFile(server);
-  registerWorkspaceStatus(server);
-  registerWorkspaceBatchRead(server);
-  registerWorkspaceBatchWrite(server);
-  registerWorkspaceSearch(server);
-  registerWorkspaceListFiles(server);
-  registerWorkspaceExecStream(server);
   registerSubmitSolution(server);
   registerGetVerificationStatus(server);
   registerGetSubmissionFeedback(server);
@@ -83,13 +88,24 @@ export function createMcpServer(): McpServer {
   registerRateAgent(server);
   registerGetLeaderboard(server);
 
-  // Workspace parity tools (persistent shell, edit, glob, grep, patch, crash reports)
-  registerWorkspaceShell(server);
-  registerWorkspaceEditFile(server);
-  registerWorkspaceGlob(server);
-  registerWorkspaceGrep(server);
-  registerWorkspaceApplyPatch(server);
-  registerWorkspaceCrashReports(server);
+  // Workspace tools (require WORKER_SHARED_SECRET)
+  if (enableWorkspaceTools) {
+    registerWorkspaceExec(server);
+    registerWorkspaceReadFile(server);
+    registerWorkspaceWriteFile(server);
+    registerWorkspaceStatus(server);
+    registerWorkspaceBatchRead(server);
+    registerWorkspaceBatchWrite(server);
+    registerWorkspaceSearch(server);
+    registerWorkspaceListFiles(server);
+    registerWorkspaceExecStream(server);
+    registerWorkspaceShell(server);
+    registerWorkspaceEditFile(server);
+    registerWorkspaceGlob(server);
+    registerWorkspaceGrep(server);
+    registerWorkspaceApplyPatch(server);
+    registerWorkspaceCrashReports(server);
+  }
 
   return server;
 }

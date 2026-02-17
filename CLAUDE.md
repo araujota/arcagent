@@ -18,25 +18,25 @@ npx tsc --noEmit         # Type-check (convex files have pre-existing implicit a
 cd worker && npm run dev      # tsx watch
 cd worker && npm run build    # tsc
 
-# MCP Server — autonomous agent interface (stdio or port 3002)
-cd mcp-server && npm run dev                     # stdio transport
-cd mcp-server && MCP_TRANSPORT=http npm run dev   # HTTP transport
-cd mcp-server && npm run build                    # tsc
+# MCP Server — npm package for agents (local dev only, not run in production)
+cd mcp-server && npm run dev                     # stdio transport (local dev)
+cd mcp-server && MCP_TRANSPORT=http npm run dev   # HTTP transport (local dev)
+cd mcp-server && npm run build                    # Build for publishing
 ```
 
 **Note:** `next build` requires `typescript.ignoreBuildErrors: true` in `next.config.ts` because convex files use `strict: true` but have widespread implicit `any` parameters. This is a known pre-existing issue.
 
 ## Architecture
 
-Three services in a monorepo, no workspace tooling — each has its own `package.json`:
+Three operator-deployed services plus one npm package, no workspace tooling — each has its own `package.json`:
 
 **Next.js App** (`src/`) — React 19 + App Router + shadcn/ui. Auth via Clerk. Real-time data via Convex `useQuery`/`useMutation`. Route groups: `(auth)` for sign-in, `(dashboard)` for authenticated pages, `(marketing)` for public pages. Clerk + Convex wired in `src/app/providers.tsx` via `ConvexProviderWithClerk`.
 
-**Convex Backend** (`convex/`) — Database, serverless functions, HTTP endpoints. Schema in `convex/schema.ts`. Functions are `query`/`mutation` (public, Clerk-authed) or `internalQuery`/`internalMutation`/`internalAction` (server-to-server, no Clerk). Actions can call external APIs (LLM, Stripe, GitHub). HTTP routes in `convex/http.ts` handle webhooks (Clerk, GitHub, Stripe) and MCP/worker endpoints authenticated via shared secrets with constant-time comparison.
+**Convex Backend** (`convex/`) — Database, serverless functions, HTTP endpoints. Schema in `convex/schema.ts`. Functions are `query`/`mutation` (public, Clerk-authed) or `internalQuery`/`internalMutation`/`internalAction` (server-to-server, no Clerk). Actions can call external APIs (LLM, Stripe, GitHub). HTTP routes in `convex/http.ts` handle webhooks (Clerk, GitHub, Stripe) and MCP/worker endpoints authenticated via shared secrets or API keys.
 
 **Worker** (`worker/`) — Express + BullMQ + Redis. Receives verification jobs from Convex, runs the 8-gate pipeline inside Firecracker microVMs, posts results back to `POST /api/verification/result`. Each job is HMAC-signed to prevent forged results.
 
-**MCP Server** (`mcp-server/`) — 19 tools for autonomous AI agents. Supports stdio (Claude Desktop) and HTTP transports. Auth: API key → SHA-256 hash → Convex lookup → AsyncLocalStorage context. All Convex calls go through `callConvex()` with `MCP_SHARED_SECRET` bearer token.
+**MCP Server** (`mcp-server/`) — Published as the `arcagent-mcp` npm package. Runs on agent machines (not operator infrastructure). Agents install via `npx arcagent-mcp` with only `ARCAGENT_API_KEY`. Auth: API key → bearer token → Convex HTTP endpoint → SHA-256 hash → DB lookup. In stdio mode, auth context is set at startup; in HTTP mode, per-request via AsyncLocalStorage.
 
 ## Key Patterns
 

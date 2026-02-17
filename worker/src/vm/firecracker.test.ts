@@ -132,14 +132,33 @@ import { createFirecrackerVM, destroyFirecrackerVM, type VMHandle } from "./fire
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Creates a minimal ChildProcess-like object for raw execFile calls. */
+function createMockChildProcess() {
+  const child: Record<string, unknown> = {
+    pid: 12345,
+    stdout: {
+      on(_event: string, _handler: Function) { return this; },
+    },
+    stderr: {
+      on(_event: string, _handler: Function) { return this; },
+    },
+    on(event: string, handler: Function) {
+      // Simulate successful exit on next microtask
+      if (event === "close") queueMicrotask(() => handler(0));
+      return child;
+    },
+  };
+  return child;
+}
+
 function defaultExecFileMock() {
   mockExecFile.mockImplementation(
     (cmd: string, args: string[], optsOrCb?: unknown, cb?: Function) => {
       const callback = typeof optsOrCb === "function" ? optsOrCb : cb;
       if (callback) callback(null, { stdout: "", stderr: "" });
-      const p = Promise.resolve({ stdout: "", stderr: "" });
-      (p as any).child = { pid: 12345 };
-      return p as any;
+      // Return ChildProcess-like object for raw execFile calls (e.g. jailer launch).
+      // For promisified calls the return value is ignored by promisify.
+      return createMockChildProcess();
     },
   );
 }
@@ -400,16 +419,21 @@ describe("destroyFirecrackerVM", () => {
   });
 
   it("kills process, removes egress, removes TAP, removes overlay in correct order", async () => {
+    // Mock process.kill to simulate ESRCH (process already exited) to avoid 2s timeout
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => { throw new Error("ESRCH"); });
+
     await destroyFirecrackerVM(handle);
 
-    const pkillCalls = findExecCalls("pkill");
-    expect(pkillCalls.length).toBeGreaterThanOrEqual(1);
+    // Should attempt PID-based kill (not pkill fallback) since fcChild.pid was captured
+    expect(killSpy).toHaveBeenCalledWith(12345, "SIGTERM");
 
     const ipCalls = findExecCalls("ip");
     const tapDel = ipCalls.find(
       (c) => c.args.includes("tuntap") && c.args.includes("del"),
     );
     expect(tapDel).toBeDefined();
+
+    killSpy.mockRestore();
   });
 
   it("removes encrypted overlay when present", async () => {

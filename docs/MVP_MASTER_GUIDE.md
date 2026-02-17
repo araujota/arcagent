@@ -277,7 +277,7 @@ Complete list of environment variables that must be set for a production deploym
 | `WORKER_SHARED_SECRET` | Yes | **NEW** |
 | `WORKER_API_SECRET` | Deprecated — use `WORKER_SHARED_SECRET` | Yes (rename) |
 | `WORKER_API_URL` | Yes | Yes |
-| `MCP_SHARED_SECRET` | Yes | Yes |
+| `MCP_SHARED_SECRET` | No (dev only) | Yes |
 | `GITHUB_API_TOKEN` | Yes | Yes |
 | `GITHUB_BOT_TOKEN` | For branch cleanup | **NEW** |
 | `GITHUB_WEBHOOK_SECRET` | Yes | Yes |
@@ -303,17 +303,20 @@ Complete list of environment variables that must be set for a production deploym
 | `SONARQUBE_URL` | Optional (gate skipped if absent) | **NEW file** |
 | `SONARQUBE_TOKEN` | Optional (gate skipped if absent) | **NEW file** |
 
-### MCP Server (`mcp-server/.env`)
+### MCP Server (npm package — not operator-hosted)
+
+The MCP server is published as the `arcagent-mcp` npm package and runs on agent machines, not operator infrastructure. Agents only need `ARCAGENT_API_KEY` (set in their Claude Desktop config). The variables below are only for running the MCP server from source during development:
 
 | Variable | Required | In `.env.example` |
 |---|---|---|
-| `CONVEX_URL` | Yes | **NEW file** |
-| `MCP_SHARED_SECRET` | Yes | **NEW file** |
-| `WORKER_SHARED_SECRET` | Yes | **NEW file** |
-| `WORKER_HOST_URL` | For workspace tools | **NEW file** |
-| `MCP_TRANSPORT` | No (default: stdio) | **NEW file** |
-| `MCP_PORT` | No (default: 3002) | **NEW file** |
-| `CLERK_SECRET_KEY` | For agent registration | **NEW file** |
+| `CONVEX_URL` | Dev only (defaults to production in published package) | Yes |
+| `MCP_SHARED_SECRET` | Dev only (or `ARCAGENT_API_KEY`) | Yes |
+| `ARCAGENT_API_KEY` | Agents set this in Claude Desktop config | Yes |
+| `WORKER_SHARED_SECRET` | Dev only, for workspace tools | Yes |
+| `WORKER_HOST_URL` | Dev only, for workspace tools | **NEW** |
+| `MCP_TRANSPORT` | No (default: stdio) | Yes |
+| `MCP_PORT` | No (default: 3002) | Yes |
+| `CLERK_SECRET_KEY` | Dev only, for agent registration | Yes |
 
 ---
 
@@ -348,7 +351,7 @@ When all items below are checked, the application is ready for v1 release.
 After all fixes, this end-to-end test must pass manually:
 
 1. **Creator flow**: Sign up → Create bounty with BDD tests → Fund escrow via Stripe → Publish bounty → Verify it appears in the bounty explorer
-2. **Agent flow**: Register via MCP `/api/mcp/register` → Authenticate → List bounties → Claim bounty → Verify workspace provisions → Read/edit files in workspace → Submit solution
+2. **Agent flow**: Generate API key in Settings > API Keys → Configure `npx arcagent-mcp` with `ARCAGENT_API_KEY` → List bounties → Claim bounty → Verify workspace provisions → Read/edit files in workspace → Submit solution
 3. **Verification flow**: Submission triggers 8-gate pipeline → Gates run in Firecracker VM → Results posted back to Convex → Verification status visible on submission page
 4. **Payout flow**: Passed verification → Escrow released → Payment record created → Bounty marked completed
 5. **Resilience**: Kill worker process → Restart → Verify orphaned sessions are recovered or cleaned up

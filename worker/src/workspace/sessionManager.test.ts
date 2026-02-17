@@ -47,6 +47,22 @@ vi.mock("../vm/vmPool", () => ({
   },
 }));
 
+vi.mock("./sessionStore", () => ({
+  sessionStore: {
+    save: vi.fn().mockResolvedValue(undefined),
+    updateStatus: vi.fn().mockResolvedValue(undefined),
+    updateActivity: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+vi.mock("./heartbeat", () => ({
+  workspaceHeartbeat: {
+    startMonitoring: vi.fn(),
+    stopMonitoring: vi.fn(),
+  },
+}));
+
 // Import after mocks are declared
 import { createFirecrackerVM, destroyFirecrackerVM } from "../vm/firecracker";
 import {

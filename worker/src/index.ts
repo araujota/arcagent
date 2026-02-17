@@ -5,8 +5,11 @@ import { createRoutes } from "./api/routes";
 import { authMiddleware } from "./api/auth";
 import { cleanupStaleCryptDevices } from "./vm/encryptedOverlay";
 import { createWorkspaceRoutes } from "./workspace/routes";
-import { destroyAllSessions, startIdleChecker } from "./workspace/sessionManager";
+import { destroyAllSessions, startIdleChecker, setWorkerInstanceId } from "./workspace/sessionManager";
 import { vmPool } from "./vm/vmPool";
+import { generateWorkerInstanceId, recoverOrphanedSessions } from "./workspace/recovery";
+import { workspaceHeartbeat } from "./workspace/heartbeat";
+import { sessionStore } from "./workspace/sessionStore";
 
 // ---------------------------------------------------------------------------
 // Logger
@@ -35,6 +38,14 @@ async function main(): Promise<void> {
 
   // Clean up stale dm-crypt devices from previous unclean shutdowns
   await cleanupStaleCryptDevices();
+
+  // Initialize crash recovery: generate instance ID, recover orphans, start heartbeat
+  const instanceId = generateWorkerInstanceId();
+  setWorkerInstanceId(instanceId);
+  logger.info("Worker instance ID generated", { instanceId });
+
+  await recoverOrphanedSessions(instanceId);
+  workspaceHeartbeat.startWorkerHeartbeat(instanceId);
 
   // Initialise the BullMQ queue & worker
   const { queue, worker } = await createVerificationQueue(redisUrl);
@@ -80,10 +91,12 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`Received ${signal} – shutting down gracefully`);
     server.close();
+    workspaceHeartbeat.stopAll();
     await destroyAllSessions();
     await vmPool.drainAll();
     await worker.close();
     await closeQueue(queue);
+    await sessionStore.close();
     process.exit(0);
   };
 
