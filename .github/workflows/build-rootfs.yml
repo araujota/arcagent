@@ -1,0 +1,75 @@
+name: Build Rootfs Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "worker/rootfs/**"
+      - "worker/vsock-agent/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "worker/rootfs/**"
+      - "worker/vsock-agent/**"
+
+jobs:
+  build-rootfs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go 1.22
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: worker/vsock-agent/go.sum
+
+      - name: Build vsock-agent
+        working-directory: worker/vsock-agent
+        run: make build
+
+      - name: Verify vsock-agent binary
+        run: |
+          file worker/rootfs/vsock-agent
+          ls -lh worker/rootfs/vsock-agent
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build base rootfs image
+        working-directory: worker/rootfs
+        run: |
+          docker build -t arcagent-rootfs-base -f base.Dockerfile .
+          CID=$(docker create arcagent-rootfs-base)
+          docker export "$CID" | dd of=base.ext4 bs=1M status=progress
+          docker rm "$CID" >/dev/null
+          echo "Base rootfs size: $(du -h base.ext4 | cut -f1)"
+
+      - name: Build node-20 rootfs image
+        working-directory: worker/rootfs
+        run: |
+          docker build -t arcagent-rootfs-node-20 -f node.Dockerfile .
+          CID=$(docker create arcagent-rootfs-node-20)
+          docker export "$CID" | dd of=node-20.ext4 bs=1M status=progress
+          docker rm "$CID" >/dev/null
+          echo "Node-20 rootfs size: $(du -h node-20.ext4 | cut -f1)"
+
+      - name: Upload rootfs artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs-images
+          path: |
+            worker/rootfs/base.ext4
+            worker/rootfs/node-20.ext4
+          retention-days: 7
+
+      - name: Upload vsock-agent binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsock-agent
+          path: worker/rootfs/vsock-agent
+          retention-days: 7

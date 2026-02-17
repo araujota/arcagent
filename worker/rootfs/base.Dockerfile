@@ -30,6 +30,7 @@ RUN apk add --no-cache \
     xz \
     sudo \
     shadow \
+    ripgrep \
     && rm -rf /var/cache/apk/*
 
 # Configure SSH server for host-to-guest communication

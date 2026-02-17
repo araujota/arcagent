@@ -1479,6 +1479,110 @@ http.route({
 });
 
 // ---------------------------------------------------------------------------
+// Workspace Crash Report Endpoint (called by worker)
+// ---------------------------------------------------------------------------
+
+http.route({
+  path: "/api/workspace/crash-report",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!verifyWorkerSecret(request)) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    let body: {
+      workspaceId: string;
+      bountyId: string;
+      agentId: string;
+      claimId: string;
+      vmId: string;
+      workerInstanceId: string;
+      crashType: string;
+      errorMessage: string;
+      lastKnownStatus: string;
+      vmUptimeMs?: number;
+      lastHeartbeatAt?: number;
+      lastActivityAt?: number;
+      resourceUsage?: {
+        cpuPercent?: number;
+        memoryMb?: number;
+        diskMb?: number;
+      };
+      recovered: boolean;
+      recoveryAction?: string;
+      hostMetrics?: {
+        totalActiveVMs?: number;
+        hostMemoryUsedPercent?: number;
+        hostCpuUsedPercent?: number;
+      };
+    };
+
+    try {
+      body = await request.json();
+    } catch {
+      return mcpError("Invalid JSON body", 400);
+    }
+
+    if (!body.workspaceId || !body.bountyId || !body.crashType) {
+      return mcpError("Missing required fields: workspaceId, bountyId, crashType");
+    }
+
+    try {
+      await ctx.runMutation(internal.workspaceCrashReports.recordCrashReport, {
+        workspaceId: body.workspaceId,
+        bountyId: body.bountyId as Id<"bounties">,
+        agentId: body.agentId as Id<"users">,
+        claimId: body.claimId as Id<"bountyClaims">,
+        vmId: body.vmId ?? "",
+        workerInstanceId: body.workerInstanceId ?? "",
+        crashType: body.crashType as
+          | "vm_process_exited" | "vm_unresponsive" | "worker_restart"
+          | "oom_killed" | "disk_full" | "provision_failed"
+          | "vsock_error" | "network_error" | "timeout" | "unknown",
+        errorMessage: body.errorMessage ?? "",
+        lastKnownStatus: body.lastKnownStatus ?? "unknown",
+        vmUptimeMs: body.vmUptimeMs,
+        lastHeartbeatAt: body.lastHeartbeatAt,
+        lastActivityAt: body.lastActivityAt,
+        resourceUsage: body.resourceUsage,
+        recovered: body.recovered ?? false,
+        recoveryAction: body.recoveryAction as
+          | "reconnected" | "reprovisioned" | "abandoned" | undefined,
+        hostMetrics: body.hostMetrics,
+      });
+
+      return mcpJson({ ok: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to record crash report";
+      return mcpError(message, 500);
+    }
+  }),
+});
+
+// --- Workspace: Crash reports query (for MCP) ---
+http.route({
+  path: "/api/mcp/workspace/crash-reports",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!verifyMcpSecret(request)) return mcpUnauthorized();
+
+    const body = await request.json();
+    const { bountyId } = body as { bountyId: string };
+    if (!bountyId) return mcpError("Missing bountyId");
+
+    const reports = await ctx.runQuery(
+      internal.workspaceCrashReports.getCrashReports,
+      { bountyId: bountyId as Id<"bounties"> }
+    );
+
+    return mcpJson({ reports });
+  }),
+});
+
+// ---------------------------------------------------------------------------
 // Worker Verification Result Endpoint
 // ---------------------------------------------------------------------------
 
