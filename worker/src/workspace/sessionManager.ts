@@ -31,6 +31,8 @@ export interface WorkspaceSession {
   lastActivityAt: number;
   destroyTimer: NodeJS.Timeout | null;
   errorMessage?: string;
+  /** Default persistent PTY shell session ID. */
+  defaultSessionId?: string;
 }
 
 export interface DiffOutput {

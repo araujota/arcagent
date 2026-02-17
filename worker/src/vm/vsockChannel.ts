@@ -19,16 +19,28 @@ import { ExecResult } from "./firecracker";
 
 /** Request sent from host to guest vsock agent. */
 export interface VsockRequest {
-  type: "exec" | "exec_with_stdin" | "file_write" | "file_read";
-  /** Shell command to execute (for exec/exec_with_stdin). */
+  type:
+    | "exec"
+    | "exec_with_stdin"
+    | "file_write"
+    | "file_read"
+    | "file_edit"
+    | "file_glob"
+    | "file_grep"
+    | "session_create"
+    | "session_exec"
+    | "session_resize"
+    | "session_destroy"
+    | "heartbeat";
+  /** Shell command to execute (for exec/exec_with_stdin/session_exec). */
   command?: string;
-  /** User to run the command as (default: current user in guest). */
+  /** User to run the command as (default: "agent"). */
   user?: string;
   /** Timeout in milliseconds. */
   timeoutMs?: number;
   /** Stdin data to pipe into the command (for exec_with_stdin). */
   stdin?: string;
-  /** File path for file_write/file_read. */
+  /** File path for file_write/file_read/file_edit/file_glob/file_grep. */
   path?: string;
   /** File content for file_write (base64 encoded). */
   contentBase64?: string;
@@ -36,17 +48,78 @@ export interface VsockRequest {
   mode?: string;
   /** File owner (e.g. "root:root"). */
   owner?: string;
+  // --- file_edit fields ---
+  /** Exact text to find (for file_edit). */
+  oldString?: string;
+  /** Replacement text (for file_edit). */
+  newString?: string;
+  /** Replace all occurrences (for file_edit, default false). */
+  replaceAll?: boolean;
+  // --- file_glob fields ---
+  /** Glob pattern (for file_glob, e.g. "**\/*.ts"). */
+  pattern?: string;
+  /** Maximum number of results (for file_glob/file_grep). */
+  maxResults?: number;
+  // --- file_grep fields ---
+  /** File glob filter (for file_grep, e.g. "*.ts"). */
+  glob?: string;
+  /** Case-sensitive search (for file_grep, default true). */
+  caseSensitive?: boolean;
+  /** Number of context lines around matches (for file_grep). */
+  contextLines?: number;
+  /** Output mode (for file_grep). */
+  outputMode?: "content" | "files_with_matches" | "count";
+  // --- session fields ---
+  /** Session ID (for session_create/exec/resize/destroy). */
+  sessionId?: string;
+  /** Shell path (for session_create, default "/bin/bash"). */
+  shell?: string;
+  /** Initial environment variables (for session_create). */
+  env?: Record<string, string>;
+  /** PTY rows (for session_create/session_resize). */
+  rows?: number;
+  /** PTY cols (for session_create/session_resize). */
+  cols?: number;
 }
 
 /** Response sent from guest vsock agent to host. */
 export interface VsockResponse {
-  type: "exec_result" | "file_result" | "error";
+  type: "exec_result" | "file_result" | "error" | "heartbeat_result" | "session_result";
   stdout?: string;
   stderr?: string;
   exitCode?: number;
   /** File content for file_read (base64 encoded). */
   contentBase64?: string;
   error?: string;
+  // --- file_edit response ---
+  /** Number of replacements made (for file_edit). */
+  replacements?: number;
+  // --- file_glob response ---
+  /** Matching file paths (for file_glob). */
+  files?: string[];
+  /** Total number of matches before truncation (for file_glob/file_grep). */
+  totalMatches?: number;
+  /** Whether results were truncated (for file_glob/file_grep). */
+  truncated?: boolean;
+  // --- file_grep response ---
+  /** Search matches (for file_grep). */
+  matches?: Array<{
+    file: string;
+    line: number;
+    text: string;
+    contextBefore?: string[];
+    contextAfter?: string[];
+  }>;
+  // --- session response ---
+  /** Session ID (for session_create). */
+  sessionId?: string;
+  /** Current working directory (for session_exec). */
+  cwd?: string;
+  // --- heartbeat response ---
+  /** VM uptime in ms (for heartbeat). */
+  uptimeMs?: number;
+  /** Number of active PTY sessions (for heartbeat). */
+  sessionCount?: number;
 }
 
 // ---------------------------------------------------------------------------

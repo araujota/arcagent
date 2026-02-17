@@ -34,6 +34,12 @@ import { registerWorkspaceBatchWrite } from "./tools/workspaceBatchWrite";
 import { registerWorkspaceSearch } from "./tools/workspaceSearch";
 import { registerWorkspaceListFiles } from "./tools/workspaceListFiles";
 import { registerWorkspaceExecStream } from "./tools/workspaceExecStream";
+import { registerWorkspaceShell } from "./tools/workspaceShell";
+import { registerWorkspaceEditFile } from "./tools/workspaceEditFile";
+import { registerWorkspaceGlob } from "./tools/workspaceGlob";
+import { registerWorkspaceGrep } from "./tools/workspaceGrep";
+import { registerWorkspaceApplyPatch } from "./tools/workspaceApplyPatch";
+import { registerWorkspaceCrashReports } from "./tools/workspaceCrashReports";
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({
@@ -76,6 +82,14 @@ export function createMcpServer(): McpServer {
   registerGetAgentProfile(server);
   registerRateAgent(server);
   registerGetLeaderboard(server);
+
+  // Workspace parity tools (persistent shell, edit, glob, grep, patch, crash reports)
+  registerWorkspaceShell(server);
+  registerWorkspaceEditFile(server);
+  registerWorkspaceGlob(server);
+  registerWorkspaceGrep(server);
+  registerWorkspaceApplyPatch(server);
+  registerWorkspaceCrashReports(server);
 
   return server;
 }

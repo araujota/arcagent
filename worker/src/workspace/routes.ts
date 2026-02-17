@@ -891,6 +891,273 @@ export function createWorkspaceRoutes(): Router {
     }
   });
 
+  // -------------------------------------------------------------------------
+  // POST /workspace/edit-file — Surgical string replacement in a file
+  // -------------------------------------------------------------------------
+  router.post("/workspace/edit-file", async (req: Request, res: Response) => {
+    try {
+      const { workspaceId, path, oldString, newString, replaceAll } = req.body as {
+        workspaceId: string;
+        path: string;
+        oldString: string;
+        newString: string;
+        replaceAll?: boolean;
+      };
+
+      if (!workspaceId || !path || oldString === undefined || newString === undefined) {
+        res.status(400).json({ error: "Missing workspaceId, path, oldString, or newString" });
+        return;
+      }
+
+      const session = getSession(workspaceId);
+      if (!session || session.status !== "ready") {
+        res.status(404).json({ error: "Workspace not found or not ready" });
+        return;
+      }
+
+      touchActivity(workspaceId);
+
+      // SECURITY (W3): Validate path within /workspace/
+      const safePath = validateWorkspacePath(path);
+
+      // Send file_edit request via vsock — edit happens entirely inside the VM
+      const vsockResult = await session.vmHandle.vsockRequest!({
+        type: "file_edit",
+        path: safePath,
+        oldString,
+        newString,
+        replaceAll: replaceAll ?? false,
+      });
+
+      if (vsockResult.error) {
+        if (vsockResult.error === "not_found") {
+          res.status(400).json({
+            error: "old_string not found in file",
+            path: safePath,
+            replacements: 0,
+          });
+          return;
+        }
+        if (vsockResult.error === "ambiguous") {
+          res.status(400).json({
+            error: "old_string matches multiple locations — provide more context or set replaceAll=true",
+            path: safePath,
+            replacements: 0,
+          });
+          return;
+        }
+        res.status(500).json({ error: vsockResult.error, path: safePath });
+        return;
+      }
+
+      res.json({
+        path: safePath,
+        replacements: vsockResult.replacements ?? 0,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Edit failed";
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /workspace/glob — Glob pattern file search
+  // -------------------------------------------------------------------------
+  router.post("/workspace/glob", async (req: Request, res: Response) => {
+    try {
+      const { workspaceId, pattern, path, maxResults } = req.body as {
+        workspaceId: string;
+        pattern: string;
+        path?: string;
+        maxResults?: number;
+      };
+
+      if (!workspaceId || !pattern) {
+        res.status(400).json({ error: "Missing workspaceId or pattern" });
+        return;
+      }
+
+      const session = getSession(workspaceId);
+      if (!session || session.status !== "ready") {
+        res.status(404).json({ error: "Workspace not found or not ready" });
+        return;
+      }
+
+      touchActivity(workspaceId);
+
+      const max = Math.min(maxResults ?? 500, MAX_LIST_FILES_RESULTS);
+      const searchPath = path ? validateWorkspacePath(path) : "/workspace";
+
+      // Send file_glob request via vsock
+      const vsockResult = await session.vmHandle.vsockRequest!({
+        type: "file_glob",
+        pattern,
+        path: searchPath,
+        maxResults: max,
+      });
+
+      res.json({
+        files: vsockResult.files ?? [],
+        totalMatches: vsockResult.totalMatches ?? 0,
+        truncated: vsockResult.truncated ?? false,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Glob search failed";
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /workspace/grep — Ripgrep-powered content search
+  // -------------------------------------------------------------------------
+  router.post("/workspace/grep", async (req: Request, res: Response) => {
+    try {
+      const { workspaceId, pattern, path, glob, caseSensitive, maxResults, contextLines, outputMode } = req.body as {
+        workspaceId: string;
+        pattern: string;
+        path?: string;
+        glob?: string;
+        caseSensitive?: boolean;
+        maxResults?: number;
+        contextLines?: number;
+        outputMode?: "content" | "files_with_matches" | "count";
+      };
+
+      if (!workspaceId || !pattern) {
+        res.status(400).json({ error: "Missing workspaceId or pattern" });
+        return;
+      }
+
+      if (pattern.length > MAX_SEARCH_PATTERN_LENGTH) {
+        res.status(400).json({ error: `Pattern too long (max ${MAX_SEARCH_PATTERN_LENGTH} chars)` });
+        return;
+      }
+
+      const session = getSession(workspaceId);
+      if (!session || session.status !== "ready") {
+        res.status(404).json({ error: "Workspace not found or not ready" });
+        return;
+      }
+
+      touchActivity(workspaceId);
+
+      const max = Math.min(maxResults ?? 200, MAX_SEARCH_RESULTS);
+      const searchPath = path ? validateWorkspacePath(path) : "/workspace";
+
+      // Validate glob if provided
+      if (glob) {
+        validateGlobPattern(glob);
+      }
+
+      // Send file_grep request via vsock
+      const vsockResult = await session.vmHandle.vsockRequest!({
+        type: "file_grep",
+        pattern,
+        path: searchPath,
+        glob,
+        caseSensitive: caseSensitive ?? true,
+        maxResults: max,
+        contextLines: contextLines ?? 0,
+        outputMode: outputMode ?? "content",
+      });
+
+      res.json({
+        matches: vsockResult.matches ?? [],
+        totalMatches: vsockResult.totalMatches ?? 0,
+        truncated: vsockResult.truncated ?? false,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Grep search failed";
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /workspace/session-exec — Execute in persistent PTY shell session
+  // -------------------------------------------------------------------------
+  router.post("/workspace/session-exec", async (req: Request, res: Response) => {
+    try {
+      const { workspaceId, command, sessionId, timeoutMs } = req.body as {
+        workspaceId: string;
+        command: string;
+        sessionId?: string;
+        timeoutMs?: number;
+      };
+
+      if (!workspaceId || !command) {
+        res.status(400).json({ error: "Missing workspaceId or command" });
+        return;
+      }
+
+      if (isBlockedCommand(command)) {
+        res.status(400).json({ error: "Command not allowed in workspace" });
+        return;
+      }
+
+      const session = getSession(workspaceId);
+      if (!session || session.status !== "ready") {
+        res.status(404).json({ error: "Workspace not found or not ready" });
+        return;
+      }
+
+      touchActivity(workspaceId);
+
+      const sid = sessionId ?? session.defaultSessionId ?? "default";
+      const timeout = Math.min(
+        timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS,
+        MAX_EXEC_TIMEOUT_MS,
+      );
+
+      // Send session_exec request via vsock
+      const vsockResult = await session.vmHandle.vsockRequest!({
+        type: "session_exec",
+        sessionId: sid,
+        command,
+        timeoutMs: timeout,
+      });
+
+      if (vsockResult.error) {
+        // Session not found — auto-create it
+        if (vsockResult.error === "session_not_found") {
+          await session.vmHandle.vsockRequest!({
+            type: "session_create",
+            sessionId: sid,
+            shell: "/bin/bash",
+            env: { HOME: "/home/agent", TERM: "xterm-256color" },
+          });
+          // Retry the command
+          const retryResult = await session.vmHandle.vsockRequest!({
+            type: "session_exec",
+            sessionId: sid,
+            command,
+            timeoutMs: timeout,
+          });
+          res.json({
+            stdout: truncate(retryResult.stdout ?? "", MAX_STDOUT),
+            stderr: truncate(retryResult.stderr ?? "", MAX_STDERR),
+            exitCode: retryResult.exitCode ?? 0,
+            cwd: retryResult.cwd ?? "/workspace",
+            sessionId: sid,
+          });
+          return;
+        }
+        res.status(500).json({ error: vsockResult.error });
+        return;
+      }
+
+      res.json({
+        stdout: truncate(vsockResult.stdout ?? "", MAX_STDOUT),
+        stderr: truncate(vsockResult.stderr ?? "", MAX_STDERR),
+        exitCode: vsockResult.exitCode ?? 0,
+        cwd: vsockResult.cwd ?? "/workspace",
+        sessionId: sid,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Shell exec failed";
+      res.status(500).json({ error: message });
+    }
+  });
+
   return router;
 }
 

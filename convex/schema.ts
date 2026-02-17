@@ -369,6 +369,9 @@ export default defineSchema({
     lastUsedAt: v.optional(v.number()),
     expiresAt: v.optional(v.number()),
     createdAt: v.number(),
+    // Agent-breed abstraction
+    toolProfile: v.optional(v.string()),
+    agentPlatform: v.optional(v.string()),
   })
     .index("by_keyHash", ["keyHash"])
     .index("by_userId", ["userId"])
@@ -514,6 +517,14 @@ export default defineSchema({
     destroyedAt: v.optional(v.number()),
     destroyReason: v.optional(v.string()),
     errorMessage: v.optional(v.string()),
+    // Crash recovery metadata
+    firecrackerPid: v.optional(v.number()),
+    vsockSocketPath: v.optional(v.string()),
+    tapDevice: v.optional(v.string()),
+    overlayPath: v.optional(v.string()),
+    workerInstanceId: v.optional(v.string()),
+    lastHeartbeatAt: v.optional(v.number()),
+    defaultShellSessionId: v.optional(v.string()),
   })
     .index("by_claimId", ["claimId"])
     .index("by_agentId_and_status", ["agentId", "status"])
@@ -554,4 +565,63 @@ export default defineSchema({
     source: v.optional(v.string()),
     joinedAt: v.number(),
   }).index("by_email", ["email"]),
+
+  // === Workspace Crash Reports ===
+
+  workspaceCrashReports: defineTable({
+    workspaceId: v.string(),
+    bountyId: v.id("bounties"),
+    agentId: v.id("users"),
+    claimId: v.id("bountyClaims"),
+    vmId: v.string(),
+    workerInstanceId: v.string(),
+
+    // Crash classification
+    crashType: v.union(
+      v.literal("vm_process_exited"),
+      v.literal("vm_unresponsive"),
+      v.literal("worker_restart"),
+      v.literal("oom_killed"),
+      v.literal("disk_full"),
+      v.literal("provision_failed"),
+      v.literal("vsock_error"),
+      v.literal("network_error"),
+      v.literal("timeout"),
+      v.literal("unknown"),
+    ),
+
+    // Diagnostics
+    errorMessage: v.string(),
+    lastKnownStatus: v.string(),
+    vmUptimeMs: v.optional(v.number()),
+    lastHeartbeatAt: v.optional(v.number()),
+    lastActivityAt: v.optional(v.number()),
+    resourceUsage: v.optional(v.object({
+      cpuPercent: v.optional(v.number()),
+      memoryMb: v.optional(v.number()),
+      diskMb: v.optional(v.number()),
+    })),
+
+    // Recovery outcome
+    recovered: v.boolean(),
+    recoveryAction: v.optional(v.union(
+      v.literal("reconnected"),
+      v.literal("reprovisioned"),
+      v.literal("abandoned"),
+    )),
+
+    // Host context
+    hostMetrics: v.optional(v.object({
+      totalActiveVMs: v.optional(v.number()),
+      hostMemoryUsedPercent: v.optional(v.number()),
+      hostCpuUsedPercent: v.optional(v.number()),
+    })),
+
+    createdAt: v.number(),
+  })
+    .index("by_workspaceId", ["workspaceId"])
+    .index("by_bountyId", ["bountyId"])
+    .index("by_agentId", ["agentId"])
+    .index("by_crashType", ["crashType"])
+    .index("by_createdAt", ["createdAt"]),
 });

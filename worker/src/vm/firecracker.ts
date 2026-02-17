@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "../index";
-import { vsockExec, vsockExecWithStdin, vsockWriteFile, waitForVsock } from "./vsockChannel";
+import { vsockExec, vsockExecWithStdin, vsockWriteFile, waitForVsock, sendVsockRequestPooled, VsockRequest, VsockResponse } from "./vsockChannel";
 import { createEncryptedOverlay, destroyEncryptedOverlay, EncryptedOverlayHandle } from "./encryptedOverlay";
 import { startDnsResolver, stopDnsResolver, applyDnsRedirect, removeDnsRedirect, DnsResolverHandle } from "./dnsPolicy";
 import { startEgressProxy, stopEgressProxy, applyProxyRedirect, removeProxyRedirect, applyRateLimiting, removeRateLimiting, EgressProxyHandle } from "./egressProxy";
@@ -39,6 +39,8 @@ export interface VMHandle {
   execWithStdin?(command: string, stdin: string, timeoutMs?: number, user?: string): Promise<ExecResult>;
   /** Write a file inside the guest via vsock. */
   writeFile?(path: string, content: Buffer, mode?: string, owner?: string): Promise<void>;
+  /** Send a raw vsock request (for file_edit, file_glob, file_grep, session_* operations). */
+  vsockRequest?(request: import("./vsockChannel").VsockRequest): Promise<import("./vsockChannel").VsockResponse>;
 }
 
 /** Result of executing a command inside the VM. */
@@ -266,6 +268,15 @@ export async function createFirecrackerVM(
       // SSH fallback: base64 pipe
       const b64 = content.toString("base64");
       await execInVM(guestIp, `echo '${b64}' | base64 -d > ${path}${mode ? ` && chmod ${mode} ${path}` : ""}${owner ? ` && chown ${owner} ${path}` : ""}`, 30_000, vmSshKeyPath);
+    },
+
+    async vsockRequest(
+      request: VsockRequest,
+    ): Promise<VsockResponse> {
+      if (!USE_VSOCK) {
+        throw new Error("vsockRequest requires FC_USE_VSOCK=true");
+      }
+      return sendVsockRequestPooled(vsockSocketPath, request, request.timeoutMs ?? 60_000);
     },
   };
 
