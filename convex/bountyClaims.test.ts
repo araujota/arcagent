@@ -1,8 +1,19 @@
 import { convexTest } from "convex-test";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import schema from "./schema";
 import { internal } from "./_generated/api";
 import { seedUser, seedBounty, seedClaim, seedVerification, seedSubmission } from "./__tests__/helpers";
+
+// markCompleted uses ctx.scheduler.runAfter() for cleanup which can
+// cause "Write outside of transaction" errors in convex-test. Suppress them.
+let rejectionHandler: (err: unknown) => void;
+beforeEach(() => {
+  rejectionHandler = () => {};
+  process.on("unhandledRejection", rejectionHandler);
+});
+afterEach(() => {
+  process.removeListener("unhandledRejection", rejectionHandler);
+});
 
 describe("Bounty Claims", () => {
   describe("create", () => {
@@ -284,6 +295,100 @@ describe("Bounty Claims", () => {
       // Should still be active, with extended expiry
       expect(claim?.status).toBe("active");
       expect(claim?.expiresAt).toBeGreaterThan(Date.now());
+    });
+  });
+
+  describe("markCompleted", () => {
+    it("sets claim status to completed", async () => {
+      const t = convexTest(schema);
+      const claimId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "in_progress",
+        });
+        return await seedClaim(ctx, bountyId, agentId, { status: "active" });
+      });
+
+      await t.mutation(internal.bountyClaims.markCompleted, { claimId });
+
+      const claim = await t.run(async (ctx) => ctx.db.get(claimId));
+      expect(claim?.status).toBe("completed");
+    });
+
+    it("schedules cleanupBranch when branch info exists", async () => {
+      const t = convexTest(schema);
+      const claimId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "in_progress",
+        });
+        return await seedClaim(ctx, bountyId, agentId, {
+          status: "active",
+          featureBranchName: "feature/test-branch",
+          featureBranchRepo: "owner/repo",
+        });
+      });
+
+      // Should not throw — cleanup is scheduled via scheduler
+      await t.mutation(internal.bountyClaims.markCompleted, { claimId });
+
+      const claim = await t.run(async (ctx) => ctx.db.get(claimId));
+      expect(claim?.status).toBe("completed");
+    });
+  });
+
+  describe("extendExpiration", () => {
+    it("extends claim by claimDurationHours", async () => {
+      const t = convexTest(schema);
+      const { agentId, claimId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "in_progress",
+          claimDurationHours: 6,
+        });
+        const claimId = await seedClaim(ctx, bountyId, agentId, {
+          status: "active",
+          expiresAt: Date.now() + 1000, // about to expire
+        });
+        return { agentId, claimId };
+      });
+
+      const result = await t.mutation(internal.bountyClaims.extendExpiration, {
+        claimId,
+        agentId,
+      });
+
+      expect(result.expiresAt).toBeGreaterThan(Date.now());
+      // 6 hours in ms = 21600000
+      const sixHoursMs = 6 * 60 * 60 * 1000;
+      // The new expiresAt should be roughly now + 6 hours
+      expect(result.expiresAt).toBeGreaterThan(Date.now() + sixHoursMs - 5000);
+      expect(result.expiresAt).toBeLessThan(Date.now() + sixHoursMs + 5000);
+    });
+
+    it("non-active claim rejected", async () => {
+      const t = convexTest(schema);
+      const { agentId, claimId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "active",
+        });
+        const claimId = await seedClaim(ctx, bountyId, agentId, {
+          status: "released",
+        });
+        return { agentId, claimId };
+      });
+
+      await expect(
+        t.mutation(internal.bountyClaims.extendExpiration, {
+          claimId,
+          agentId,
+        }),
+      ).rejects.toThrow("Claim is not active");
     });
   });
 });

@@ -1,7 +1,7 @@
 import { convexTest } from "convex-test";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import schema from "./schema";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import { seedUser, seedBounty, seedClaim, seedSubmission } from "./__tests__/helpers";
 
 // cancelFromMcp uses ctx.scheduler.runAfter() for refund/cleanup which can
@@ -543,9 +543,166 @@ describe("Bounty Status Transitions", () => {
     });
   });
 
-  // P2-6: "update frozen fields" test skipped — the `update` mutation in
-  // convex/bounties.ts is a public Clerk-authed mutation (not internalMutation),
-  // so it cannot be called via `t.mutation(internal.bounties.updateInternal, ...)`
-  // in convex-test. There is no `updateInternal` export. The frozen-field logic
-  // is enforced in the public `update` mutation at line ~274 of bounties.ts.
+  describe("update (field freeze enforcement)", () => {
+    it("SECURITY (H2): cannot change reward when status is in_progress", async () => {
+      const t = convexTest(schema);
+      const { clerkId, bountyId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx, { clerkId: "clerk_freeze_1" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "in_progress",
+          reward: 100,
+        });
+        return { clerkId: "clerk_freeze_1", bountyId };
+      });
+
+      const authed = t.withIdentity({ subject: clerkId });
+
+      await expect(
+        authed.mutation(api.bounties.update, {
+          bountyId,
+          reward: 200,
+        }),
+      ).rejects.toThrow('Cannot modify "reward"');
+    });
+
+    it("cannot change description when status is completed", async () => {
+      const t = convexTest(schema);
+      const { clerkId, bountyId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx, { clerkId: "clerk_freeze_2" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "completed",
+          description: "Original description that is long enough",
+        });
+        return { clerkId: "clerk_freeze_2", bountyId };
+      });
+
+      const authed = t.withIdentity({ subject: clerkId });
+
+      await expect(
+        authed.mutation(api.bounties.update, {
+          bountyId,
+          description: "New description that is long enough for test",
+        }),
+      ).rejects.toThrow('Cannot modify "description"');
+    });
+
+    it("CAN change title when status is in_progress", async () => {
+      const t = convexTest(schema);
+      const { clerkId, bountyId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx, { clerkId: "clerk_freeze_3" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "in_progress",
+          title: "Old Title",
+        });
+        return { clerkId: "clerk_freeze_3", bountyId };
+      });
+
+      const authed = t.withIdentity({ subject: clerkId });
+
+      await authed.mutation(api.bounties.update, {
+        bountyId,
+        title: "New Title",
+      });
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.title).toBe("New Title");
+    });
+
+    it("CAN change any field when status is draft", async () => {
+      const t = convexTest(schema);
+      const { clerkId, bountyId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx, { clerkId: "clerk_freeze_4" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "draft",
+          reward: 100,
+          description: "Original description that is long enough",
+        });
+        return { clerkId: "clerk_freeze_4", bountyId };
+      });
+
+      const authed = t.withIdentity({ subject: clerkId });
+
+      await authed.mutation(api.bounties.update, {
+        bountyId,
+        reward: 200,
+        description: "Updated description that is long enough for test",
+      });
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.reward).toBe(200);
+      expect(bounty?.description).toBe("Updated description that is long enough for test");
+    });
+  });
+
+  describe("expireDeadlineBounties (additional)", () => {
+    it("funded bounty past deadline schedules refund (status changes to cancelled)", async () => {
+      const t = convexTest(schema);
+      const bountyId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        return await seedBounty(ctx, creatorId, {
+          status: "active",
+          deadline: Date.now() - 1000,
+          escrowStatus: "funded",
+        });
+      });
+
+      await t.mutation(internal.bounties.expireDeadlineBounties, {});
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.status).toBe("cancelled");
+      // The refund is scheduled via ctx.scheduler — we verify the bounty was
+      // cancelled (the scheduler side effect is tested at integration level)
+    });
+
+    it("completed bounty past deadline is untouched", async () => {
+      const t = convexTest(schema);
+      const bountyId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        return await seedBounty(ctx, creatorId, {
+          status: "completed",
+          deadline: Date.now() - 1000,
+        });
+      });
+
+      await t.mutation(internal.bounties.expireDeadlineBounties, {});
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      // expireDeadlineBounties only queries "active" bounties — completed ones
+      // are never touched
+      expect(bounty?.status).toBe("completed");
+    });
+
+    it("bounty with no deadline is unaffected", async () => {
+      const t = convexTest(schema);
+      const bountyId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        return await seedBounty(ctx, creatorId, {
+          status: "active",
+          escrowStatus: "unfunded",
+          // no deadline field
+        });
+      });
+
+      await t.mutation(internal.bounties.expireDeadlineBounties, {});
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.status).toBe("active");
+    });
+
+    it("in_progress bounty past deadline is unaffected (only queries active)", async () => {
+      const t = convexTest(schema);
+      const bountyId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        return await seedBounty(ctx, creatorId, {
+          status: "in_progress",
+          deadline: Date.now() - 1000,
+        });
+      });
+
+      await t.mutation(internal.bounties.expireDeadlineBounties, {});
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.status).toBe("in_progress");
+    });
+  });
 });

@@ -1,8 +1,19 @@
 import { convexTest } from "convex-test";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import schema from "./schema";
 import { internal } from "./_generated/api";
 import { seedUser, seedBounty } from "./__tests__/helpers";
+
+// Some stripe operations schedule async actions that can cause
+// "Write outside of transaction" in convex-test. Suppress them.
+let rejectionHandler: (err: unknown) => void;
+beforeEach(() => {
+  rejectionHandler = () => {};
+  process.on("unhandledRejection", rejectionHandler);
+});
+afterEach(() => {
+  process.removeListener("unhandledRejection", rejectionHandler);
+});
 
 describe("Escrow State Machine", () => {
   describe("VALID_ESCROW_TRANSITIONS via updateBountyEscrow", () => {
@@ -174,6 +185,93 @@ describe("Escrow State Machine", () => {
           escrowStatus: "funded",
         }),
       ).rejects.toThrow("Bounty not found");
+    });
+  });
+
+  describe("storePlatformFee", () => {
+    it("writes correct fee breakdown", async () => {
+      const t = convexTest(schema);
+      const bountyId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        return await seedBounty(ctx, creatorId, { reward: 100 });
+      });
+
+      await t.mutation(internal.stripe.storePlatformFee, {
+        bountyId,
+        platformFeePercent: 0.03,
+        platformFeeCents: 300,
+      });
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.platformFeePercent).toBe(0.03);
+      expect(bounty?.platformFeeCents).toBe(300);
+    });
+  });
+
+  describe("listCancelledWithFundedEscrow", () => {
+    it("returns cancelled bounties with funded escrow", async () => {
+      const t = convexTest(schema);
+      const { stuckId, completedId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        const stuckId = await seedBounty(ctx, creatorId, {
+          status: "cancelled",
+          escrowStatus: "funded",
+        });
+        // This one should NOT appear — it's cancelled but already refunded
+        const refundedId = await seedBounty(ctx, creatorId, {
+          status: "cancelled",
+          escrowStatus: "refunded",
+        });
+        // This one should NOT appear — it's completed (not cancelled)
+        const completedId = await seedBounty(ctx, creatorId, {
+          status: "completed",
+          escrowStatus: "funded",
+        });
+        return { stuckId, completedId };
+      });
+
+      const result = await t.query(
+        internal.bounties.listCancelledWithFundedEscrow,
+        {},
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0]._id).toBe(stuckId);
+    });
+  });
+
+  describe("updateBountyEscrow (additional transitions)", () => {
+    it("unfunded → unfunded is idempotent no-op", async () => {
+      const t = convexTest(schema);
+      const bountyId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        return await seedBounty(ctx, creatorId, { escrowStatus: "unfunded" });
+      });
+
+      // Should not throw
+      await t.mutation(internal.stripe.updateBountyEscrow, {
+        bountyId,
+        escrowStatus: "unfunded",
+      });
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.escrowStatus).toBe("unfunded");
+    });
+
+    it("released → released is idempotent no-op", async () => {
+      const t = convexTest(schema);
+      const bountyId = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx);
+        return await seedBounty(ctx, creatorId, { escrowStatus: "released" });
+      });
+
+      await t.mutation(internal.stripe.updateBountyEscrow, {
+        bountyId,
+        escrowStatus: "released",
+      });
+
+      const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
+      expect(bounty?.escrowStatus).toBe("released");
     });
   });
 });

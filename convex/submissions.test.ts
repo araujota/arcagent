@@ -1,7 +1,7 @@
 import { convexTest } from "convex-test";
 import { describe, it, expect } from "vitest";
 import schema from "./schema";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import { seedUser, seedBounty, seedClaim, seedSubmission } from "./__tests__/helpers";
 
 describe("Submissions", () => {
@@ -191,6 +191,104 @@ describe("Submissions", () => {
           commitHash: "abc9999",
         }),
       ).rejects.toThrow("Maximum attempts reached");
+    });
+  });
+
+  describe("listByBounty (redaction)", () => {
+    it("creator sees redacted repositoryUrl/commitHash on pending submission", async () => {
+      const t = convexTest(schema);
+      const { creatorClerkId, bountyId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx, {
+          role: "creator",
+          clerkId: "clerk_creator_redact",
+        });
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "in_progress",
+        });
+        await seedSubmission(ctx, bountyId, agentId, {
+          status: "pending",
+          repositoryUrl: "https://github.com/agent/secret-repo",
+          commitHash: "secret123",
+        });
+        return { creatorClerkId: "clerk_creator_redact", bountyId };
+      });
+
+      const authed = t.withIdentity({ subject: creatorClerkId });
+      const submissions = await authed.query(api.submissions.listByBounty, {
+        bountyId,
+      });
+
+      expect(submissions).toHaveLength(1);
+      expect(submissions[0].repositoryUrl).toBe(
+        "[redacted until verification completes]",
+      );
+      expect(submissions[0].commitHash).toBe(
+        "[redacted until verification completes]",
+      );
+    });
+
+    it("agent (non-creator) sees full data on their own submission", async () => {
+      const t = convexTest(schema);
+      const { agentClerkId, bountyId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx, { role: "creator" });
+        const agentId = await seedUser(ctx, {
+          role: "agent",
+          clerkId: "clerk_agent_view",
+        });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "in_progress",
+        });
+        await seedSubmission(ctx, bountyId, agentId, {
+          status: "pending",
+          repositoryUrl: "https://github.com/agent/my-repo",
+          commitHash: "abc1234",
+        });
+        return { agentClerkId: "clerk_agent_view", bountyId };
+      });
+
+      const authed = t.withIdentity({ subject: agentClerkId });
+      const submissions = await authed.query(api.submissions.listByBounty, {
+        bountyId,
+      });
+
+      expect(submissions).toHaveLength(1);
+      // Non-creator sees unredacted data
+      expect(submissions[0].repositoryUrl).toBe(
+        "https://github.com/agent/my-repo",
+      );
+      expect(submissions[0].commitHash).toBe("abc1234");
+    });
+
+    it("creator sees full data on passed submission (terminal state)", async () => {
+      const t = convexTest(schema);
+      const { creatorClerkId, bountyId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx, {
+          role: "creator",
+          clerkId: "clerk_creator_terminal",
+        });
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "in_progress",
+        });
+        await seedSubmission(ctx, bountyId, agentId, {
+          status: "passed",
+          repositoryUrl: "https://github.com/agent/visible-repo",
+          commitHash: "visible123",
+        });
+        return { creatorClerkId: "clerk_creator_terminal", bountyId };
+      });
+
+      const authed = t.withIdentity({ subject: creatorClerkId });
+      const submissions = await authed.query(api.submissions.listByBounty, {
+        bountyId,
+      });
+
+      expect(submissions).toHaveLength(1);
+      expect(submissions[0].repositoryUrl).toBe(
+        "https://github.com/agent/visible-repo",
+      );
+      expect(submissions[0].commitHash).toBe("visible123");
     });
   });
 });

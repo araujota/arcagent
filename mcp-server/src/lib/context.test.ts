@@ -1,6 +1,6 @@
-import { vi } from "vitest";
+import { vi, beforeEach } from "vitest";
 import type { AuthenticatedUser } from "./types";
-import { runWithAuth, getAuthUser, requireAuthUser, requireScope } from "./context";
+import { runWithAuth, getAuthUser, requireAuthUser, requireScope, setStdioAuthUser } from "./context";
 
 const mockUser: AuthenticatedUser = {
   userId: "user_abc",
@@ -8,6 +8,14 @@ const mockUser: AuthenticatedUser = {
   email: "test@example.com",
   role: "agent",
   scopes: ["bounties:read", "bounties:claim"],
+};
+
+const otherUser: AuthenticatedUser = {
+  userId: "user_xyz",
+  name: "Other User",
+  email: "other@example.com",
+  role: "creator",
+  scopes: ["bounties:create", "repos:read"],
 };
 
 describe("runWithAuth / getAuthUser", () => {
@@ -58,5 +66,102 @@ describe("requireScope", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(() => requireScope("bounties:read")).not.toThrow();
     warnSpy.mockRestore();
+  });
+
+  it("throws when user has empty scopes array", () => {
+    const emptyScopes: AuthenticatedUser = {
+      ...mockUser,
+      scopes: [],
+    };
+    runWithAuth(emptyScopes, () => {
+      expect(() => requireScope("bounties:read")).toThrow(
+        'Insufficient permissions: this operation requires the "bounties:read" scope',
+      );
+    });
+  });
+
+  it("warns but doesn't throw without user in non-production", () => {
+    // Ensure we're outside runWithAuth and no stdio user is set
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const origEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "development";
+
+    expect(() => requireScope("bounties:submit")).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("bounties:submit"),
+    );
+
+    process.env.NODE_ENV = origEnv;
+    warnSpy.mockRestore();
+  });
+});
+
+describe("runWithAuth — async propagation", () => {
+  it("context propagates through await", async () => {
+    await runWithAuth(mockUser, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const user = getAuthUser();
+      expect(user).toEqual(mockUser);
+    });
+  });
+
+  it("nested runWithAuth — inner overrides outer", () => {
+    runWithAuth(mockUser, () => {
+      expect(getAuthUser()).toEqual(mockUser);
+
+      runWithAuth(otherUser, () => {
+        expect(getAuthUser()).toEqual(otherUser);
+      });
+    });
+  });
+
+  it("after inner runWithAuth returns, outer context restored", () => {
+    runWithAuth(mockUser, () => {
+      runWithAuth(otherUser, () => {
+        // inner context
+      });
+      // Outer context should be restored
+      expect(getAuthUser()).toEqual(mockUser);
+    });
+  });
+
+  it("two concurrent async contexts see their own user (Promise.all isolation)", async () => {
+    const results: string[] = [];
+
+    await Promise.all([
+      runWithAuth(mockUser, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const user = getAuthUser();
+        results.push(user!.userId);
+      }),
+      runWithAuth(otherUser, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const user = getAuthUser();
+        results.push(user!.userId);
+      }),
+    ]);
+
+    // Both contexts should see their own user — order doesn't matter
+    expect(results).toContain("user_abc");
+    expect(results).toContain("user_xyz");
+    expect(results).toHaveLength(2);
+  });
+});
+
+describe("setStdioAuthUser", () => {
+  it("getAuthUser returns stdio user outside runWithAuth", () => {
+    setStdioAuthUser(mockUser);
+    // Outside runWithAuth, should fall back to stdio user
+    const user = getAuthUser();
+    expect(user).toEqual(mockUser);
+  });
+
+  it("runWithAuth takes precedence over stdioUser when both set", () => {
+    setStdioAuthUser(mockUser);
+
+    runWithAuth(otherUser, () => {
+      const user = getAuthUser();
+      expect(user).toEqual(otherUser);
+    });
   });
 });

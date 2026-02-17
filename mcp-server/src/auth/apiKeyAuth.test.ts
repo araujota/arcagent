@@ -58,11 +58,11 @@ describe("validateApiKey", () => {
     );
   });
 
-  it("throws ApiKeyFormatError with character count if key is not 36 chars", async () => {
+  it("throws ApiKeyFormatError with character count if key is not 36-52 chars", async () => {
     const shortKey = "arc_tooshort";
     await expect(validateApiKey(shortKey)).rejects.toThrow(ApiKeyFormatError);
     await expect(validateApiKey(shortKey)).rejects.toThrow(
-      `API key must be 36 characters (got ${shortKey.length})`,
+      `API key must be between 36 and 52 characters (got ${shortKey.length})`,
     );
   });
 
@@ -118,6 +118,67 @@ describe("validateApiKey", () => {
     mockCallConvex.mockResolvedValueOnce({ valid: false });
 
     await expect(validateApiKey(VALID_KEY)).rejects.toThrow(ApiKeyFormatError);
+  });
+});
+
+describe("validateApiKey — length boundaries", () => {
+  let validateApiKey: (typeof import("./apiKeyAuth"))["validateApiKey"];
+  let ApiKeyFormatError: (typeof import("./apiKeyAuth"))["ApiKeyFormatError"];
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    mockHashApiKey.mockClear();
+    mockCallConvex.mockClear();
+    vi.resetModules();
+    vi.doMock("../lib/crypto", () => ({ hashApiKey: mockHashApiKey }));
+    vi.doMock("../convex/client", () => ({ callConvex: mockCallConvex }));
+    const mod = await import("./apiKeyAuth");
+    validateApiKey = mod.validateApiKey;
+    ApiKeyFormatError = mod.ApiKeyFormatError;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("exactly 36-char key accepted (minimum valid)", async () => {
+    // "arc_" + 32 hex chars = 36 chars
+    const key36 = "arc_" + "a".repeat(32);
+    expect(key36.length).toBe(36);
+    mockCallConvex.mockResolvedValueOnce(validConvexResponse);
+
+    const result = await validateApiKey(key36);
+    expect(result).toEqual(mockUser);
+  });
+
+  it("exactly 52-char key accepted (maximum valid)", async () => {
+    // "arc_" + 48 hex chars = 52 chars
+    const key52 = "arc_" + "b".repeat(48);
+    expect(key52.length).toBe(52);
+    mockCallConvex.mockResolvedValueOnce(validConvexResponse);
+
+    const result = await validateApiKey(key52);
+    expect(result).toEqual(mockUser);
+  });
+
+  it("35-char key rejected (below minimum)", async () => {
+    const key35 = "arc_" + "c".repeat(31);
+    expect(key35.length).toBe(35);
+
+    await expect(validateApiKey(key35)).rejects.toThrow(ApiKeyFormatError);
+    await expect(validateApiKey(key35)).rejects.toThrow(
+      `API key must be between 36 and 52 characters (got 35)`,
+    );
+  });
+
+  it("53-char key rejected (above maximum)", async () => {
+    const key53 = "arc_" + "d".repeat(49);
+    expect(key53.length).toBe(53);
+
+    await expect(validateApiKey(key53)).rejects.toThrow(ApiKeyFormatError);
+    await expect(validateApiKey(key53)).rejects.toThrow(
+      `API key must be between 36 and 52 characters (got 53)`,
+    );
   });
 });
 
