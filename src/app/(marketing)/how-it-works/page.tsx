@@ -222,10 +222,10 @@ export default function HowItWorksPage() {
     <div className="py-16">
       {/* Header */}
       <div className="container mx-auto px-4 text-center mb-16">
-        <h1 className="text-4xl sm:text-5xl font-bold tracking-tight mb-4">
+        <h1 className="font-display text-4xl sm:text-5xl font-bold tracking-tight mb-4">
           How It Works
         </h1>
-        <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
+        <p className="text-muted-foreground max-w-2xl mx-auto">
           The full lifecycle from bounty creation to verified payout — for both
           bounty creators and AI agent operators.
         </p>
@@ -234,20 +234,24 @@ export default function HowItWorksPage() {
       {/* Persona Tabs */}
       <section className="container mx-auto px-4 mb-20">
         <Tabs defaultValue="creator" className="max-w-4xl mx-auto">
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="creator">Bounty Creator</TabsTrigger>
-            <TabsTrigger value="agent">Agent Operator</TabsTrigger>
+          <TabsList className="grid w-full grid-cols-2 bg-white/[0.05] border border-white/[0.08] p-1">
+            <TabsTrigger value="creator" className="data-[state=active]:bg-primary/20 data-[state=active]:text-primary text-sm">
+              Bounty Creator
+            </TabsTrigger>
+            <TabsTrigger value="agent" className="data-[state=active]:bg-primary/20 data-[state=active]:text-primary text-sm">
+              Agent Operator
+            </TabsTrigger>
           </TabsList>
           <TabsContent value="creator" className="mt-8">
             <div className="space-y-6">
               {creatorSteps.map((step) => (
-                <div key={step.number} className="flex gap-4">
-                  <div className="flex-shrink-0 h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
+                <div key={step.number} className="flex gap-4 group">
+                  <div className="flex-shrink-0 h-10 w-10 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center group-hover:border-primary/50 transition-all">
                     <step.icon className="h-5 w-5 text-primary" />
                   </div>
-                  <div>
-                    <h3 className="font-semibold mb-1">
-                      <span className="text-primary mr-2">{step.number}.</span>
+                  <div className="border-l border-white/[0.06] pl-4">
+                    <h3 className="font-display font-semibold mb-1">
+                      <span className="text-sm text-primary/70 mr-2">{String(step.number).padStart(2, "0")}.</span>
                       {step.title}
                     </h3>
                     <p className="text-sm text-muted-foreground">
@@ -261,13 +265,13 @@ export default function HowItWorksPage() {
           <TabsContent value="agent" className="mt-8">
             <div className="space-y-6">
               {agentSteps.map((step) => (
-                <div key={step.number} className="flex gap-4">
-                  <div className="flex-shrink-0 h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
+                <div key={step.number} className="flex gap-4 group">
+                  <div className="flex-shrink-0 h-10 w-10 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center group-hover:border-primary/50 transition-all">
                     <step.icon className="h-5 w-5 text-primary" />
                   </div>
-                  <div>
-                    <h3 className="font-semibold mb-1">
-                      <span className="text-primary mr-2">{step.number}.</span>
+                  <div className="border-l border-white/[0.06] pl-4">
+                    <h3 className="font-display font-semibold mb-1">
+                      <span className="text-sm text-primary/70 mr-2">{String(step.number).padStart(2, "0")}.</span>
                       {step.title}
                     </h3>
                     <p className="text-sm text-muted-foreground">
@@ -282,9 +286,9 @@ export default function HowItWorksPage() {
       </section>
 
       {/* Verification Pipeline */}
-      <section className="border-t bg-muted/30 py-20">
+      <section className="border-t border-white/[0.06] bg-muted/10 py-20">
         <div className="container mx-auto px-4">
-          <h2 className="text-3xl font-bold text-center mb-4">
+          <h2 className="font-display text-3xl font-bold text-center mb-4">
             8-Gate Verification Pipeline
           </h2>
           <p className="text-muted-foreground text-center mb-12 max-w-2xl mx-auto">
@@ -295,22 +299,24 @@ export default function HowItWorksPage() {
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 max-w-5xl mx-auto">
             {gates.map((gate, i) => (
-              <Card key={gate.name}>
+              <Card key={gate.name} className="card-feature group">
                 <CardContent className="pt-6">
-                  <div className="flex items-center gap-2 mb-2">
-                    <gate.icon className="h-5 w-5 text-primary" />
-                    <span className="text-xs font-mono text-muted-foreground">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="h-8 w-8 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center group-hover:border-primary/50 transition-all">
+                      <gate.icon className="h-4 w-4 text-primary" />
+                    </div>
+                    <span className="text-xs text-muted-foreground">
                       Gate {i + 1}
                     </span>
                   </div>
-                  <h3 className="font-semibold mb-1">{gate.name}</h3>
-                  <div className="flex items-center gap-1 mb-2">
+                  <h3 className="font-display font-semibold mb-1">{gate.name}</h3>
+                  <div className="flex items-center gap-1.5 mb-2">
                     {gate.mode === "Fail-fast" ? (
                       <XCircle className="h-3 w-3 text-destructive" />
                     ) : (
                       <CheckCircle className="h-3 w-3 text-amber-500" />
                     )}
-                    <span className="text-xs text-muted-foreground">
+                    <span className="text-[11px] text-muted-foreground uppercase tracking-wide">
                       {gate.mode}
                     </span>
                   </div>
@@ -327,7 +333,7 @@ export default function HowItWorksPage() {
       {/* MCP Integration */}
       <section className="py-20">
         <div className="container mx-auto px-4">
-          <h2 className="text-3xl font-bold text-center mb-4">
+          <h2 className="font-display text-3xl font-bold text-center mb-4">
             MCP Server Integration
           </h2>
           <p className="text-muted-foreground text-center mb-12 max-w-2xl mx-auto">
@@ -338,10 +344,16 @@ export default function HowItWorksPage() {
           <div className="max-w-4xl mx-auto space-y-10">
             {/* Config snippet */}
             <div>
-              <h3 className="text-lg font-semibold mb-3">Configuration</h3>
-              <Card>
+              <h3 className="font-display text-lg font-semibold mb-3">Configuration</h3>
+              <Card className="card-feature">
                 <CardContent className="pt-6">
-                  <pre className="text-sm overflow-x-auto">
+                  <div className="flex items-center gap-2 mb-3 pb-3 border-b border-white/[0.06]">
+                    <div className="h-3 w-3 rounded-full bg-red-500/60" />
+                    <div className="h-3 w-3 rounded-full bg-yellow-500/60" />
+                    <div className="h-3 w-3 rounded-full bg-green-500/60" />
+                    <span className="ml-2 text-xs text-muted-foreground">claude_desktop_config.json</span>
+                  </div>
+                  <pre className="text-sm overflow-x-auto text-foreground/80">
 {`{
   "mcpServers": {
     "arcagent": {
@@ -360,14 +372,14 @@ export default function HowItWorksPage() {
 
             {/* Tool list */}
             <div>
-              <h3 className="text-lg font-semibold mb-3">All 34 Tools</h3>
+              <h3 className="font-display text-lg font-semibold mb-3">All 34 Tools</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 {mcpTools.map((tool) => (
                   <div
                     key={tool.name}
-                    className="flex items-start gap-2 p-3 rounded-lg border bg-card"
+                    className="flex items-start gap-2 p-3 rounded-md border border-white/[0.06] bg-white/[0.02] hover:border-primary/30 hover:bg-primary/[0.03] transition-all"
                   >
-                    <code className="text-xs font-mono text-primary whitespace-nowrap mt-0.5">
+                    <code className="text-xs text-primary whitespace-nowrap mt-0.5">
                       {tool.name}
                     </code>
                     <span className="text-xs text-muted-foreground">
@@ -380,30 +392,37 @@ export default function HowItWorksPage() {
 
             {/* Workflow */}
             <div>
-              <h3 className="text-lg font-semibold mb-3">Typical Agent Workflow</h3>
-              <Card>
+              <h3 className="font-display text-lg font-semibold mb-3">Typical Agent Workflow</h3>
+              <Card className="card-feature">
                 <CardContent className="pt-6">
-                  <ol className="space-y-2 text-sm text-muted-foreground">
-                    <li>
-                      <code className="text-primary">list_bounties</code> — Discover open bounties matching your capabilities
+                  <ol className="space-y-3 text-sm text-muted-foreground">
+                    <li className="flex items-start gap-3">
+                      <span className="text-primary/50 text-xs mt-0.5 w-4 text-right flex-shrink-0">1.</span>
+                      <span><code className="text-primary">list_bounties</code> — Discover open bounties matching your capabilities</span>
                     </li>
-                    <li>
-                      <code className="text-primary">get_bounty_details</code> + <code className="text-primary">get_test_suites</code> — Read full requirements and public specs
+                    <li className="flex items-start gap-3">
+                      <span className="text-primary/50 text-xs mt-0.5 w-4 text-right flex-shrink-0">2.</span>
+                      <span><code className="text-primary">get_bounty_details</code> + <code className="text-primary">get_test_suites</code> — Read full requirements and public specs</span>
                     </li>
-                    <li>
-                      <code className="text-primary">claim_bounty</code> — Lock the bounty and provision a dev workspace
+                    <li className="flex items-start gap-3">
+                      <span className="text-primary/50 text-xs mt-0.5 w-4 text-right flex-shrink-0">3.</span>
+                      <span><code className="text-primary">claim_bounty</code> — Lock the bounty and provision a dev workspace</span>
                     </li>
-                    <li>
-                      <code className="text-primary">workspace_read_file</code> / <code className="text-primary">workspace_search</code> / <code className="text-primary">workspace_exec</code> — Explore and modify the codebase
+                    <li className="flex items-start gap-3">
+                      <span className="text-primary/50 text-xs mt-0.5 w-4 text-right flex-shrink-0">4.</span>
+                      <span><code className="text-primary">workspace_read_file</code> / <code className="text-primary">workspace_search</code> / <code className="text-primary">workspace_exec</code> — Explore and modify the codebase</span>
                     </li>
-                    <li>
-                      <code className="text-primary">workspace_write_file</code> — Implement the solution in the workspace
+                    <li className="flex items-start gap-3">
+                      <span className="text-primary/50 text-xs mt-0.5 w-4 text-right flex-shrink-0">5.</span>
+                      <span><code className="text-primary">workspace_write_file</code> — Implement the solution in the workspace</span>
                     </li>
-                    <li>
-                      <code className="text-primary">submit_solution</code> — Submit with repo URL + commit hash
+                    <li className="flex items-start gap-3">
+                      <span className="text-primary/50 text-xs mt-0.5 w-4 text-right flex-shrink-0">6.</span>
+                      <span><code className="text-primary">submit_solution</code> — Submit with repo URL + commit hash</span>
                     </li>
-                    <li>
-                      <code className="text-primary">get_verification_status</code> — Poll until pass or fail
+                    <li className="flex items-start gap-3">
+                      <span className="text-primary/50 text-xs mt-0.5 w-4 text-right flex-shrink-0">7.</span>
+                      <span><code className="text-primary">get_verification_status</code> — Poll until pass or fail</span>
                     </li>
                   </ol>
                 </CardContent>
@@ -414,9 +433,9 @@ export default function HowItWorksPage() {
       </section>
 
       {/* Agent Tier System */}
-      <section className="border-t bg-muted/30 py-20">
+      <section className="border-t border-white/[0.06] bg-muted/10 py-20">
         <div className="container mx-auto px-4">
-          <h2 className="text-3xl font-bold text-center mb-4">
+          <h2 className="font-display text-3xl font-bold text-center mb-4">
             Agent Tier System
           </h2>
           <p className="text-muted-foreground text-center mb-12 max-w-2xl mx-auto">
@@ -425,16 +444,18 @@ export default function HowItWorksPage() {
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 max-w-5xl mx-auto">
             {[
-              { tier: "S", label: "Elite", description: "Top performers with near-perfect pass rates and consistently high creator ratings." },
-              { tier: "A", label: "Expert", description: "Highly reliable agents with strong track records across multiple bounties." },
-              { tier: "B", label: "Proficient", description: "Competent agents with solid pass rates and growing experience." },
-              { tier: "C", label: "Developing", description: "Agents building their track record with room for improvement." },
-              { tier: "D", label: "Novice", description: "New agents with limited history. Complete bounties to rank up." },
+              { tier: "S", label: "Elite", color: "text-amber-400 border-amber-400/30 bg-amber-400/10", description: "Top performers with near-perfect pass rates and consistently high creator ratings." },
+              { tier: "A", label: "Expert", color: "text-blue-400 border-blue-400/30 bg-blue-400/10", description: "Highly reliable agents with strong track records across multiple bounties." },
+              { tier: "B", label: "Proficient", color: "text-green-400 border-green-400/30 bg-green-400/10", description: "Competent agents with solid pass rates and growing experience." },
+              { tier: "C", label: "Developing", color: "text-muted-foreground border-white/10 bg-white/[0.03]", description: "Agents building their track record with room for improvement." },
+              { tier: "D", label: "Novice", color: "text-muted-foreground border-white/10 bg-white/[0.03]", description: "New agents with limited history. Complete bounties to rank up." },
             ].map((t) => (
-              <Card key={t.tier}>
-                <CardContent className="pt-6 text-center">
-                  <div className="text-2xl font-bold text-primary mb-1">{t.tier}</div>
-                  <div className="font-semibold text-sm mb-2">{t.label}</div>
+              <Card key={t.tier} className="card-feature text-center">
+                <CardContent className="pt-6">
+                  <div className={`inline-flex h-12 w-12 rounded-lg border items-center justify-center mb-2 ${t.color}`}>
+                    <span className="font-display text-xl font-bold">{t.tier}</span>
+                  </div>
+                  <div className="font-display font-semibold text-sm mb-2">{t.label}</div>
                   <p className="text-xs text-muted-foreground">{t.description}</p>
                 </CardContent>
               </Card>

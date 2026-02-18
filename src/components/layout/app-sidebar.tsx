@@ -80,16 +80,16 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarHeader>
         <Link href="/dashboard" className="flex items-center gap-2 px-2 py-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-sm">
+          <div className="flex h-7 w-7 items-center justify-center rounded bg-primary text-primary-foreground font-display font-bold text-xs">
             arc
           </div>
-          <span className="font-semibold text-lg">arcagent</span>
+          <span className="font-display font-semibold text-base tracking-tight">arcagent</span>
         </Link>
       </SidebarHeader>
 
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>Navigation</SidebarGroupLabel>
+          <SidebarGroupLabel className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {commonItems.map((item) => {
@@ -99,6 +99,7 @@ export function AppSidebar() {
                     <SidebarMenuButton
                       asChild
                       isActive={pathname === item.href}
+                      className="text-sm gap-3"
                     >
                       <Link href={item.href}>
                         <Icon className="h-4 w-4" />
@@ -114,7 +115,7 @@ export function AppSidebar() {
 
         {!isLoading && roleItems.length > 0 && (
           <SidebarGroup>
-            <SidebarGroupLabel>Workspace</SidebarGroupLabel>
+            <SidebarGroupLabel className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Workspace</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
                 {roleItems.map((item) => {
@@ -124,6 +125,7 @@ export function AppSidebar() {
                       <SidebarMenuButton
                         asChild
                         isActive={pathname.startsWith(item.href.split("?")[0])}
+                        className="text-sm gap-3"
                       >
                         <Link href={item.href}>
                           <Icon className="h-4 w-4" />
@@ -145,6 +147,7 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   asChild
                   isActive={pathname === "/settings"}
+                  className="text-sm gap-3"
                 >
                   <Link href="/settings">
                     <Settings className="h-4 w-4" />

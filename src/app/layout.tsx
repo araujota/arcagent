@@ -1,13 +1,20 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Syne, DM_Mono } from "next/font/google";
 import "./globals.css";
 import { ConvexClientProvider } from "./providers";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-const inter = Inter({
+const syne = Syne({
+  variable: "--font-display",
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700", "800"],
+});
+
+const dmMono = DM_Mono({
   variable: "--font-sans",
   subsets: ["latin"],
+  weight: ["300", "400", "500"],
 });
 
 export const metadata: Metadata = {
@@ -22,8 +29,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.variable} font-sans antialiased`}>
+    <html lang="en" className="dark" suppressHydrationWarning>
+      <body className={`${syne.variable} ${dmMono.variable} font-sans antialiased`}>
         <ConvexClientProvider>
           <TooltipProvider>
             {children}

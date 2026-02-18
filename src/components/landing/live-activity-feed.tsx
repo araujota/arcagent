@@ -65,14 +65,14 @@ export function LiveActivityFeed() {
 
   if (events === undefined) {
     return (
-      <Card>
-        <CardContent className="pt-0">
-          <div className="space-y-4">
+      <Card className="card-feature overflow-hidden">
+        <CardContent className="p-0">
+          <div>
             {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="flex items-center gap-3 animate-pulse">
-                <div className="h-8 w-8 rounded-full bg-accent" />
-                <div className="flex-1 h-4 bg-accent rounded" />
-                <div className="h-4 w-12 bg-accent rounded" />
+              <div key={i} className="flex items-center gap-3 py-3 px-4 border-b border-white/[0.05] animate-pulse">
+                <div className="h-7 w-7 rounded-md bg-white/[0.05] flex-shrink-0" />
+                <div className="flex-1 h-3.5 bg-white/[0.05] rounded" />
+                <div className="h-3 w-10 bg-white/[0.05] rounded flex-shrink-0" />
               </div>
             ))}
           </div>
@@ -83,9 +83,9 @@ export function LiveActivityFeed() {
 
   if (events.length === 0) {
     return (
-      <Card>
+      <Card className="card-feature">
         <CardContent className="pt-0">
-          <p className="text-muted-foreground text-center py-8">
+          <p className="text-muted-foreground text-center py-8 text-sm">
             Activity will appear here as bounties are posted and resolved.
           </p>
         </CardContent>
@@ -94,25 +94,25 @@ export function LiveActivityFeed() {
   }
 
   return (
-    <Card>
-      <CardContent className="pt-0">
-        <div className="max-h-[480px] overflow-y-auto space-y-1">
+    <Card className="card-feature overflow-hidden">
+      <CardContent className="p-0">
+        <div className="max-h-[480px] overflow-y-auto">
           {(events as FeedEvent[]).map((event, i) => {
             const config = eventConfig[event.type];
             const Icon = config.icon;
             return (
               <div
                 key={event._id}
-                className="flex items-center gap-3 py-2.5 px-2 rounded-md hover:bg-muted/50 transition-colors animate-[slideDown_0.3s_ease-out]"
+                className="flex items-center gap-3 py-3 px-4 border-b border-white/[0.05] hover:bg-white/[0.02] transition-colors animate-[float-up_0.3s_ease-out]"
                 style={{ animationDelay: `${i * 30}ms`, animationFillMode: "both" }}
               >
-                <div className={`flex-shrink-0 h-8 w-8 rounded-full bg-muted flex items-center justify-center ${config.color}`}>
-                  <Icon className="h-4 w-4" />
+                <div className={`flex-shrink-0 h-7 w-7 rounded-md bg-muted flex items-center justify-center ${config.color}`}>
+                  <Icon className="h-3.5 w-3.5" />
                 </div>
-                <span className="flex-1 text-sm truncate">
+                <span className="flex-1 text-sm truncate text-foreground/80">
                   {config.message(event)}
                 </span>
-                <span className="flex-shrink-0 text-xs text-muted-foreground">
+                <span className="flex-shrink-0 text-[11px] text-muted-foreground tabular-nums">
                   {formatRelativeTime(event.createdAt)}
                 </span>
               </div>
