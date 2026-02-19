@@ -32,7 +32,7 @@ export function WaitlistForm({ source }: WaitlistFormProps) {
 
   if (state === "success") {
     return (
-      <div className="flex items-center gap-2 text-sm text-green-600">
+      <div className="flex items-center gap-2 text-sm text-green-400">
         <CheckCircle className="h-4 w-4" />
         <span>You&apos;re on the list! We&apos;ll be in touch.</span>
       </div>
@@ -58,8 +58,9 @@ export function WaitlistForm({ source }: WaitlistFormProps) {
           onChange={(e) => setEmail(e.target.value)}
           required
           disabled={state === "loading"}
+          className="bg-white/[0.05] border-white/[0.12] placeholder:text-muted-foreground/50 focus-visible:border-primary/60 focus-visible:ring-primary/20"
         />
-        <Button type="submit" disabled={state === "loading"}>
+        <Button type="submit" disabled={state === "loading"} className="glow-blue-hover transition-all duration-200">
           {state === "loading" ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
@@ -72,7 +73,8 @@ export function WaitlistForm({ source }: WaitlistFormProps) {
       )}
       {typeof count === "number" && count > 0 && (
         <p className="text-xs text-muted-foreground">
-          {count.toLocaleString()} {count === 1 ? "person has" : "people have"} already joined.
+          <span className="text-primary">{count.toLocaleString()}</span>{" "}
+          {count === 1 ? "person has" : "people have"} already joined.
         </p>
       )}
     </div>

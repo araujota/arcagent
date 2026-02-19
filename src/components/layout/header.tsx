@@ -44,9 +44,9 @@ export function Header() {
   const crumbs = getBreadcrumbs(pathname);
 
   return (
-    <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
-      <SidebarTrigger className="-ml-1" />
-      <Separator orientation="vertical" className="mr-2 h-4" />
+    <header className="flex h-16 shrink-0 items-center gap-2 border-b border-white/[0.06] bg-background/80 backdrop-blur-sm px-4">
+      <SidebarTrigger className="-ml-1 text-muted-foreground hover:text-foreground transition-colors" />
+      <Separator orientation="vertical" className="mr-2 h-4 bg-white/[0.1]" />
       <Breadcrumb>
         <BreadcrumbList>
           {crumbs.map((crumb, i) => (

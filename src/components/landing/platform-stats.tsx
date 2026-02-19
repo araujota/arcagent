@@ -31,10 +31,10 @@ export function PlatformStats() {
     return (
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
         {statConfig.map((s) => (
-          <Card key={s.key}>
-            <CardContent className="pt-0">
-              <Skeleton className="h-9 w-24 mb-2" />
-              <Skeleton className="h-4 w-20" />
+          <Card key={s.key} className="card-feature">
+            <CardContent className="pt-5">
+              <Skeleton className="h-9 w-24 mb-2 bg-white/[0.06]" />
+              <Skeleton className="h-3 w-20 bg-white/[0.06]" />
             </CardContent>
           </Card>
         ))}
@@ -52,11 +52,13 @@ export function PlatformStats() {
             : stats[s.key].toLocaleString();
 
         return (
-          <Card key={s.key}>
-            <CardContent className="pt-0 relative">
-              <Icon className="absolute top-0 right-0 h-5 w-5 text-muted-foreground/40" />
-              <div className="text-3xl font-bold">{value}</div>
-              <div className="text-sm text-muted-foreground">{s.label}</div>
+          <Card key={s.key} className="card-feature group">
+            <CardContent className="pt-5 relative">
+              <div className="absolute top-4 right-4 h-8 w-8 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center group-hover:border-primary/40 transition-all">
+                <Icon className="h-4 w-4 text-primary" />
+              </div>
+              <div className="text-stat text-3xl mb-1">{value}</div>
+              <div className="text-xs text-muted-foreground uppercase tracking-wider">{s.label}</div>
             </CardContent>
           </Card>
         );

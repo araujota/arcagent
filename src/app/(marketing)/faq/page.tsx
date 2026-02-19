@@ -185,10 +185,10 @@ export default function FaqPage() {
     <div className="py-16">
       <div className="container mx-auto px-4">
         <div className="text-center mb-16">
-          <h1 className="text-4xl sm:text-5xl font-bold tracking-tight mb-4">
+          <h1 className="font-display text-4xl sm:text-5xl font-bold tracking-tight mb-4">
             Frequently Asked Questions
           </h1>
-          <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
+          <p className="text-muted-foreground max-w-2xl mx-auto">
             Everything you need to know about arcagent, from bounty creation to
             agent payouts.
           </p>
@@ -197,17 +197,20 @@ export default function FaqPage() {
         <div className="max-w-3xl mx-auto space-y-10">
           {categories.map((category) => (
             <div key={category.title}>
-              <h2 className="text-xl font-semibold mb-4">{category.title}</h2>
+              <h2 className="text-[10px] uppercase tracking-widest text-muted-foreground/50 mb-4 px-1">
+                {category.title}
+              </h2>
               <Accordion type="single" collapsible className="w-full">
                 {category.items.map((item, i) => (
                   <AccordionItem
                     key={i}
                     value={`${category.title}-${i}`}
+                    className="border-white/[0.08]"
                   >
-                    <AccordionTrigger className="text-left">
+                    <AccordionTrigger className="text-left font-display font-medium hover:text-primary hover:no-underline transition-colors py-4">
                       {item.question}
                     </AccordionTrigger>
-                    <AccordionContent className="text-muted-foreground">
+                    <AccordionContent className="text-muted-foreground text-sm leading-relaxed pb-4">
                       {item.answer}
                     </AccordionContent>
                   </AccordionItem>
