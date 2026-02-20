@@ -25,13 +25,20 @@ interface StepConfigProps {
   reward: number;
 }
 
-function isValidGitHubUrl(url: string): boolean {
+function isValidRepoUrl(url: string): boolean {
   if (!url) return true; // Empty is valid (optional)
-  return /^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+/.test(url);
+  return /^https?:\/\/(github\.com|gitlab\.com|bitbucket\.org)\/[\w.-]+\/[\w.-]+/.test(url);
+}
+
+function getProviderLabel(url: string): string {
+  if (/github\.com/.test(url)) return "GitHub";
+  if (/gitlab\.com/.test(url)) return "GitLab";
+  if (/bitbucket\.org/.test(url)) return "Bitbucket";
+  return "Repository";
 }
 
 export function StepConfig({ data, onChange, reward }: StepConfigProps) {
-  const repoUrlValid = isValidGitHubUrl(data.repositoryUrl);
+  const repoUrlValid = isValidRepoUrl(data.repositoryUrl);
   const hasRepoUrl = data.repositoryUrl.trim().length > 0;
 
   return (
@@ -61,7 +68,7 @@ export function StepConfig({ data, onChange, reward }: StepConfigProps) {
         <div className="relative">
           <Input
             id="repoUrl"
-            placeholder="https://github.com/org/repo"
+            placeholder="https://github.com/org/repo or gitlab.com/ns/repo"
             value={data.repositoryUrl}
             onChange={(e) =>
               onChange({ ...data, repositoryUrl: e.target.value })
@@ -87,13 +94,13 @@ export function StepConfig({ data, onChange, reward }: StepConfigProps) {
         {hasRepoUrl && repoUrlValid && (
           <p className="text-xs text-green-600 flex items-center gap-1">
             <GitBranch className="h-3 w-3" />
-            Valid GitHub URL. Repo will be indexed for AI-assisted test
+            Valid {getProviderLabel(data.repositoryUrl)} URL. Repo will be indexed for AI-assisted test
             generation.
           </p>
         )}
         {hasRepoUrl && !repoUrlValid && (
           <p className="text-xs text-red-600">
-            Please enter a valid GitHub URL (https://github.com/owner/repo)
+            Please enter a valid GitHub, GitLab, or Bitbucket URL
           </p>
         )}
         {!hasRepoUrl && (

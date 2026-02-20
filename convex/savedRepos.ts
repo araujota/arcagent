@@ -1,6 +1,7 @@
 import { query, mutation, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getCurrentUser, requireAuth } from "./lib/utils";
+import { repoProviderValidator } from "./lib/repoProviders";
 
 export const listByUser = query({
   args: {},
@@ -78,6 +79,7 @@ export const upsert = internalMutation({
     owner: v.string(),
     repo: v.string(),
     languages: v.optional(v.array(v.string())),
+    provider: v.optional(repoProviderValidator),
   },
   handler: async (ctx, args) => {
     const existing = await ctx.db
@@ -92,6 +94,7 @@ export const upsert = internalMutation({
         owner: args.owner,
         repo: args.repo,
         languages: args.languages,
+        provider: args.provider,
         hidden: false,
         lastUsedAt: Date.now(),
       });
@@ -101,6 +104,7 @@ export const upsert = internalMutation({
     return await ctx.db.insert("savedRepos", {
       userId: args.userId,
       repositoryUrl: args.repositoryUrl,
+      provider: args.provider,
       owner: args.owner,
       repo: args.repo,
       languages: args.languages,

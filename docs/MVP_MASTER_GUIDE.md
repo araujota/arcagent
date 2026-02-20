@@ -284,8 +284,6 @@ Complete list of environment variables that must be set for a production deploym
 | `ANTHROPIC_API_KEY` | For AI test gen | Yes |
 | `OPENAI_API_KEY` | Fallback | Yes |
 | `VOYAGE_AI_API_KEY` | For embeddings | Yes |
-| `QDRANT_URL` | For search | Yes |
-| `QDRANT_API_KEY` | For search | Yes |
 | `CONVEX_URL` | For self-reference | Yes |
 
 ### Worker (`worker/.env`)

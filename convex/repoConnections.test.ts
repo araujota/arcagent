@@ -1,32 +1,41 @@
 import { describe, it, expect } from "vitest";
+import { detectProvider } from "./lib/repoProviders";
 
-describe("Repo Connection URL Validation (P2-1)", () => {
-  // Regex extracted from convex/repoConnections.ts create mutation
-  const isValidGitHubUrl = (url: string) =>
-    /^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+/.test(url);
-
-  it("accepts valid GitHub HTTPS URLs", () => {
-    expect(isValidGitHubUrl("https://github.com/owner/repo")).toBe(true);
-    expect(isValidGitHubUrl("https://github.com/my-org/my-repo")).toBe(true);
-    expect(isValidGitHubUrl("https://github.com/user.name/repo.name")).toBe(true);
-    expect(isValidGitHubUrl("http://github.com/owner/repo")).toBe(true);
+describe("Repo Connection URL Validation", () => {
+  it("detects valid GitHub HTTPS URLs", () => {
+    expect(detectProvider("https://github.com/owner/repo")).toBe("github");
+    expect(detectProvider("https://github.com/my-org/my-repo")).toBe("github");
+    expect(detectProvider("https://github.com/user.name/repo.name")).toBe("github");
+    expect(detectProvider("http://github.com/owner/repo")).toBe("github");
   });
 
-  it("rejects GitLab URLs", () => {
-    expect(isValidGitHubUrl("https://gitlab.com/owner/repo")).toBe(false);
+  it("detects valid GitLab HTTPS URLs", () => {
+    expect(detectProvider("https://gitlab.com/owner/repo")).toBe("gitlab");
+    expect(detectProvider("https://gitlab.com/group/subgroup/repo")).toBe("gitlab");
   });
 
-  it("rejects Bitbucket URLs", () => {
-    expect(isValidGitHubUrl("https://bitbucket.org/owner/repo")).toBe(false);
+  it("detects valid Bitbucket HTTPS URLs", () => {
+    expect(detectProvider("https://bitbucket.org/workspace/slug")).toBe("bitbucket");
+  });
+
+  it("detects SSH URLs", () => {
+    expect(detectProvider("git@github.com:owner/repo.git")).toBe("github");
+    expect(detectProvider("git@gitlab.com:owner/repo.git")).toBe("gitlab");
+    expect(detectProvider("git@bitbucket.org:workspace/slug.git")).toBe("bitbucket");
   });
 
   it("rejects self-hosted URLs", () => {
-    expect(isValidGitHubUrl("https://git.example.com/owner/repo")).toBe(false);
+    expect(detectProvider("https://git.example.com/owner/repo")).toBeNull();
   });
 
   it("rejects malformed URLs", () => {
-    expect(isValidGitHubUrl("not-a-url")).toBe(false);
-    expect(isValidGitHubUrl("https://github.com/")).toBe(false);
-    expect(isValidGitHubUrl("https://github.com/owner")).toBe(false);
+    expect(detectProvider("not-a-url")).toBeNull();
+    expect(detectProvider("ftp://github.com/owner/repo")).toBeNull();
+  });
+
+  it("detects provider even for incomplete paths (parseUrl validates structure)", () => {
+    // detectProvider only checks the domain — parseUrl throws for missing owner/repo
+    expect(detectProvider("https://github.com/")).toBe("github");
+    expect(detectProvider("https://github.com/owner")).toBe("github");
   });
 });

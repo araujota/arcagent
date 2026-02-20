@@ -80,15 +80,27 @@ export const createBatch = internalMutation({
   },
 });
 
-export const updateQdrantId = internalMutation({
+/** Batch-update embeddings on existing code chunks */
+export const updateEmbeddingsBatch = internalMutation({
   args: {
-    chunkId: v.id("codeChunks"),
-    qdrantPointId: v.string(),
+    ids: v.array(v.id("codeChunks")),
+    embeddings: v.array(v.array(v.float64())),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.chunkId, {
-      qdrantPointId: args.qdrantPointId,
-    });
+    for (let i = 0; i < args.ids.length; i++) {
+      await ctx.db.patch(args.ids[i], {
+        embedding: args.embeddings[i],
+      });
+    }
+  },
+});
+
+/** Fetch multiple code chunks by ID (for vector search follow-up) */
+export const getByIds = internalQuery({
+  args: { ids: v.array(v.id("codeChunks")) },
+  handler: async (ctx, args) => {
+    const docs = await Promise.all(args.ids.map((id) => ctx.db.get(id)));
+    return docs.filter((d): d is NonNullable<typeof d> => d !== null);
   },
 });
 

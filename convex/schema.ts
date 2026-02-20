@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { repoProviderValidator } from "./lib/repoProviders";
 
 export default defineSchema({
   users: defineTable({
@@ -205,6 +206,7 @@ export default defineSchema({
   repoConnections: defineTable({
     bountyId: v.id("bounties"),
     repositoryUrl: v.string(),
+    provider: v.optional(repoProviderValidator),
     owner: v.string(),
     repo: v.string(),
     defaultBranch: v.string(),
@@ -272,10 +274,15 @@ export default defineSchema({
     endLine: v.number(),
     parentScope: v.optional(v.string()),
     signature: v.optional(v.string()),
-    qdrantPointId: v.optional(v.string()),
+    embedding: v.optional(v.array(v.float64())),
   })
     .index("by_bountyId", ["bountyId"])
-    .index("by_repoConnectionId", ["repoConnectionId"]),
+    .index("by_repoConnectionId", ["repoConnectionId"])
+    .vectorIndex("by_embedding", {
+      vectorField: "embedding",
+      dimensions: 1536,
+      filterFields: ["bountyId"],
+    }),
 
   // === NEW TABLES: NL → BDD → TDD Pipeline ===
 
@@ -425,6 +432,7 @@ export default defineSchema({
   savedRepos: defineTable({
     userId: v.id("users"),
     repositoryUrl: v.string(),
+    provider: v.optional(repoProviderValidator),
     owner: v.string(),
     repo: v.string(),
     languages: v.optional(v.array(v.string())),

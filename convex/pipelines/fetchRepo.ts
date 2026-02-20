@@ -2,17 +2,15 @@ import { internalAction } from "../_generated/server";
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import {
-  parseGitHubUrl,
-  fetchRepoMetadata,
-  fetchGitTree,
-  fetchBlobBatch,
+  detectProvider,
+  getRepoProvider,
   isSourceFile,
   MAX_FILE_SIZE,
   MAX_FILES,
-} from "../lib/github";
+} from "../lib/repoProviders";
 
 /**
- * Fetch a GitHub repository's structure and contents.
+ * Fetch a repository's structure and contents via the appropriate provider.
  * This is the first stage of the repo intelligence pipeline.
  *
  * Pipeline chain: fetchRepo → ensureDockerfile → parseRepo → indexRepo
@@ -41,16 +39,20 @@ export const fetchRepo = internalAction({
         status: "fetching",
       });
 
-      const token = process.env.GITHUB_API_TOKEN;
-      if (!token) {
-        throw new Error("GITHUB_API_TOKEN environment variable is not set");
+      // Detect provider and create client
+      const providerName = conn?.provider ?? detectProvider(args.repositoryUrl);
+      if (!providerName) {
+        throw new Error(
+          `Unsupported repository URL: ${args.repositoryUrl}. Supported: github.com, gitlab.com, bitbucket.org`
+        );
       }
+      const provider = getRepoProvider(providerName);
 
-      // Parse the GitHub URL
-      const { owner, repo } = parseGitHubUrl(args.repositoryUrl);
+      // Parse the URL
+      const { owner, repo } = provider.parseUrl(args.repositoryUrl);
 
       // Fetch repository metadata
-      const metadata = await fetchRepoMetadata(owner, repo, token);
+      const metadata = await provider.fetchMetadata(owner, repo);
 
       // Update connection with repo info
       await ctx.runMutation(internal.repoConnections.updateMetadata, {
@@ -58,40 +60,36 @@ export const fetchRepo = internalAction({
         owner,
         repo,
         defaultBranch: metadata.defaultBranch,
+        provider: providerName,
       });
 
-      // Fetch the full recursive git tree
-      const gitTree = await fetchGitTree(
-        owner,
-        repo,
-        metadata.defaultBranch,
-        token
-      );
+      // Fetch the full recursive file tree
+      const repoTree = await provider.fetchTree(owner, repo, metadata.defaultBranch);
 
-      if (gitTree.truncated) {
+      if (repoTree.truncated) {
         console.warn(
-          `Git tree was truncated for ${owner}/${repo}. Some files may be missing.`
+          `Tree was truncated for ${owner}/${repo}. Some files may be missing.`
         );
       }
 
       // Filter to source files only
-      const sourceFiles = gitTree.tree.filter(
+      const sourceEntries = repoTree.entries.filter(
         (entry) =>
           entry.type === "blob" &&
           isSourceFile(entry.path) &&
           (!entry.size || entry.size <= MAX_FILE_SIZE)
       );
 
-      if (sourceFiles.length > MAX_FILES) {
+      if (sourceEntries.length > MAX_FILES) {
         throw new Error(
-          `Repository has ${sourceFiles.length} source files, exceeding the limit of ${MAX_FILES}`
+          `Repository has ${sourceEntries.length} source files, exceeding the limit of ${MAX_FILES}`
         );
       }
 
       // Detect languages from file paths
       const languageSet = new Set<string>();
-      for (const file of sourceFiles) {
-        const ext = file.path.split(".").pop()?.toLowerCase();
+      for (const entry of sourceEntries) {
+        const ext = entry.path.split(".").pop()?.toLowerCase();
         if (ext) {
           const langMap: Record<string, string> = {
             ts: "typescript",
@@ -108,12 +106,10 @@ export const fetchRepo = internalAction({
         }
       }
 
-      // Fetch file contents in batches
-      const shas = sourceFiles.map((f) => f.sha);
-      const blobContents = await fetchBlobBatch(owner, repo, shas, token);
+      // Fetch file contents via provider
+      const contentMap = await provider.fetchFileContents(owner, repo, sourceEntries, repoTree.commitId);
 
-      // Store file data by scheduling mutations
-      // We'll store as a batch operation
+      // Build file data batch
       const fileDataBatch: Array<{
         filePath: string;
         sha: string;
@@ -121,12 +117,12 @@ export const fetchRepo = internalAction({
         size: number;
       }> = [];
 
-      for (const file of sourceFiles) {
-        const content = blobContents.get(file.sha);
+      for (const entry of sourceEntries) {
+        const content = contentMap.get(entry.id);
         if (content) {
           fileDataBatch.push({
-            filePath: file.path,
-            sha: file.sha,
+            filePath: entry.path,
+            sha: entry.id,
             content,
             size: content.length,
           });
@@ -141,7 +137,7 @@ export const fetchRepo = internalAction({
       // Store all file data
       await ctx.runMutation(internal.repoConnections.storeFileData, {
         repoConnectionId: args.repoConnectionId,
-        commitSha: gitTree.sha,
+        commitSha: repoTree.commitId,
         totalFiles: fileDataBatch.length,
         languages: Array.from(languageSet),
         fileDataJson: JSON.stringify(fileDataBatch),

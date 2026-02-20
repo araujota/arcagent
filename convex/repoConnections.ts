@@ -2,6 +2,7 @@ import { query, mutation, internalMutation, internalQuery, internalAction } from
 import { v } from "convex/values";
 import { getCurrentUser, requireAuth, requireBountyAccess } from "./lib/utils";
 import { internal } from "./_generated/api";
+import { detectProvider, getRepoProvider, repoProviderValidator } from "./lib/repoProviders";
 
 export const getByBountyId = query({
   args: { bountyId: v.id("bounties") },
@@ -51,9 +52,12 @@ export const create = mutation({
       throw new Error("Unauthorized");
     }
 
-    // Validate repository URL format — only GitHub is currently supported
-    if (!/^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+/.test(args.repositoryUrl)) {
-      throw new Error("Only GitHub repositories are currently supported");
+    // Validate repository URL format
+    const detectedProvider = detectProvider(args.repositoryUrl);
+    if (!detectedProvider) {
+      throw new Error(
+        "Unsupported repository URL. Please use a GitHub, GitLab, or Bitbucket URL."
+      );
     }
 
     // Check for existing connection
@@ -69,6 +73,7 @@ export const create = mutation({
     const id = await ctx.db.insert("repoConnections", {
       bountyId: args.bountyId,
       repositoryUrl: args.repositoryUrl,
+      provider: detectedProvider,
       owner: "",
       repo: "",
       defaultBranch: "main",
@@ -89,9 +94,11 @@ export const createInternal = internalMutation({
     repositoryUrl: v.string(),
   },
   handler: async (ctx, args) => {
+    const provider = detectProvider(args.repositoryUrl) ?? "github";
     const id = await ctx.db.insert("repoConnections", {
       bountyId: args.bountyId,
       repositoryUrl: args.repositoryUrl,
+      provider,
       owner: "",
       repo: "",
       defaultBranch: "main",
@@ -133,13 +140,18 @@ export const updateMetadata = internalMutation({
     owner: v.string(),
     repo: v.string(),
     defaultBranch: v.string(),
+    provider: v.optional(repoProviderValidator),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.repoConnectionId, {
+    const updates: Record<string, unknown> = {
       owner: args.owner,
       repo: args.repo,
       defaultBranch: args.defaultBranch,
-    });
+    };
+    if (args.provider) {
+      updates.provider = args.provider;
+    }
+    await ctx.db.patch(args.repoConnectionId, updates);
   },
 });
 
@@ -219,6 +231,7 @@ export const markIndexed = internalMutation({
           owner: repoConnection.owner,
           repo: repoConnection.repo,
           languages: repoConnection.languages,
+          provider: repoConnection.provider,
         });
       }
     }
@@ -282,17 +295,11 @@ export const triggerReIndex = internalMutation({
 
 /**
  * Cron-driven check for tracked repos that may have new commits.
- * Polls GitHub API for HEAD commit on the tracked branch.
+ * Polls the appropriate provider API for HEAD commit on the tracked branch.
  */
 export const checkForUpdates = internalAction({
   args: {},
   handler: async (ctx) => {
-    const token = process.env.GITHUB_API_TOKEN;
-    if (!token) {
-      console.warn("[checkForUpdates] GITHUB_API_TOKEN not set, skipping");
-      return;
-    }
-
     const readyConnections = await ctx.runQuery(
       internal.repoConnections.listReady
     );
@@ -300,23 +307,16 @@ export const checkForUpdates = internalAction({
     for (const conn of readyConnections) {
       if (!conn.owner || !conn.repo) continue;
 
+      const providerName = conn.provider ?? "github";
       const branch = conn.trackedBranch || conn.defaultBranch;
+
       try {
-        const response = await fetch(
-          `https://api.github.com/repos/${conn.owner}/${conn.repo}/commits/${branch}`,
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: "application/vnd.github.v3+json",
-              "User-Agent": "arcagent",
-            },
-          }
+        const provider = getRepoProvider(providerName);
+        const headSha = await provider.fetchHeadCommitId(
+          conn.owner,
+          conn.repo,
+          branch
         );
-
-        if (!response.ok) continue;
-
-        const data = await response.json();
-        const headSha = data.sha as string;
 
         if (headSha && headSha !== conn.commitSha) {
           console.log(

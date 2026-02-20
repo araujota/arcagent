@@ -2,6 +2,13 @@
  * GitHub API utilities for repo fetching.
  * Used by the fetchRepo pipeline to retrieve repository structure and contents.
  */
+import type {
+  RepoProvider,
+  ParsedRepoUrl,
+  RepoMetadata as ProviderRepoMetadata,
+  RepoTree,
+  NormalizedTreeEntry,
+} from "./repoProviders";
 
 // Directories to exclude from indexing
 export const EXCLUDED_DIRS = [
@@ -374,4 +381,68 @@ export function isSourceFile(path: string): boolean {
   }
 
   return false;
+}
+
+/**
+ * GitHub provider implementing the RepoProvider interface.
+ * Wraps the existing free functions above.
+ */
+export class GitHubProvider implements RepoProvider {
+  constructor(private token: string) {}
+
+  parseUrl(url: string): ParsedRepoUrl {
+    const { owner, repo } = parseGitHubUrl(url);
+    return { provider: "github", owner, repo };
+  }
+
+  async fetchMetadata(owner: string, repo: string): Promise<ProviderRepoMetadata> {
+    return fetchRepoMetadata(owner, repo, this.token);
+  }
+
+  async fetchTree(owner: string, repo: string, branch: string): Promise<RepoTree> {
+    const tree = await fetchGitTree(owner, repo, branch, this.token);
+    return {
+      commitId: tree.sha,
+      truncated: tree.truncated,
+      entries: tree.tree.map((e) => ({
+        path: e.path,
+        type: e.type,
+        id: e.sha,
+        size: e.size,
+      })),
+    };
+  }
+
+  async fetchFileContents(
+    owner: string,
+    repo: string,
+    entries: NormalizedTreeEntry[],
+    _commitId: string
+  ): Promise<Map<string, string>> {
+    const shas = entries.map((e) => e.id);
+    const shaToContent = await fetchBlobBatch(owner, repo, shas, this.token);
+
+    // Re-key by entry.id (which is the sha for GitHub)
+    return shaToContent;
+  }
+
+  async fetchHeadCommitId(
+    owner: string,
+    repo: string,
+    branch: string
+  ): Promise<string | null> {
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/commits/${branch}`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github.v3+json",
+          "User-Agent": "arcagent",
+        },
+      }
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    return (data.sha as string) ?? null;
+  }
 }

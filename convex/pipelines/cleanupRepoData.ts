@@ -1,11 +1,10 @@
 import { internalAction } from "../_generated/server";
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
-import { createQdrantClient, getCollectionName } from "../lib/qdrant";
 
 /**
  * Clean up all repo-related data for a cancelled bounty.
- * Deletes: Qdrant vectors, codeChunks, repoMaps.
+ * Deletes: codeChunks (with inline embeddings), repoMaps.
  * Marks the repoConnection as "cleaned" (kept for audit trail).
  */
 export const cleanupRepoData = internalAction({
@@ -13,35 +12,7 @@ export const cleanupRepoData = internalAction({
     bountyId: v.id("bounties"),
   },
   handler: async (ctx, args) => {
-    // 1. Delete Qdrant vectors
-    const qdrantUrl = process.env.QDRANT_URL;
-    if (qdrantUrl) {
-      try {
-        const qdrantClient = createQdrantClient(
-          qdrantUrl,
-          process.env.QDRANT_API_KEY
-        );
-        const collectionName = getCollectionName();
-
-        await qdrantClient.deleteByFilter(collectionName, {
-          must: [
-            {
-              key: "bountyId",
-              match: { value: args.bountyId },
-            },
-          ],
-        });
-        console.log(
-          `[cleanupRepoData] Deleted Qdrant vectors for bounty ${args.bountyId}`
-        );
-      } catch (error) {
-        console.warn(
-          `[cleanupRepoData] Failed to delete Qdrant vectors: ${error}`
-        );
-      }
-    }
-
-    // 2. Delete code chunks
+    // 1. Delete code chunks (embeddings are inline, deleted with the rows)
     const chunksDeleted = await ctx.runMutation(
       internal.codeChunks.deleteByBountyId,
       { bountyId: args.bountyId }
@@ -50,7 +21,7 @@ export const cleanupRepoData = internalAction({
       `[cleanupRepoData] Deleted ${chunksDeleted} code chunks for bounty ${args.bountyId}`
     );
 
-    // 3. Delete repo maps
+    // 2. Delete repo maps
     const mapsDeleted = await ctx.runMutation(
       internal.repoMaps.deleteByBountyId,
       { bountyId: args.bountyId }
@@ -59,7 +30,7 @@ export const cleanupRepoData = internalAction({
       `[cleanupRepoData] Deleted ${mapsDeleted} repo maps for bounty ${args.bountyId}`
     );
 
-    // 4. Mark repo connection as "cleaned" (keep record for audit)
+    // 3. Mark repo connection as "cleaned" (keep record for audit)
     const conn = await ctx.runQuery(
       internal.repoConnections.getByBountyIdInternal,
       { bountyId: args.bountyId }

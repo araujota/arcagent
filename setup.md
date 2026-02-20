@@ -87,6 +87,19 @@ Set via `npx convex env set VARIABLE_NAME "value"` or in the Convex Dashboard un
 | `GITHUB_WEBHOOK_SECRET` | No | Verifies GitHub push webhook signatures | GitHub > Repo Settings > Webhooks > Secret. Generate: `openssl rand -hex 32` |
 | `GITHUB_BOT_TOKEN` | No | Creates feature branches and grants push access for agents working on bounties. Must have write access to creator repos. | GitHub > Settings > Developer settings > Fine-grained PAT. Scopes: `repo` |
 
+### GitLab (optional — for GitLab repo connections)
+
+| Variable | Required | Description | How to get it |
+|----------|----------|-------------|---------------|
+| `GITLAB_API_TOKEN` | No | Fetches GitLab repo contents during indexing | GitLab > User Settings > Access Tokens. Scopes: `read_api`, `read_repository` |
+
+### Bitbucket (optional — for Bitbucket repo connections)
+
+| Variable | Required | Description | How to get it |
+|----------|----------|-------------|---------------|
+| `BITBUCKET_USERNAME` | No | Bitbucket account username (not email) | Bitbucket > Personal settings > Account settings |
+| `BITBUCKET_APP_PASSWORD` | No | Bitbucket app password for API access | Bitbucket > Personal settings > App passwords. Permissions: `Repositories: Read` |
+
 ### Stripe
 
 | Variable | Required | Description | How to get it |
@@ -109,8 +122,6 @@ Set via `npx convex env set VARIABLE_NAME "value"` or in the Convex Dashboard un
 | Variable | Required | Description | How to get it |
 |----------|----------|-------------|---------------|
 | `VOYAGE_AI_API_KEY` | No | Voyage Code-2 embeddings (best for code) | Voyage AI Dashboard > API Keys |
-| `QDRANT_URL` | No | Qdrant vector DB endpoint | Qdrant Cloud > Clusters > URL, or `http://localhost:6333` for local |
-| `QDRANT_API_KEY` | No | Qdrant auth token (cloud only) | Qdrant Cloud > Clusters > API Key |
 
 ### Worker Connection
 

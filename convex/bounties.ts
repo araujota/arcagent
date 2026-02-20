@@ -726,7 +726,7 @@ async function cancelBountyImpl(
     });
   }
 
-  // Schedule cleanup of repo data (Qdrant vectors, codeChunks, repoMaps)
+  // Schedule cleanup of repo data (codeChunks with embeddings, repoMaps)
   await ctx.scheduler.runAfter(
     0,
     internal.pipelines.cleanupRepoData.cleanupRepoData,

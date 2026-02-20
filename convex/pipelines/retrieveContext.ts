@@ -2,7 +2,6 @@ import { internalAction } from "../_generated/server";
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import { createEmbeddingClient } from "../lib/embeddings";
-import { createQdrantClient, getCollectionName } from "../lib/qdrant";
 
 /**
  * RAG retrieval pipeline.
@@ -56,52 +55,48 @@ export const retrieveContext = internalAction({
       process.env.OPENAI_API_KEY
     );
 
-    // Initialize Qdrant client
-    const qdrantUrl = process.env.QDRANT_URL;
-    if (!qdrantUrl) {
-      // Return repo map only if Qdrant is not configured
-      return {
-        repoMapText: repoMap.repoMapText,
-        relevantChunks: [],
-        dependencySignatures: [],
-        totalContextTokens: estimateTokens(repoMap.repoMapText),
-      };
-    }
-
-    const qdrantClient = createQdrantClient(
-      qdrantUrl,
-      process.env.QDRANT_API_KEY
-    );
-
     // Embed the query
     const [queryVector] = await embeddingClient.embed([args.query]);
 
-    // Search Qdrant filtered by bountyId
-    const searchResults = await qdrantClient.search(
-      getCollectionName(),
-      queryVector,
-      topK,
-      {
-        must: [
-          {
-            key: "bountyId",
-            match: { value: args.bountyId },
-          },
-        ],
-      }
-    );
+    // Search using Convex native vector search, filtered by bountyId
+    const searchResults = await ctx.vectorSearch("codeChunks", "by_embedding", {
+      vector: queryVector,
+      limit: topK,
+      filter: (q) => q.eq("bountyId", args.bountyId),
+    });
+
+    // Fetch full chunk documents for the search results
+    const chunkIds = searchResults.map((r) => r._id);
+    const fullChunks = chunkIds.length > 0
+      ? (await ctx.runQuery(internal.codeChunks.getByIds, { ids: chunkIds })) as Array<{
+          _id: string;
+          filePath: string;
+          symbolName: string;
+          symbolType: string;
+          content: string;
+        }>
+      : [];
+
+    // Build a map of id -> full chunk for easy lookup
+    const chunkMap = new Map(fullChunks.map((c) => [c._id, c]));
 
     // Filter by score threshold and extract chunks
     const relevantChunks = searchResults
-      .filter((r) => r.score >= scoreThreshold)
+      .filter((r) => r._score >= scoreThreshold)
       .slice(0, 10) // Top 10 for context
-      .map((r) => ({
-        filePath: r.payload.filePath as string,
-        symbolName: r.payload.symbolName as string,
-        symbolType: r.payload.symbolType as string,
-        content: r.payload.content as string,
-        score: r.score,
-      }));
+      .map((r) => {
+        const chunk = chunkMap.get(r._id);
+        return chunk
+          ? {
+              filePath: chunk.filePath,
+              symbolName: chunk.symbolName,
+              symbolType: chunk.symbolType,
+              content: chunk.content,
+              score: r._score,
+            }
+          : null;
+      })
+      .filter((c): c is NonNullable<typeof c> => c !== null);
 
     // Extract dependency signatures from the symbol table
     const dependencySignatures: string[] = [];
