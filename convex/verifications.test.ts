@@ -1,8 +1,8 @@
 import { convexTest } from "convex-test";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import schema from "./schema";
 import { internal } from "./_generated/api";
-import { seedUser, seedBounty, seedSubmission, seedVerification } from "./__tests__/helpers";
+import { seedUser, seedBounty, seedSubmission, seedVerification, seedClaim } from "./__tests__/helpers";
 
 describe("timeoutStale", () => {
   it("running verification past timeout+grace is marked as failed", async () => {
@@ -128,5 +128,160 @@ describe("timeoutStale", () => {
 
     const submission = await t.run(async (ctx) => ctx.db.get(submissionId));
     expect(submission!.status).toBe("pending");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// triggerPayoutOnVerificationPass guards
+// ---------------------------------------------------------------------------
+
+describe("triggerPayoutOnVerificationPass", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("skips if verification status is not passed", async () => {
+    const t = convexTest(schema);
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, {
+        status: "in_progress",
+        paymentMethod: "stripe",
+        escrowStatus: "funded",
+      });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "failed" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "failed", // NOT passed
+        timeoutSeconds: 600,
+      });
+      return { verificationId, submissionId, bountyId };
+    });
+
+    // Should return silently without creating a payment
+    await t.action(internal.verifications.triggerPayoutOnVerificationPass, {
+      verificationId: ids.verificationId,
+      bountyId: ids.bountyId,
+      submissionId: ids.submissionId,
+    });
+
+    const payment = await t.run(async (ctx) =>
+      ctx.db
+        .query("payments")
+        .withIndex("by_bountyId", (q: any) => q.eq("bountyId", ids.bountyId))
+        .first()
+    );
+    expect(payment).toBeNull();
+  });
+
+  it("skips for non-stripe payment methods", async () => {
+    const t = convexTest(schema);
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, {
+        status: "in_progress",
+        paymentMethod: "web3", // NOT stripe
+        escrowStatus: "funded",
+      });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "passed" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "passed",
+        timeoutSeconds: 600,
+      });
+      return { verificationId, submissionId, bountyId };
+    });
+
+    await t.action(internal.verifications.triggerPayoutOnVerificationPass, {
+      verificationId: ids.verificationId,
+      bountyId: ids.bountyId,
+      submissionId: ids.submissionId,
+    });
+
+    const payment = await t.run(async (ctx) =>
+      ctx.db
+        .query("payments")
+        .withIndex("by_bountyId", (q: any) => q.eq("bountyId", ids.bountyId))
+        .first()
+    );
+    expect(payment).toBeNull();
+  });
+
+  it("skips if escrow is not funded", async () => {
+    const t = convexTest(schema);
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, {
+        status: "in_progress",
+        paymentMethod: "stripe",
+        escrowStatus: "unfunded", // NOT funded
+      });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "passed" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "passed",
+        timeoutSeconds: 600,
+      });
+      return { verificationId, submissionId, bountyId };
+    });
+
+    await t.action(internal.verifications.triggerPayoutOnVerificationPass, {
+      verificationId: ids.verificationId,
+      bountyId: ids.bountyId,
+      submissionId: ids.submissionId,
+    });
+
+    const payment = await t.run(async (ctx) =>
+      ctx.db
+        .query("payments")
+        .withIndex("by_bountyId", (q: any) => q.eq("bountyId", ids.bountyId))
+        .first()
+    );
+    expect(payment).toBeNull();
+  });
+
+  it("skips if payment record already exists (duplicate prevention)", async () => {
+    const t = convexTest(schema);
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, {
+        status: "in_progress",
+        paymentMethod: "stripe",
+        escrowStatus: "funded",
+      });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "passed" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "passed",
+        timeoutSeconds: 600,
+      });
+      // Pre-existing payment record (pending = non-failed)
+      await ctx.db.insert("payments" as any, {
+        bountyId,
+        recipientId: agentId,
+        amount: 100,
+        currency: "USD",
+        method: "stripe",
+        status: "pending",
+        createdAt: Date.now(),
+      });
+      return { verificationId, submissionId, bountyId };
+    });
+
+    // Should skip because a pending payment already exists
+    await t.action(internal.verifications.triggerPayoutOnVerificationPass, {
+      verificationId: ids.verificationId,
+      bountyId: ids.bountyId,
+      submissionId: ids.submissionId,
+    });
+
+    // Only one payment should exist (the pre-existing one)
+    const payments = await t.run(async (ctx) =>
+      ctx.db
+        .query("payments")
+        .withIndex("by_bountyId", (q: any) => q.eq("bountyId", ids.bountyId))
+        .collect()
+    );
+    expect(payments).toHaveLength(1);
   });
 });

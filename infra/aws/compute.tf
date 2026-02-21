@@ -31,7 +31,7 @@ resource "aws_instance" "worker" {
 
   # WORKER_HOST_URL is auto-detected at boot via IMDSv2 (see setup-host.sh)
   # since the EIP isn't known at user_data render time.
-  user_data = base64encode(templatefile("${path.module}/scripts/setup-host.sh", {
+  user_data = base64gzip(templatefile("${path.module}/scripts/setup-host.sh", {
     environment               = var.environment
     worker_shared_secret      = var.worker_shared_secret
     convex_url                = var.convex_url
@@ -43,6 +43,9 @@ resource "aws_instance" "worker" {
     harden_egress             = var.harden_egress
     worker_concurrency        = var.worker_concurrency
     workspace_idle_timeout_ms = var.workspace_idle_timeout_ms
+    rootfs_bucket             = aws_s3_bucket.rootfs.id
+    rootfs_version            = var.rootfs_version
+    aws_region                = var.aws_region
   }))
 
   tags = {

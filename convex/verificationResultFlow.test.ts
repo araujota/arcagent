@@ -1,0 +1,245 @@
+import { convexTest } from "convex-test";
+import { describe, it, expect } from "vitest";
+import schema from "./schema";
+import { internal } from "./_generated/api";
+import { seedUser, seedBounty, seedSubmission, seedVerification } from "./__tests__/helpers";
+
+/**
+ * Tests the chain of mutations that the /api/verification/result HTTP handler
+ * calls. We can't test the HTTP action directly with convex-test, but we can
+ * test the internal mutations it invokes.
+ */
+
+describe("verification result processing", () => {
+  it("happy path (pass): gate results recorded, verification→passed, submission→passed", async () => {
+    const t = convexTest(schema);
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "running" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "running",
+        startedAt: Date.now(),
+        timeoutSeconds: 600,
+      });
+      return { verificationId, submissionId, bountyId, agentId };
+    });
+
+    // 1. Record gate results
+    await t.mutation(internal.sanityGates.record, {
+      verificationId: ids.verificationId,
+      gateType: "build",
+      tool: "npm ci",
+      status: "passed",
+    });
+    await t.mutation(internal.sanityGates.record, {
+      verificationId: ids.verificationId,
+      gateType: "lint",
+      tool: "eslint",
+      status: "passed",
+    });
+
+    // 2. Update verification status
+    await t.mutation(internal.verifications.updateResult, {
+      verificationId: ids.verificationId,
+      status: "passed",
+      completedAt: Date.now(),
+    });
+
+    // 3. Update submission status
+    await t.mutation(internal.submissions.updateStatus, {
+      submissionId: ids.submissionId,
+      status: "passed",
+    });
+
+    // Verify
+    const verification = await t.run(async (ctx) => ctx.db.get(ids.verificationId));
+    expect(verification!.status).toBe("passed");
+    expect(verification!.completedAt).toBeDefined();
+
+    const submission = await t.run(async (ctx) => ctx.db.get(ids.submissionId));
+    expect(submission!.status).toBe("passed");
+
+    const gates = await t.run(async (ctx) =>
+      ctx.db
+        .query("sanityGates")
+        .withIndex("by_verificationId", (q: any) =>
+          q.eq("verificationId", ids.verificationId)
+        )
+        .collect()
+    );
+    expect(gates).toHaveLength(2);
+    expect(gates.map((g: any) => g.gateType)).toContain("build");
+    expect(gates.map((g: any) => g.gateType)).toContain("lint");
+  });
+
+  it("fail result: gate results recorded, verification→failed, submission→failed", async () => {
+    const t = convexTest(schema);
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "running" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "running",
+        startedAt: Date.now(),
+        timeoutSeconds: 600,
+      });
+      return { verificationId, submissionId, bountyId };
+    });
+
+    await t.mutation(internal.sanityGates.record, {
+      verificationId: ids.verificationId,
+      gateType: "build",
+      tool: "npm ci",
+      status: "failed",
+      issues: ["Build failed: exit code 1"],
+    });
+
+    await t.mutation(internal.verifications.updateResult, {
+      verificationId: ids.verificationId,
+      status: "failed",
+      completedAt: Date.now(),
+    });
+
+    await t.mutation(internal.submissions.updateStatus, {
+      submissionId: ids.submissionId,
+      status: "failed",
+    });
+
+    const verification = await t.run(async (ctx) => ctx.db.get(ids.verificationId));
+    expect(verification!.status).toBe("failed");
+
+    const submission = await t.run(async (ctx) => ctx.db.get(ids.submissionId));
+    expect(submission!.status).toBe("failed");
+
+    const gates = await t.run(async (ctx) =>
+      ctx.db
+        .query("sanityGates")
+        .withIndex("by_verificationId", (q: any) =>
+          q.eq("verificationId", ids.verificationId)
+        )
+        .collect()
+    );
+    expect(gates).toHaveLength(1);
+    expect(gates[0].status).toBe("failed");
+  });
+
+  it("M12 guard: getBySubmissionInternal returns terminal verification for late-result guard", async () => {
+    const t = convexTest(schema);
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "failed" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "failed",
+        completedAt: Date.now(),
+        timeoutSeconds: 600,
+      });
+      return { verificationId, submissionId, bountyId };
+    });
+
+    // The HTTP handler checks verification.status before processing results.
+    // Here we verify the query returns the terminal state correctly.
+    const verification = await t.query(internal.verifications.getBySubmissionInternal, {
+      submissionId: ids.submissionId,
+    });
+    expect(verification).not.toBeNull();
+    expect(verification!.status).toBe("failed");
+    // The HTTP handler would return { success: false, reason: "already in terminal state" }
+  });
+
+  it("step results: BDD steps created with correct visibility tags", async () => {
+    const t = convexTest(schema);
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "running" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "running",
+        startedAt: Date.now(),
+        timeoutSeconds: 600,
+      });
+      return { verificationId, submissionId, bountyId };
+    });
+
+    await t.mutation(internal.verificationSteps.createInternal, {
+      steps: [
+        {
+          verificationId: ids.verificationId,
+          scenarioName: "User can login",
+          featureName: "Auth",
+          status: "pass",
+          executionTimeMs: 150,
+          output: "All assertions passed",
+          stepNumber: 1,
+          visibility: "public",
+        },
+        {
+          verificationId: ids.verificationId,
+          scenarioName: "SQL injection blocked",
+          featureName: "Security",
+          status: "pass",
+          executionTimeMs: 200,
+          stepNumber: 2,
+          visibility: "hidden",
+        },
+      ],
+    });
+
+    const steps = await t.run(async (ctx) =>
+      ctx.db
+        .query("verificationSteps")
+        .withIndex("by_verificationId", (q: any) =>
+          q.eq("verificationId", ids.verificationId)
+        )
+        .collect()
+    );
+    expect(steps).toHaveLength(2);
+    expect(steps.find((s: any) => s.scenarioName === "User can login")!.visibility).toBe("public");
+    expect(steps.find((s: any) => s.scenarioName === "SQL injection blocked")!.visibility).toBe("hidden");
+  });
+
+  it("gate type mapping: worker gate names map to correct Convex gate types", async () => {
+    const t = convexTest(schema);
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "running" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "running",
+        startedAt: Date.now(),
+        timeoutSeconds: 600,
+      });
+      return { verificationId, submissionId, bountyId };
+    });
+
+    // These are the gate types the HTTP handler maps from worker names
+    const gateTypes = ["build", "lint", "typecheck", "security", "sonarqube", "snyk", "memory"] as const;
+
+    for (const gateType of gateTypes) {
+      await t.mutation(internal.sanityGates.record, {
+        verificationId: ids.verificationId,
+        gateType,
+        tool: `${gateType}-tool`,
+        status: "passed",
+      });
+    }
+
+    const gates = await t.run(async (ctx) =>
+      ctx.db
+        .query("sanityGates")
+        .withIndex("by_verificationId", (q: any) =>
+          q.eq("verificationId", ids.verificationId)
+        )
+        .collect()
+    );
+    expect(gates).toHaveLength(7);
+    const recordedTypes = gates.map((g: any) => g.gateType).sort();
+    expect(recordedTypes).toEqual([...gateTypes].sort());
+  });
+});

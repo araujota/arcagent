@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# ArcAgent Firecracker rootfs — Base image
+# ---------------------------------------------------------------------------
+# Ubuntu 22.04 minimal with common tooling, guest agent, and unprivileged
+# "agent" user for running workspace code inside the microVM.
+# ---------------------------------------------------------------------------
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Essential packages
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+      curl \
+      ca-certificates \
+      git \
+      openssh-server \
+      file \
+      procps \
+      sudo && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Unprivileged user for running untrusted code
+RUN useradd -m -s /bin/bash -u 1001 agent && \
+    mkdir -p /workspace && \
+    chown agent:agent /workspace
+
+# SSH fallback (if vsock is disabled)
+RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
+
+# Placeholder guest agent — replace with compiled binary
+COPY guest-agent.sh /usr/local/bin/guest-agent
+RUN chmod 755 /usr/local/bin/guest-agent
+
+# SysV init script for guest agent
+COPY guest-agent-init.sh /etc/init.d/guest-agent
+RUN chmod 755 /etc/init.d/guest-agent
+
+# DNS configuration is written during ext4 conversion (Docker bind-mounts resolv.conf)

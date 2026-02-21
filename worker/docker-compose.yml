@@ -1,0 +1,66 @@
+# ---------------------------------------------------------------------------
+# Worker Docker Compose — deploy from this device
+# ---------------------------------------------------------------------------
+#
+# All secrets and config come from worker/.env — fill it out before running:
+#
+#   Required in .env:
+#     CONVEX_URL           — Convex deployment URL
+#     CONVEX_DEPLOY_KEY    — server-to-server Convex auth key
+#     WORKER_SHARED_SECRET — must match the value set in Convex env
+#
+#   Optional in .env:
+#     WORKER_HOST_URL, LOG_LEVEL, GITHUB_API_TOKEN,
+#     SONARQUBE_URL, SONARQUBE_TOKEN, SNYK_TOKEN,
+#     FC_* (Firecracker paths), MAX_DEV_VMS, WORKSPACE_IDLE_TIMEOUT_MS
+#
+# Usage:
+#   cd worker
+#   docker compose up -d          # start worker + redis
+#   docker compose logs -f worker # tail logs
+#   docker compose down           # stop everything
+# ---------------------------------------------------------------------------
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-3001}:${PORT:-3001}"
+    env_file:
+      - .env
+    environment:
+      # Override REDIS_URL to point at the compose redis service
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    devices:
+      - /dev/kvm:/dev/kvm
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - SYS_ADMIN
+      - NET_ADMIN
+      - NET_RAW
+      - MKNOD
+    volumes:
+      # Mount kernel + rootfs from host (built separately)
+      - /var/lib/firecracker:/var/lib/firecracker:ro
+    restart: unless-stopped
+
+volumes:
+  redis-data:

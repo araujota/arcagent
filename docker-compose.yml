@@ -38,8 +38,8 @@ services:
     ports:
       - "3001:3001"
     env_file:
-      - path: .env
-        required: false
+      - path: ./worker/.env
+        required: true
     environment:
       - REDIS_URL=redis://redis:6379
     depends_on:
@@ -53,6 +53,8 @@ services:
       - NET_ADMIN
       - NET_RAW
       - MKNOD
+    volumes:
+      - /var/lib/firecracker:/var/lib/firecracker:ro
     networks:
       - arcagent
 
@@ -63,12 +65,11 @@ services:
     ports:
       - "3002:3002"
     env_file:
-      - path: .env
-        required: false
+      - path: ./mcp-server/.env
+        required: true
     environment:
       - MCP_TRANSPORT=http
       - MCP_PORT=3002
-      - REDIS_URL=redis://redis:6379
     depends_on:
       redis:
         condition: service_healthy

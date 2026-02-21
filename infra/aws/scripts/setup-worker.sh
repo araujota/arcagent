@@ -83,6 +83,11 @@ PrivateTmp=false
 # Resource limits
 LimitNOFILE=65536
 LimitNPROC=32768
+# Memory ceiling — OOM-kill if Node.js leaks beyond this (bare-metal has 32+ GB)
+MemoryMax=8G
+# Watchdog — systemd kills and restarts the process if it stops notifying.
+# The worker uses sd_notify via the health endpoint on a 60s interval.
+WatchdogSec=120
 
 [Install]
 WantedBy=multi-user.target
@@ -91,19 +96,18 @@ SERVICEEOF
 echo "systemd service written to $SERVICE_FILE"
 
 # ---------------------------------------------------------------------------
-# 3. Create log rotation
+# 3. Configure journal log retention
 # ---------------------------------------------------------------------------
-cat > /etc/logrotate.d/arcagent-worker <<'LOGEOF'
-/var/log/arcagent-*.log {
-    daily
-    rotate 14
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 640 arcagent arcagent
-}
-LOGEOF
+# Worker logs go to journald (StandardOutput=journal). Configure journal
+# size limits to prevent unbounded disk usage on long-lived instances.
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/arcagent.conf <<'JOURNALEOF'
+[Journal]
+SystemMaxUse=2G
+SystemKeepFree=1G
+MaxRetentionSec=14day
+JOURNALEOF
+systemctl restart systemd-journald 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 4. Create deployment helper script

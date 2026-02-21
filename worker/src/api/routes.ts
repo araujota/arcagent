@@ -95,7 +95,7 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
         commitSha: body.commitSha,
         baseCommitSha: body.baseCommitSha,
         language: body.language,
-        timeoutSeconds: body.timeoutSeconds ?? 300,
+        timeoutSeconds: Math.max(60, Math.min(body.timeoutSeconds ?? 300, 3600)),
         convexUrl: process.env.CONVEX_URL,
         testSuites: body.testSuites,
         gateSettings: body.gateSettings,
@@ -104,6 +104,7 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
         ztacoMode: body.ztacoMode,
         stepDefinitionsPublic: body.stepDefinitionsPublic,
         stepDefinitionsHidden: body.stepDefinitionsHidden,
+        jobHmac: body.jobHmac,
       };
 
       await queue.add("verify", jobData, {
@@ -132,7 +133,8 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
   // --------------------------------------------------------------------------
   router.get("/status/:id", async (req: Request, res: Response) => {
     try {
-      const job = await queue.getJob(req.params.id);
+      const jobId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const job = await queue.getJob(jobId);
 
       if (!job) {
         res.status(404).json({ error: "Job not found" });

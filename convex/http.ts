@@ -3,6 +3,7 @@ import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { constantTimeEqual } from "./lib/constantTimeEqual";
+import { verifyJobHmac } from "./lib/hmac";
 
 const http = httpRouter();
 
@@ -1760,32 +1761,6 @@ const GATE_STATUS_MAP: Record<string, string> = {
   warn: "warning",
 };
 
-/**
- * SECURITY (H6): Verify per-job HMAC token to prevent forged verification results.
- */
-async function verifyJobHmac(
-  hmac: string,
-  verificationId: string,
-  submissionId: string,
-  bountyId: string,
-): Promise<boolean> {
-  const secret = process.env.WORKER_SHARED_SECRET || "";
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const data = `${verificationId}:${submissionId}:${bountyId}`;
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(data));
-  const expected = Array.from(new Uint8Array(signature))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  return constantTimeEqual(hmac, expected);
-}
-
 http.route({
   path: "/api/verification/result",
   method: "POST",
@@ -1846,18 +1821,19 @@ http.route({
       }
       const verificationId = verification._id;
 
-      // SECURITY (H6): Verify per-job HMAC token if present.
+      // SECURITY (H6): Verify per-job HMAC token — mandatory.
       // This prevents forged results even if WORKER_SHARED_SECRET is compromised.
-      if (body.jobHmac) {
-        const hmacValid = await verifyJobHmac(
-          body.jobHmac,
-          verificationId,
-          body.submissionId,
-          body.bountyId,
-        );
-        if (!hmacValid) {
-          return mcpError("Invalid job HMAC token", 403);
-        }
+      if (!body.jobHmac) {
+        return mcpError("Missing required job HMAC token", 403);
+      }
+      const hmacValid = await verifyJobHmac(
+        body.jobHmac,
+        verificationId,
+        body.submissionId,
+        body.bountyId,
+      );
+      if (!hmacValid) {
+        return mcpError("Invalid job HMAC token", 403);
       }
 
       // SECURITY (M12): Reject late results for verifications that have

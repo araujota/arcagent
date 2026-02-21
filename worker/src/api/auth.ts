@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { timingSafeEqual as cryptoTimingSafeEqual, createHmac } from "node:crypto";
 import { logger } from "../index";
 
 /**
@@ -44,22 +45,15 @@ export function authMiddleware(
 }
 
 /**
- * Constant-time string comparison.  Uses Node's native crypto module when
- * available.
+ * Constant-time string comparison that does not leak input lengths.
+ *
+ * HMAC both inputs with a fixed key so they always produce equal-length
+ * digests, then use Node's native crypto.timingSafeEqual on the digests.
+ * This avoids the classic timing side-channel of early-returning on length
+ * mismatch.
  */
 function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-
-  const bufA = Buffer.from(a, "utf8");
-  const bufB = Buffer.from(b, "utf8");
-
-  // Node.js crypto.timingSafeEqual throws if lengths differ, so we guard
-  // above.  Using a manual XOR as a portable fallback.
-  let result = 0;
-  for (let i = 0; i < bufA.length; i++) {
-    result |= bufA[i]! ^ bufB[i]!;
-  }
-  return result === 0;
+  const hmacA = createHmac("sha256", "constant-time-compare").update(a).digest();
+  const hmacB = createHmac("sha256", "constant-time-compare").update(b).digest();
+  return cryptoTimingSafeEqual(hmacA, hmacB);
 }

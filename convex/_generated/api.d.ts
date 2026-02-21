@@ -31,6 +31,7 @@ import type * as lib_fees from "../lib/fees.js";
 import type * as lib_gherkinValidator from "../lib/gherkinValidator.js";
 import type * as lib_github from "../lib/github.js";
 import type * as lib_gitlab from "../lib/gitlab.js";
+import type * as lib_hmac from "../lib/hmac.js";
 import type * as lib_htmlToMarkdown from "../lib/htmlToMarkdown.js";
 import type * as lib_languageDetector from "../lib/languageDetector.js";
 import type * as lib_llm from "../lib/llm.js";
@@ -109,6 +110,7 @@ declare const fullApi: ApiFromModules<{
   "lib/gherkinValidator": typeof lib_gherkinValidator;
   "lib/github": typeof lib_github;
   "lib/gitlab": typeof lib_gitlab;
+  "lib/hmac": typeof lib_hmac;
   "lib/htmlToMarkdown": typeof lib_htmlToMarkdown;
   "lib/languageDetector": typeof lib_languageDetector;
   "lib/llm": typeof lib_llm;

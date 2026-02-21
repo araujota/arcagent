@@ -34,7 +34,7 @@ worker_concurrency = 2
 workspace_idle_timeout_ms = 1800000
 
 # Firecracker
-firecracker_version = "1.7.0"
+firecracker_version = "1.10.1"
 harden_egress       = true
 
 # Node.js version for the worker runtime
@@ -42,6 +42,10 @@ node_version = "20"
 
 # Root volume size (needs space for rootfs images, overlays, etc.)
 root_volume_size_gb = 200
+
+# Pre-built rootfs images — version tag in S3 (bucket is auto-created)
+# Build and upload images first: bash infra/rootfs/build-and-upload.sh <bucket> v1
+rootfs_version = "v1"
 
 # ---------------------------------------------------------------------------
 # Env vars you must also set in the Convex dashboard:

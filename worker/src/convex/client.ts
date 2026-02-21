@@ -37,6 +37,8 @@ interface ConvexResultPayload {
     stepNumber: number;
     visibility: "public" | "hidden";
   }>;
+  /** SECURITY (H6): Per-job HMAC token for result verification. */
+  jobHmac?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +100,7 @@ export async function postVerificationResult(
     })),
     totalDurationMs: result.totalDurationMs,
     steps: result.steps,
+    jobHmac: result.jobHmac,
   };
 
   const secret = process.env.WORKER_SHARED_SECRET;

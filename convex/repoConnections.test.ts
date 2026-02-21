@@ -1,5 +1,140 @@
+import { convexTest } from "convex-test";
 import { describe, it, expect } from "vitest";
+import schema from "./schema";
+import { internal } from "./_generated/api";
+import { seedUser, seedBounty, seedRepoConnection } from "./__tests__/helpers";
 import { detectProvider } from "./lib/repoProviders";
+
+describe("repoConnections.createInternal", () => {
+  it("creates a repo connection with pending status", async () => {
+    const t = convexTest(schema);
+    const bountyId = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      return await seedBounty(ctx, creatorId);
+    });
+
+    const connId = await t.mutation(internal.repoConnections.createInternal, {
+      bountyId,
+      repositoryUrl: "https://github.com/test/repo",
+    });
+
+    const conn = await t.run(async (ctx) => ctx.db.get(connId));
+    expect(conn).toBeDefined();
+    expect(conn!.status).toBe("pending");
+    expect(conn!.repositoryUrl).toBe("https://github.com/test/repo");
+    expect(conn!.provider).toBe("github");
+  });
+
+  it("detects GitLab provider from URL", async () => {
+    const t = convexTest(schema);
+    const bountyId = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      return await seedBounty(ctx, creatorId);
+    });
+
+    const connId = await t.mutation(internal.repoConnections.createInternal, {
+      bountyId,
+      repositoryUrl: "https://gitlab.com/group/repo",
+    });
+
+    const conn = await t.run(async (ctx) => ctx.db.get(connId));
+    expect(conn!.provider).toBe("gitlab");
+  });
+});
+
+describe("repoConnections.getByBountyIdInternal", () => {
+  it("returns connection for a bounty", async () => {
+    const t = convexTest(schema);
+    const bountyId = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const bountyId = await seedBounty(ctx, creatorId);
+      await seedRepoConnection(ctx, bountyId, {
+        repositoryUrl: "https://github.com/owner/myrepo",
+      });
+      return bountyId;
+    });
+
+    const conn = await t.query(internal.repoConnections.getByBountyIdInternal, {
+      bountyId,
+    });
+    expect(conn).toBeDefined();
+    expect(conn!.repositoryUrl).toBe("https://github.com/owner/myrepo");
+  });
+
+  it("returns null when no connection exists", async () => {
+    const t = convexTest(schema);
+    const bountyId = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      return await seedBounty(ctx, creatorId);
+    });
+
+    const conn = await t.query(internal.repoConnections.getByBountyIdInternal, {
+      bountyId,
+    });
+    expect(conn).toBeNull();
+  });
+});
+
+describe("repoConnections.updateStatus", () => {
+  it("updates connection status", async () => {
+    const t = convexTest(schema);
+    const connId = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const bountyId = await seedBounty(ctx, creatorId);
+      return await seedRepoConnection(ctx, bountyId);
+    });
+
+    await t.mutation(internal.repoConnections.updateStatus, {
+      repoConnectionId: connId,
+      status: "ready",
+    });
+
+    const conn = await t.run(async (ctx) => ctx.db.get(connId));
+    expect(conn!.status).toBe("ready");
+  });
+
+  it("stores errorMessage when provided", async () => {
+    const t = convexTest(schema);
+    const connId = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const bountyId = await seedBounty(ctx, creatorId);
+      return await seedRepoConnection(ctx, bountyId);
+    });
+
+    await t.mutation(internal.repoConnections.updateStatus, {
+      repoConnectionId: connId,
+      status: "failed",
+      errorMessage: "Clone failed: 404",
+    });
+
+    const conn = await t.run(async (ctx) => ctx.db.get(connId));
+    expect(conn!.status).toBe("failed");
+    expect(conn!.errorMessage).toBe("Clone failed: 404");
+  });
+});
+
+describe("repoConnections.triggerReIndex", () => {
+  it("updates commitSha and sets status to fetching", async () => {
+    const t = convexTest(schema);
+    const connId = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const bountyId = await seedBounty(ctx, creatorId);
+      return await seedRepoConnection(ctx, bountyId, {
+        status: "ready",
+        commitSha: "old-sha",
+      });
+    });
+
+    await t.mutation(internal.repoConnections.triggerReIndex, {
+      repoConnectionId: connId,
+      newCommitSha: "new-sha-abc",
+    });
+
+    const conn = await t.run(async (ctx) => ctx.db.get(connId));
+    expect(conn!.commitSha).toBe("new-sha-abc");
+    expect(conn!.status).toBe("fetching");
+  });
+});
 
 describe("Repo Connection URL Validation", () => {
   it("detects valid GitHub HTTPS URLs", () => {

@@ -80,7 +80,7 @@ variable "max_warm_vms" {
 variable "firecracker_version" {
   description = "Firecracker release version to install"
   type        = string
-  default     = "1.7.0"
+  default     = "1.10.1"
 }
 
 variable "node_version" {
@@ -105,4 +105,10 @@ variable "workspace_idle_timeout_ms" {
   description = "Idle workspace timeout in milliseconds (default 30 min)"
   type        = number
   default     = 1800000
+}
+
+variable "rootfs_version" {
+  description = "Version tag for pre-built rootfs images in S3 (e.g. v1, v2)"
+  type        = string
+  default     = "v1"
 }

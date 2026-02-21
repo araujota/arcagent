@@ -85,6 +85,73 @@ export async function seedVerification(
   });
 }
 
+export async function seedTestSuite(
+  ctx: Ctx,
+  bountyId: any,
+  overrides: Record<string, unknown> = {},
+) {
+  return await ctx.db.insert("testSuites" as any, {
+    bountyId,
+    title: overrides.title ?? "Test Suite",
+    version: overrides.version ?? 1,
+    gherkinContent: overrides.gherkinContent ?? "Feature: Test\n  Scenario: Example\n    Given something",
+    visibility: overrides.visibility ?? "public",
+    ...overrides,
+  });
+}
+
+export async function seedGeneratedTest(
+  ctx: Ctx,
+  bountyId: any,
+  conversationId: any,
+  overrides: Record<string, unknown> = {},
+) {
+  return await ctx.db.insert("generatedTests" as any, {
+    bountyId,
+    conversationId,
+    version: overrides.version ?? 1,
+    gherkinPublic: overrides.gherkinPublic ?? "Feature: Public",
+    gherkinHidden: overrides.gherkinHidden ?? "Feature: Hidden",
+    stepDefinitions: overrides.stepDefinitions ?? "// step defs",
+    testFramework: overrides.testFramework ?? "vitest",
+    testLanguage: overrides.testLanguage ?? "typescript",
+    status: overrides.status ?? "draft",
+    llmModel: overrides.llmModel ?? "claude-3",
+    ...overrides,
+  });
+}
+
+export async function seedConversation(
+  ctx: Ctx,
+  bountyId: any,
+  overrides: Record<string, unknown> = {},
+) {
+  return await ctx.db.insert("conversations" as any, {
+    bountyId,
+    status: overrides.status ?? "gathering",
+    messages: overrides.messages ?? [],
+    ...overrides,
+  });
+}
+
+export async function seedRepoConnection(
+  ctx: Ctx,
+  bountyId: any,
+  overrides: Record<string, unknown> = {},
+) {
+  return await ctx.db.insert("repoConnections" as any, {
+    bountyId,
+    repositoryUrl: overrides.repositoryUrl ?? "https://github.com/test/repo",
+    owner: overrides.owner ?? "test",
+    repo: overrides.repo ?? "repo",
+    provider: overrides.provider ?? "github",
+    defaultBranch: overrides.defaultBranch ?? "main",
+    commitSha: overrides.commitSha ?? "",
+    status: overrides.status ?? "pending",
+    ...overrides,
+  });
+}
+
 export async function seedRating(
   ctx: Ctx,
   bountyId: any,

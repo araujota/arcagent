@@ -127,6 +127,7 @@ export async function processVerificationJob(
       totalDurationMs: Date.now() - startTime,
       steps: allSteps.length > 0 ? allSteps : undefined,
       feedbackJson: JSON.stringify(feedback),
+      jobHmac: data.jobHmac,
     };
 
     // 8. Report back to Convex
@@ -157,6 +158,7 @@ export async function processVerificationJob(
       overallStatus: "error",
       gates: [],
       totalDurationMs: Date.now() - startTime,
+      jobHmac: data.jobHmac,
     };
 
     // Best-effort reporting
@@ -266,6 +268,7 @@ export async function processVerificationFromDiff(
         gates: [patchGate],
         totalDurationMs: Date.now() - startTime,
         feedbackJson: JSON.stringify(feedback),
+        jobHmac: data.jobHmac,
       };
 
       if (data.convexUrl) {
@@ -325,6 +328,7 @@ export async function processVerificationFromDiff(
       totalDurationMs: Date.now() - startTime,
       steps: allSteps.length > 0 ? allSteps : undefined,
       feedbackJson: JSON.stringify(feedback),
+      jobHmac: data.jobHmac,
     };
 
     // 8. Report back to Convex
@@ -354,6 +358,7 @@ export async function processVerificationFromDiff(
       overallStatus: "error",
       gates: [],
       totalDurationMs: Date.now() - startTime,
+      jobHmac: data.jobHmac,
     };
 
     if (data.convexUrl) {

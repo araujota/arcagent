@@ -31,3 +31,8 @@ output "ssh_command" {
   description = "SSH command template"
   value       = length(aws_eip.worker) > 0 ? "ssh -i <key.pem> ubuntu@${aws_eip.worker[0].public_ip}" : "No workers deployed"
 }
+
+output "rootfs_bucket" {
+  description = "S3 bucket for pre-built rootfs images"
+  value       = aws_s3_bucket.rootfs.id
+}

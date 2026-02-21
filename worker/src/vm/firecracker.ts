@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "../index";
-import { vsockExec, vsockExecWithStdin, vsockWriteFile, waitForVsock, sendVsockRequestPooled, VsockRequest, VsockResponse } from "./vsockChannel";
+import { vsockExec, vsockExecWithStdin, vsockWriteFile, waitForVsock, sendVsockRequestPooled, VsockRequest, VsockResponse, vsockPool } from "./vsockChannel";
 import { createEncryptedOverlay, destroyEncryptedOverlay, EncryptedOverlayHandle } from "./encryptedOverlay";
 import { startDnsResolver, stopDnsResolver, applyDnsRedirect, removeDnsRedirect, DnsResolverHandle } from "./dnsPolicy";
 import { startEgressProxy, stopEgressProxy, applyProxyRedirect, removeProxyRedirect, applyRateLimiting, removeRateLimiting, EgressProxyHandle } from "./egressProxy";
@@ -61,6 +61,9 @@ const KERNEL_IMAGE =
   process.env.FC_KERNEL_IMAGE ?? "/var/lib/firecracker/vmlinux";
 const ROOTFS_DIR =
   process.env.FC_ROOTFS_DIR ?? "/var/lib/firecracker/rootfs";
+/** UID/GID for jailer. Reads from env (set by setup-host.sh) or defaults to 1001. */
+const JAILER_UID = process.env.FC_JAILER_UID ?? "1001";
+const JAILER_GID = process.env.FC_JAILER_GID ?? "1001";
 const TAP_PREFIX = "fc-tap-";
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000; // 2 minutes
 /** Enable vsock-based communication (set to "false" to fall back to SSH). */
@@ -100,6 +103,8 @@ export async function createFirecrackerVM(
     rootfsImage: opts.rootfsImage,
     useVsock: USE_VSOCK,
   });
+
+  try {
 
   // 1. Create TAP device (kept solely for outbound internet: git clone, npm install)
   await execFileAsync("ip", [
@@ -208,9 +213,9 @@ export async function createFirecrackerVM(
     "--exec-file",
     FIRECRACKER_BIN,
     "--uid",
-    "1000",
+    JAILER_UID,
     "--gid",
-    "1000",
+    JAILER_GID,
     "--",
     "--config-file",
     configPath,
@@ -225,6 +230,9 @@ export async function createFirecrackerVM(
     fcChild.on("close", (code) => code === 0 ? resolve({ stdout, stderr }) : reject(new Error(`Firecracker exited ${code}: ${stderr}`)));
     fcChild.on("error", reject);
   });
+  // Prevent unhandledRejection if Firecracker crashes — we handle the error
+  // via destroyFirecrackerVM or process monitoring, not via this promise.
+  vmProcessRef.catch(() => {});
 
   // 5. Wait for communication channel
   if (USE_VSOCK) {
@@ -305,6 +313,12 @@ export async function createFirecrackerVM(
   (handle as VMHandleInternal).__egressProxy = egressProxy ?? undefined;
 
   return handle;
+
+  } catch (err) {
+    // Release the allocated IP to prevent leaks on partial VM creation failure
+    releaseGuestIp(guestIp);
+    throw err;
+  }
 }
 
 /**
@@ -390,8 +404,9 @@ export async function destroyFirecrackerVM(handle: VMHandle): Promise<void> {
     await unlink(int.__configPath).catch(() => {});
   }
 
-  // Clean up vsock socket
+  // Clean up vsock pool connections and socket file
   if (int.__vsockSocketPath) {
+    vsockPool.destroy(int.__vsockSocketPath);
     await unlink(int.__vsockSocketPath).catch(() => {});
   }
 
@@ -414,6 +429,9 @@ export async function destroyFirecrackerVM(handle: VMHandle): Promise<void> {
       // Expected: TAP device gone
     }
   }
+
+  // Release the guest IP back to the pool
+  releaseGuestIp(handle.guestIp);
 
   logger.info("MicroVM destroyed", { vmId: handle.vmId });
 }
@@ -557,17 +575,48 @@ async function waitForSSH(
 }
 
 /**
- * Deterministically allocate a guest IP from the VM ID.
- * Uses a simple hash of the VM ID modulo a /24 subnet.
+ * Track allocated guest IPs to prevent collisions across concurrent VMs.
+ */
+const allocatedIps = new Set<string>();
+
+/**
+ * Allocate a guest IP for a VM, ensuring no collision with running VMs.
+ * Falls back to linear scan if hash-preferred IP is taken.
  */
 function allocateGuestIp(vmId: string): string {
   let hash = 0;
   for (const ch of vmId) {
     hash = (hash * 31 + ch.charCodeAt(0)) & 0xffffffff;
   }
-  // Use 10.0.0.0/24 subnet, skip .0 and .1 (network & host)
-  const octet = (Math.abs(hash) % 252) + 2;
-  return `10.0.0.${octet}`;
+  // Try hash-preferred octet first
+  const preferred = (Math.abs(hash) % 252) + 2;
+  const preferredIp = `10.0.0.${preferred}`;
+  if (!allocatedIps.has(preferredIp)) {
+    allocatedIps.add(preferredIp);
+    return preferredIp;
+  }
+  // Linear scan for next available
+  for (let i = 0; i < 252; i++) {
+    const octet = ((preferred - 2 + i) % 252) + 2;
+    const ip = `10.0.0.${octet}`;
+    if (!allocatedIps.has(ip)) {
+      allocatedIps.add(ip);
+      return ip;
+    }
+  }
+  throw new Error("No available guest IPs — all 252 addresses in use");
+}
+
+/**
+ * Release a guest IP back to the pool when a VM is destroyed.
+ */
+export function releaseGuestIp(ip: string): void {
+  allocatedIps.delete(ip);
+}
+
+/** Exported for testing. */
+export function _getAllocatedIps(): Set<string> {
+  return allocatedIps;
 }
 
 /**

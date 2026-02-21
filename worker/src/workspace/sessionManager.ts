@@ -12,6 +12,7 @@ import { sanitizeShellArg } from "../lib/shellSanitize";
 import { vmPool } from "../vm/vmPool";
 import { sessionStore } from "./sessionStore";
 import { workspaceHeartbeat } from "./heartbeat";
+import { cleanupStreamJobs } from "./routes";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -70,6 +71,7 @@ const WORKSPACE_IDLE_TIMEOUT_MS = parseInt(
 ); // 30 min default
 const IDLE_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 min
 const ERROR_SESSION_CLEANUP_MS = 5 * 60 * 1000; // 5 min
+const PROVISIONING_TIMEOUT_MS = 10 * 60 * 1000; // 10 min — provisioning that takes longer is stuck
 const MAX_DIFF_SIZE = 10 * 1024 * 1024; // 10 MiB
 const MAX_CHANGED_FILES = 500;
 
@@ -119,6 +121,16 @@ export async function cleanupOrphanedWorkspaces(): Promise<void> {
 export async function provisionWorkspace(
   opts: ProvisionOptions,
 ): Promise<WorkspaceSession> {
+  // Idempotency: if workspace already exists and isn't destroyed, return it
+  const existing = sessions.get(opts.workspaceId);
+  if (existing && existing.status !== "destroyed") {
+    logger.info("Returning existing workspace session (idempotent)", {
+      workspaceId: opts.workspaceId,
+      status: existing.status,
+    });
+    return existing;
+  }
+
   // Capacity check — include retry info based on nearest expiry
   const activeSessions = Array.from(sessions.values()).filter(
     (s) => s.status !== "destroyed",
@@ -243,6 +255,7 @@ export async function provisionWorkspace(
       vsockSocketPath: (vmInt.__vsockSocketPath as string) ?? "",
       tapDevice: (vmInt.__tapDevice as string) ?? "",
       overlayPath: (vmInt.__overlayPath as string) ?? "",
+      guestIp: vm.guestIp,
       claimId: opts.claimId,
       bountyId: opts.bountyId,
       agentId: opts.agentId,
@@ -306,6 +319,7 @@ export async function provisionWorkspace(
     // Clean up VM if it was created
     if (session.vmHandle) {
       await destroyFirecrackerVM(session.vmHandle).catch(() => {});
+      session.vmHandle = null as unknown as VMHandle; // prevent double-destroy by idle checker
     }
 
     throw err;
@@ -334,6 +348,9 @@ export async function destroyWorkspace(
 
   // Stop heartbeat monitoring before VM destroy
   workspaceHeartbeat.stopMonitoring(workspaceId);
+
+  // Clean up streaming exec job records for this workspace
+  cleanupStreamJobs(workspaceId);
 
   // Clear destroy timer
   if (session.destroyTimer) {
@@ -486,13 +503,22 @@ export function startIdleChecker(): void {
         destroyWorkspace(id, "idle_timeout").catch(() => {});
         continue;
       }
-      // Phase 4A: Clean up error sessions older than 5 minutes
+      // Clean up error sessions older than 5 minutes
       if (session.status === "error" && now - session.createdAt > ERROR_SESSION_CLEANUP_MS) {
         logger.info("Cleaning up error workspace", {
           workspaceId: id,
           ageMs: now - session.createdAt,
         });
         destroyWorkspace(id, "error_cleanup").catch(() => {});
+        continue;
+      }
+      // Clean up stuck provisioning sessions (>10 min = likely dead)
+      if (session.status === "provisioning" && now - session.createdAt > PROVISIONING_TIMEOUT_MS) {
+        logger.warn("Cleaning up stuck provisioning workspace", {
+          workspaceId: id,
+          ageMs: now - session.createdAt,
+        });
+        destroyWorkspace(id, "provisioning_timeout").catch(() => {});
       }
     }
   }, IDLE_CHECK_INTERVAL_MS);

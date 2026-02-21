@@ -46,6 +46,8 @@ export interface VerificationJobData {
   diffPatch?: string;
   /** Source workspace ID (for tracking). */
   sourceWorkspaceId?: string;
+  /** SECURITY (H6): Per-job HMAC token for result verification. */
+  jobHmac?: string;
 }
 
 /** Possible outcome of a single gate. */
@@ -85,6 +87,8 @@ export interface VerificationResult {
   steps?: StepResult[];
   /** Structured feedback JSON for iterative improvement. */
   feedbackJson?: string;
+  /** SECURITY (H6): Per-job HMAC token for result verification. */
+  jobHmac?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +117,16 @@ export async function createVerificationQueue(redisUrl: string): Promise<{
     logger.error("Redis connection error", { error: err.message });
   });
 
-  const queue = new Queue<VerificationJobData>(QUEUE_NAME, { connection });
+  // Cast connection to satisfy BullMQ's bundled ioredis types
+  const conn = connection as any;
+
+  const queue = new Queue<VerificationJobData>(QUEUE_NAME, {
+    connection: conn,
+    defaultJobOptions: {
+      removeOnComplete: { age: 86_400, count: 1000 },   // keep completed jobs 24h or last 1000
+      removeOnFail: { age: 604_800, count: 5000 },      // keep failed jobs 7d or last 5000
+    },
+  });
 
   const worker = new Worker<VerificationJobData, VerificationResult>(
     QUEUE_NAME,
@@ -130,7 +143,7 @@ export async function createVerificationQueue(redisUrl: string): Promise<{
       return processVerificationJob(job);
     },
     {
-      connection,
+      connection: conn,
       concurrency: parseInt(process.env.WORKER_CONCURRENCY ?? "2", 10),
       limiter: {
         max: 10,
@@ -157,7 +170,7 @@ export async function createVerificationQueue(redisUrl: string): Promise<{
     logger.error("Worker error", { error: err.message });
   });
 
-  const queueEvents = new QueueEvents(QUEUE_NAME, { connection });
+  const queueEvents = new QueueEvents(QUEUE_NAME, { connection: conn });
 
   return { queue, worker, queueEvents };
 }

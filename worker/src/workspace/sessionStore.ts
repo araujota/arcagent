@@ -25,6 +25,8 @@ export interface SessionRecord {
   vsockSocketPath: string;
   tapDevice: string;
   overlayPath: string;
+  /** Guest IP address allocated from the 10.0.0.x pool. */
+  guestIp?: string;
 
   claimId: string;
   bountyId: string;
@@ -98,6 +100,7 @@ function serializeRecord(record: SessionRecord): Record<string, string> {
 
   if (record.readyAt !== undefined) flat.readyAt = String(record.readyAt);
   if (record.defaultSessionId !== undefined) flat.defaultSessionId = record.defaultSessionId;
+  if (record.guestIp !== undefined) flat.guestIp = record.guestIp;
 
   return flat;
 }
@@ -132,6 +135,7 @@ function deserializeRecord(
     firecrackerPid: parseInt(hash.firecrackerPid, 10),
     workerInstanceId: hash.workerInstanceId,
     defaultSessionId: hash.defaultSessionId || undefined,
+    guestIp: hash.guestIp || undefined,
   };
 }
 
@@ -327,6 +331,15 @@ class SessionStore {
       "workerInstanceId",
       newWorkerInstanceId,
     );
+  }
+
+  /**
+   * Ping Redis to verify connectivity. Throws if unreachable.
+   */
+  async ping(): Promise<void> {
+    const redis = this.getRedis();
+    const result = await redis.ping();
+    if (result !== "PONG") throw new Error(`Redis ping returned: ${result}`);
   }
 
   /**

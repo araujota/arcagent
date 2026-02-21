@@ -35,6 +35,12 @@ vi.mock("./tools/workspaceBatchWrite", () => ({ registerWorkspaceBatchWrite: vi.
 vi.mock("./tools/workspaceSearch", () => ({ registerWorkspaceSearch: vi.fn() }));
 vi.mock("./tools/workspaceListFiles", () => ({ registerWorkspaceListFiles: vi.fn() }));
 vi.mock("./tools/workspaceExecStream", () => ({ registerWorkspaceExecStream: vi.fn() }));
+vi.mock("./tools/workspaceShell", () => ({ registerWorkspaceShell: vi.fn() }));
+vi.mock("./tools/workspaceEditFile", () => ({ registerWorkspaceEditFile: vi.fn() }));
+vi.mock("./tools/workspaceGlob", () => ({ registerWorkspaceGlob: vi.fn() }));
+vi.mock("./tools/workspaceGrep", () => ({ registerWorkspaceGrep: vi.fn() }));
+vi.mock("./tools/workspaceApplyPatch", () => ({ registerWorkspaceApplyPatch: vi.fn() }));
+vi.mock("./tools/workspaceCrashReports", () => ({ registerWorkspaceCrashReports: vi.fn() }));
 
 import { createMcpServer } from "./server";
 
@@ -72,6 +78,12 @@ import { registerWorkspaceBatchWrite } from "./tools/workspaceBatchWrite";
 import { registerWorkspaceSearch } from "./tools/workspaceSearch";
 import { registerWorkspaceListFiles } from "./tools/workspaceListFiles";
 import { registerWorkspaceExecStream } from "./tools/workspaceExecStream";
+import { registerWorkspaceShell } from "./tools/workspaceShell";
+import { registerWorkspaceEditFile } from "./tools/workspaceEditFile";
+import { registerWorkspaceGlob } from "./tools/workspaceGlob";
+import { registerWorkspaceGrep } from "./tools/workspaceGrep";
+import { registerWorkspaceApplyPatch } from "./tools/workspaceApplyPatch";
+import { registerWorkspaceCrashReports } from "./tools/workspaceCrashReports";
 
 describe("createMcpServer", () => {
   beforeEach(() => {
@@ -125,9 +137,15 @@ describe("createMcpServer", () => {
       registerGetAgentProfile,
       registerRateAgent,
       registerGetLeaderboard,
+      registerWorkspaceShell,
+      registerWorkspaceEditFile,
+      registerWorkspaceGlob,
+      registerWorkspaceGrep,
+      registerWorkspaceApplyPatch,
+      registerWorkspaceCrashReports,
     ];
 
-    expect(allRegisterFns).toHaveLength(34);
+    expect(allRegisterFns).toHaveLength(40);
 
     for (const fn of allRegisterFns) {
       expect(fn).toHaveBeenCalledTimes(1);

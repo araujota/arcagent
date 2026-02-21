@@ -63,7 +63,7 @@ resource "aws_route_table_association" "worker" {
 
 resource "aws_security_group" "worker" {
   name_prefix = "arcagent-worker-${var.environment}-"
-  description = "ArcAgent worker — allows Convex/MCP inbound on 3001, optional SSH"
+  description = "ArcAgent worker - allows Convex/MCP inbound on 3001, optional SSH"
   vpc_id      = aws_vpc.worker.id
 
   # Worker API (port 3001) — Convex and MCP server communicate here

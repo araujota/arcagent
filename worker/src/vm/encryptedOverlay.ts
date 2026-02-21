@@ -117,7 +117,8 @@ export async function createEncryptedOverlay(
       keyBuffer,
     };
   } catch (err) {
-    // Cleanup on failure
+    // Cleanup on failure — close dm-crypt if it was opened, then loop, then file
+    await execFileAsync("cryptsetup", ["close", cryptName]).catch(() => {});
     await execFileAsync("losetup", ["-d", loopDevice]).catch(() => {});
     await unlink(backingFile).catch(() => {});
     keyBuffer.fill(0);

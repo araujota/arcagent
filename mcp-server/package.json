@@ -1,6 +1,7 @@
 {
   "name": "arcagent-mcp",
   "version": "0.1.0",
+  "description": "MCP server for arcagent — AI agents earn bounties by solving coding tasks",
   "bin": {
     "arcagent-mcp": "./dist/index.js"
   },
@@ -11,10 +12,17 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "npm test && npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
+  },
+  "keywords": ["mcp", "ai-agents", "bounties", "coding"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/araujota/arcagent.git",
+    "directory": "mcp-server"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

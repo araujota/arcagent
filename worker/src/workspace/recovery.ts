@@ -242,12 +242,13 @@ async function recoverSession(
       const handle: VMHandle = {
         vmId,
         jobId: workspaceId,
-        guestIp: "0.0.0.0", // Not needed for destroy
+        // Use real guest IP so releaseGuestIp returns it to the pool
+        guestIp: session.guestIp ?? "0.0.0.0",
         exec: async () => ({ stdout: "", stderr: "", exitCode: 1 }),
       };
 
       // Attach internal metadata that destroyFirecrackerVM needs
-      const internal = handle as Record<string, unknown>;
+      const internal = handle as unknown as Record<string, unknown>;
       internal.__tapDevice = session.tapDevice;
       internal.__overlayPath = session.overlayPath;
       internal.__vsockSocketPath = vsockSocketPath;

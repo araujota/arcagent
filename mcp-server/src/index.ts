@@ -15,9 +15,7 @@ import { randomUUID } from "crypto";
 // Environment validation
 // ---------------------------------------------------------------------------
 
-// IMPORTANT: Update this to your production Convex deployment URL before running
-// `npm publish`. This is the URL that npx users will connect to by default.
-const DEFAULT_CONVEX_URL = "https://bright-rabbit-610.convex.cloud";
+const DEFAULT_CONVEX_URL = "https://acoustic-starfish-282.convex.cloud";
 const CONVEX_URL = process.env.CONVEX_URL || DEFAULT_CONVEX_URL;
 const MCP_SHARED_SECRET = process.env.MCP_SHARED_SECRET;
 const ARCAGENT_API_KEY = process.env.ARCAGENT_API_KEY;

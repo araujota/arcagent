@@ -2,32 +2,7 @@ import { internalAction } from "../_generated/server";
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import { Id } from "../_generated/dataModel";
-
-/**
- * SECURITY (H6): Generate a per-job HMAC token that must be presented
- * when posting verification results. This prevents a compromised worker
- * secret from being used to forge results for arbitrary submissions.
- */
-async function generateJobHmac(
-  verificationId: string,
-  submissionId: string,
-  bountyId: string,
-): Promise<string> {
-  const secret = process.env.WORKER_SHARED_SECRET || process.env.WORKER_API_SECRET || "";
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const data = `${verificationId}:${submissionId}:${bountyId}`;
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(data));
-  return Array.from(new Uint8Array(signature))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
+import { generateJobHmac } from "../lib/hmac";
 
 /**
  * Dispatch a verification job to the worker service.
@@ -129,8 +104,8 @@ export const dispatchVerification = internalAction({
           submissionId: args.submissionId,
           bountyId: args.bountyId,
           jobId,
-          repositoryUrl: submission.repositoryUrl,
-          commitHash: submission.commitHash,
+          repoUrl: submission.repositoryUrl,
+          commitSha: submission.commitHash,
           baseCommitSha: repoConnection?.commitSha,
           testSuites: testSuites.map((ts) => ({
             id: ts._id,
@@ -164,10 +139,10 @@ export const dispatchVerification = internalAction({
       const result = await response.json();
 
       // Update job with worker-assigned ID
-      if (result.workerJobId) {
+      if (result.jobId) {
         await ctx.runMutation(internal.verificationJobs.updateWorkerJobId, {
           jobId,
-          workerJobId: result.workerJobId,
+          workerJobId: result.jobId,
         });
       }
     } catch (error) {
@@ -290,8 +265,8 @@ export const dispatchVerificationFromDiff = internalAction({
           bountyId: args.bountyId,
           jobId,
           // Diff-based fields
-          repositoryUrl: args.baseRepoUrl,
-          commitHash: args.baseCommitSha,
+          repoUrl: args.baseRepoUrl,
+          commitSha: args.baseCommitSha,
           baseCommitSha: args.baseCommitSha,
           diffPatch: args.diffPatch,
           sourceWorkspaceId: args.sourceWorkspaceId,
@@ -325,10 +300,10 @@ export const dispatchVerificationFromDiff = internalAction({
 
       const result = await response.json();
 
-      if (result.workerJobId) {
+      if (result.jobId) {
         await ctx.runMutation(internal.verificationJobs.updateWorkerJobId, {
           jobId,
-          workerJobId: result.workerJobId,
+          workerJobId: result.jobId,
         });
       }
     } catch (error) {

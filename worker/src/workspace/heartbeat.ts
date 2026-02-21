@@ -266,12 +266,14 @@ export class WorkspaceHeartbeat {
       const handle: VMHandle = {
         vmId,
         jobId: workspaceId,
-        guestIp: "0.0.0.0",
+        // Use the real guest IP so releaseGuestIp returns it to the pool.
+        // Falling back to 0.0.0.0 only if session lacks guestIp (shouldn't happen).
+        guestIp: session.guestIp ?? "0.0.0.0",
         exec: async () => ({ stdout: "", stderr: "", exitCode: 1 }),
       };
 
       // Attach internal metadata for destroyFirecrackerVM
-      const internal = handle as Record<string, unknown>;
+      const internal = handle as unknown as Record<string, unknown>;
       internal.__tapDevice = session.tapDevice;
       internal.__overlayPath = session.overlayPath;
       internal.__vsockSocketPath = session.vsockSocketPath;

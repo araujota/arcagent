@@ -68,6 +68,29 @@ resource "aws_iam_role_policy" "worker_ecr" {
   })
 }
 
+# S3 read access for downloading pre-built rootfs images
+resource "aws_iam_role_policy" "worker_s3_rootfs" {
+  name = "arcagent-worker-s3-rootfs-${var.environment}"
+  role = aws_iam_role.worker.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.rootfs.arn,
+          "${aws_s3_bucket.rootfs.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
 resource "aws_iam_instance_profile" "worker" {
   name = "arcagent-worker-${var.environment}"
   role = aws_iam_role.worker.name

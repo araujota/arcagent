@@ -381,3 +381,117 @@ describe("computeOverallStatusZtaco (via processVerificationJob ztacoMode)", () 
     expect(result.overallStatus).toBe("pass");
   });
 });
+
+// ---------------------------------------------------------------------------
+// HMAC passthrough (H6)
+// ---------------------------------------------------------------------------
+
+describe("HMAC passthrough in processVerificationJob", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const vm = mockVM();
+    mockCreateVM.mockResolvedValue(vm);
+    mockDestroyVM.mockResolvedValue(undefined);
+    mockRunGates.mockResolvedValue([PASS_GATE]);
+    mockPostResult.mockResolvedValue(undefined);
+  });
+
+  it("includes jobHmac in result when present in job data", async () => {
+    const job = mockJob({ jobHmac: "hmac_abc123" });
+    const result = await processVerificationJob(job);
+    expect(result.jobHmac).toBe("hmac_abc123");
+  });
+
+  it("omits jobHmac when not in job data", async () => {
+    const job = mockJob(); // no jobHmac
+    const result = await processVerificationJob(job);
+    expect(result.jobHmac).toBeUndefined();
+  });
+
+  it("error result also includes jobHmac when present", async () => {
+    mockCreateVM.mockRejectedValue(new Error("VM failure"));
+    const job = mockJob({ jobHmac: "hmac_for_error" });
+
+    await expect(processVerificationJob(job)).rejects.toThrow("VM failure");
+
+    // The error result is posted to Convex
+    expect(mockPostResult).toHaveBeenCalledWith(
+      "https://test.convex.cloud",
+      expect.objectContaining({
+        jobHmac: "hmac_for_error",
+        overallStatus: "error",
+      }),
+    );
+  });
+});
+
+describe("HMAC passthrough in processVerificationFromDiff", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const vm = mockVM();
+    mockCreateVM.mockResolvedValue(vm);
+    mockDestroyVM.mockResolvedValue(undefined);
+    mockRunGates.mockResolvedValue([PASS_GATE]);
+    mockPostResult.mockResolvedValue(undefined);
+  });
+
+  it("includes jobHmac in result when present", async () => {
+    const vm = mockVM();
+    vm.exec.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    mockCreateVM.mockResolvedValue(vm);
+
+    const job = mockJob({
+      diffPatch: "diff --git a/file.ts b/file.ts\n...",
+      jobHmac: "hmac_diff_123",
+    });
+    const result = await processVerificationFromDiff(job);
+    expect(result.jobHmac).toBe("hmac_diff_123");
+  });
+
+  it("omits jobHmac when not in job data", async () => {
+    const vm = mockVM();
+    vm.exec.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    mockCreateVM.mockResolvedValue(vm);
+
+    const job = mockJob({ diffPatch: "diff --git a/file.ts b/file.ts\n..." });
+    const result = await processVerificationFromDiff(job);
+    expect(result.jobHmac).toBeUndefined();
+  });
+
+  it("patch-apply failure result includes jobHmac when present", async () => {
+    const vm = mockVM();
+    vm.exec.mockImplementation(async (cmd: string) => {
+      if (cmd.includes("git apply")) {
+        return { exitCode: 1, stdout: "", stderr: "patch failed" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    mockCreateVM.mockResolvedValue(vm);
+
+    const job = mockJob({
+      diffPatch: "diff --git a/file.ts b/file.ts\n...",
+      jobHmac: "hmac_patch_fail",
+    });
+    const result = await processVerificationFromDiff(job);
+    expect(result.overallStatus).toBe("fail");
+    expect(result.jobHmac).toBe("hmac_patch_fail");
+  });
+
+  it("error result includes jobHmac when present", async () => {
+    mockCreateVM.mockRejectedValue(new Error("VM boom"));
+    const job = mockJob({
+      diffPatch: "diff --git a/file.ts b/file.ts\n...",
+      jobHmac: "hmac_diff_error",
+    });
+
+    await expect(processVerificationFromDiff(job)).rejects.toThrow("VM boom");
+
+    expect(mockPostResult).toHaveBeenCalledWith(
+      "https://test.convex.cloud",
+      expect.objectContaining({
+        jobHmac: "hmac_diff_error",
+        overallStatus: "error",
+      }),
+    );
+  });
+});

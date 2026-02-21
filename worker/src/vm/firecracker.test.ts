@@ -47,6 +47,13 @@ vi.mock("./vsockChannel", () => ({
   vsockExecWithStdin: mockVsockExecWithStdin,
   vsockWriteFile: mockVsockWriteFile,
   waitForVsock: mockWaitForVsock,
+  sendVsockRequestPooled: vi.fn(),
+  vsockPool: {
+    destroy: vi.fn(),
+    destroyAll: vi.fn(),
+    acquire: vi.fn(),
+    release: vi.fn(),
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -323,9 +330,9 @@ describe("createFirecrackerVM", () => {
     expect(jailerCall!.args).toContain("--id");
     expect(jailerCall!.args).toContain("vm-abcd1234");
     expect(jailerCall!.args).toContain("--uid");
-    expect(jailerCall!.args).toContain("1000");
+    expect(jailerCall!.args).toContain("1001");
     expect(jailerCall!.args).toContain("--gid");
-    expect(jailerCall!.args).toContain("1000");
+    expect(jailerCall!.args).toContain("1001");
   });
 
   it("calls waitForVsock after launch", async () => {

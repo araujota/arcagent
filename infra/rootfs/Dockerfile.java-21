@@ -1,0 +1,31 @@
+# ---------------------------------------------------------------------------
+# ArcAgent Firecracker rootfs — Java 21
+# ---------------------------------------------------------------------------
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+      curl \
+      ca-certificates \
+      git \
+      openssh-server \
+      file \
+      procps \
+      sudo && \
+    apt-get install -y -qq openjdk-21-jdk maven gradle && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -s /bin/bash -u 1001 agent && \
+    mkdir -p /workspace && \
+    chown agent:agent /workspace
+
+RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
+
+COPY guest-agent.sh /usr/local/bin/guest-agent
+RUN chmod 755 /usr/local/bin/guest-agent
+
+COPY guest-agent-init.sh /etc/init.d/guest-agent
+RUN chmod 755 /etc/init.d/guest-agent

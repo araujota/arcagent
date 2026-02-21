@@ -29,6 +29,9 @@ NODE_VERSION="${node_version}"
 HARDEN_EGRESS="${harden_egress}"
 WORKER_CONCURRENCY="${worker_concurrency}"
 WORKSPACE_IDLE_TIMEOUT_MS="${workspace_idle_timeout_ms}"
+ROOTFS_BUCKET="${rootfs_bucket}"
+ROOTFS_VERSION="${rootfs_version}"
+AWS_REGION="${aws_region}"
 
 # Auto-detect public IP via IMDSv2 (EIP isn't known at user-data render time)
 echo ">>> Detecting public IP via IMDSv2..."
@@ -51,12 +54,17 @@ fi
 # ---------------------------------------------------------------------------
 echo ">>> Installing system packages..."
 apt-get update -qq
+# Pre-seed iptables-persistent to avoid interactive prompts
+echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
+
 apt-get install -y -qq \
   build-essential \
   curl \
   git \
   jq \
   iptables \
+  iptables-persistent \
   iproute2 \
   redis-server \
   squid-openssl \
@@ -64,7 +72,9 @@ apt-get install -y -qq \
   cryptsetup \
   file \
   acl \
-  unzip
+  unzip \
+  awscli \
+  zstd
 
 # ---------------------------------------------------------------------------
 # 2. Enable KVM
@@ -94,9 +104,10 @@ PRIMARY_IF=$(ip route show default | awk '/default/ {print $5}' | head -1)
 iptables -t nat -C POSTROUTING -o "$PRIMARY_IF" -s 10.0.0.0/24 -j MASQUERADE 2>/dev/null || \
   iptables -t nat -A POSTROUTING -o "$PRIMARY_IF" -s 10.0.0.0/24 -j MASQUERADE
 
-# Persist iptables rules
+# Persist iptables rules (restored on reboot by iptables-persistent / netfilter-persistent)
 mkdir -p /etc/iptables
 iptables-save > /etc/iptables/rules.v4
+systemctl enable netfilter-persistent 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 4. Install Firecracker + Jailer
@@ -133,9 +144,9 @@ redis-cli ping || { echo "ERROR: Redis not responding"; exit 1; }
 # ---------------------------------------------------------------------------
 echo ">>> Setting up worker user and directories..."
 
-# Create arcagent user (UID 1000 matches jailer expectation)
+# Create arcagent user (no fixed UID — UID 1000 is typically taken by 'ubuntu')
 if ! id -u arcagent &>/dev/null; then
-  useradd -m -s /bin/bash -u 1000 arcagent
+  useradd -m -s /bin/bash arcagent
 fi
 usermod -aG kvm arcagent 2>/dev/null || true
 
@@ -163,20 +174,48 @@ if [ ! -f /opt/arcagent/scripts/install-firecracker.sh ]; then
   echo "  1. Baking a custom AMI with packer"
   echo "  2. Or: scp infra/aws/scripts/* ubuntu@<host>:/opt/arcagent/scripts/"
   echo "  3. Then re-run this script: sudo bash /var/lib/cloud/instance/user-data.txt"
-  echo ""
-  echo "Skipping Firecracker install and rootfs build for now."
-  SKIP_FIRECRACKER=true
-else
-  SKIP_FIRECRACKER=false
 fi
 
 # ---------------------------------------------------------------------------
-# 9. Install Firecracker + build rootfs (if scripts available)
+# 9. Download pre-built rootfs images from S3
 # ---------------------------------------------------------------------------
-if [ "$SKIP_FIRECRACKER" = "false" ]; then
-  echo ">>> Building rootfs images..."
-  bash /opt/arcagent/scripts/build-rootfs.sh
+echo ">>> Downloading pre-built rootfs images from s3://$ROOTFS_BUCKET/$ROOTFS_VERSION/..."
+ROOTFS_IMAGES=(base node-20 python-312 rust-stable go-122 java-21)
+ROOTFS_DOWNLOAD_FAILED=false
+
+for img in "$${ROOTFS_IMAGES[@]}"; do
+  dest="/var/lib/firecracker/rootfs/$${img}.ext4"
+  if [ -f "$dest" ]; then
+    echo "  $${img}.ext4 already exists — skipping"
+    continue
+  fi
+
+  echo "  Downloading $${img}.ext4.zst..."
+  if aws s3 cp "s3://$ROOTFS_BUCKET/$ROOTFS_VERSION/$${img}.ext4.zst" "/tmp/$${img}.ext4.zst" \
+       --region "$AWS_REGION" --quiet; then
+    echo "  Decompressing $${img}.ext4.zst..."
+    zstd -d --rm "/tmp/$${img}.ext4.zst" -o "$dest"
+    chown arcagent:arcagent "$dest"
+    echo "  Done: $${img}.ext4 ($(du -h "$dest" | cut -f1))"
+  else
+    echo "  WARNING: Failed to download $${img}.ext4.zst from S3"
+    ROOTFS_DOWNLOAD_FAILED=true
+  fi
+done
+
+if [ "$ROOTFS_DOWNLOAD_FAILED" = "true" ]; then
+  echo "WARNING: Some rootfs images failed to download."
+  echo "Falling back to local build if build-rootfs.sh is available..."
+  if [ -f /opt/arcagent/scripts/build-rootfs.sh ]; then
+    bash /opt/arcagent/scripts/build-rootfs.sh
+  else
+    echo "ERROR: No rootfs images available and no build script found."
+    echo "Upload images to S3 first: bash infra/rootfs/build-and-upload.sh $ROOTFS_BUCKET $ROOTFS_VERSION"
+  fi
 fi
+
+echo "Rootfs images in /var/lib/firecracker/rootfs/:"
+ls -lh /var/lib/firecracker/rootfs/ 2>/dev/null || echo "  (empty)"
 
 # ---------------------------------------------------------------------------
 # 10. Download vmlinux kernel
@@ -184,18 +223,19 @@ fi
 echo ">>> Downloading Firecracker kernel..."
 KERNEL_PATH="/var/lib/firecracker/vmlinux"
 if [ ! -f "$KERNEL_PATH" ]; then
-  KERNEL_URL="https://github.com/firecracker-microvm/firecracker/releases/download/v$FIRECRACKER_VERSION/vmlinux-5.10-x86_64.bin"
+  # Kernels are hosted in the Firecracker CI S3 bucket, not in GitHub releases.
+  # Use the major.minor version to find the right CI prefix (e.g. 1.10.1 → v1.10).
+  FC_MAJOR_MINOR=$(echo "$FIRECRACKER_VERSION" | cut -d. -f1,2)
+  KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v$${FC_MAJOR_MINOR}/x86_64/vmlinux-6.1.102"
+  echo "  Kernel URL: $KERNEL_URL"
   curl -fsSL -o "$KERNEL_PATH" "$KERNEL_URL" || {
-    # Fallback: try the generic kernel from the release assets
-    echo "Direct kernel download failed, trying release assets..."
-    FC_RELEASE="https://github.com/firecracker-microvm/firecracker/releases/download/v$FIRECRACKER_VERSION"
-    curl -fsSL -o /tmp/fc-kernel.tar.gz "$FC_RELEASE/firecracker-v$FIRECRACKER_VERSION-x86_64.tgz"
-    tar -xzf /tmp/fc-kernel.tar.gz -C /tmp
-    cp /tmp/release-v*/vmlinux* "$KERNEL_PATH" 2>/dev/null || \
-      echo "WARNING: Could not find vmlinux in release archive. You may need to provide it manually."
-    rm -rf /tmp/fc-kernel.tar.gz /tmp/release-v*
+    echo "WARNING: Could not download kernel from CI bucket. Trying 5.10 series..."
+    curl -fsSL -o "$KERNEL_PATH" \
+      "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v$${FC_MAJOR_MINOR}/x86_64/vmlinux-5.10.223" || {
+      echo "ERROR: Failed to download vmlinux kernel. Provide it manually at $KERNEL_PATH"
+    }
   }
-  chown arcagent:arcagent "$KERNEL_PATH"
+  [ -f "$KERNEL_PATH" ] && chown arcagent:arcagent "$KERNEL_PATH"
 fi
 
 # ---------------------------------------------------------------------------
@@ -253,6 +293,8 @@ FIRECRACKER_BIN=/usr/local/bin/firecracker
 JAILER_BIN=/usr/local/bin/jailer
 FC_KERNEL_IMAGE=/var/lib/firecracker/vmlinux
 FC_ROOTFS_DIR=/var/lib/firecracker/rootfs
+FC_JAILER_UID=$(id -u arcagent)
+FC_JAILER_GID=$(id -g arcagent)
 
 # -------------------------------------------------------
 # Runtime
