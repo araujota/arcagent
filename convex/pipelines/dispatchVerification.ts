@@ -21,7 +21,7 @@ export const dispatchVerification = internalAction({
 
       if (!workerUrl || !workerSecret) {
         throw new Error(
-          "WORKER_API_URL and WORKER_SHARED_SECRET must be configured"
+          "WORKER_API_URL and WORKER_SHARED_SECRET must be configured (WORKER_API_SECRET supported as fallback)"
         );
       }
 
@@ -190,7 +190,7 @@ export const dispatchVerificationFromDiff = internalAction({
 
       if (!workerUrl || !workerSecret) {
         throw new Error(
-          "WORKER_API_URL and WORKER_SHARED_SECRET must be configured",
+          "WORKER_API_URL and WORKER_SHARED_SECRET must be configured (WORKER_API_SECRET supported as fallback)",
         );
       }
 

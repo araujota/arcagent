@@ -314,6 +314,15 @@ function mcpJson(data: unknown, status = 200): Response {
   });
 }
 
+async function isBountyCreator(
+  ctx: { runQuery: Function },
+  userId: string,
+  bountyId: Id<"bounties">,
+): Promise<boolean> {
+  const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, { bountyId });
+  return !!bounty && bounty.creatorId === userId;
+}
+
 // --- Auth: Validate API key ---
 // Supports two paths:
 // 1. Shared secret + keyHash in body (existing self-hosted mode)
@@ -553,7 +562,7 @@ http.route({
         paymentMethod,
         deadline,
         tags,
-        status: "active",
+        status: "draft",
         tosAccepted,
         tosAcceptedAt,
         tosVersion,
@@ -589,7 +598,15 @@ http.route({
         );
       }
 
-      return mcpJson({ bountyId, repoConnectionId, conversationId });
+      return mcpJson({
+        bountyId,
+        repoConnectionId,
+        conversationId,
+        status: "draft",
+        nextStep: paymentMethod === "stripe"
+          ? "Fund escrow, then publish bounty."
+          : "Publish bounty when ready.",
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create bounty";
       return mcpError(message);
@@ -867,11 +884,12 @@ http.route({
     if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { claimId, featureBranchName, featureBranchRepo } =
+    const { claimId, featureBranchName, featureBranchRepo, agentId: bodyAgentId } =
       body as {
         claimId: string;
         featureBranchName: string;
         featureBranchRepo: string;
+        agentId?: string;
       };
 
     if (!claimId || !featureBranchName || !featureBranchRepo) {
@@ -879,6 +897,20 @@ http.route({
     }
 
     try {
+      if (auth.authMethod === "api_key") {
+        const claim = await ctx.runQuery(internal.bountyClaims.getByIdInternal, {
+          claimId: claimId as Id<"bountyClaims">,
+        });
+        if (!claim) return mcpError("Claim not found", 404);
+        if (claim.agentId !== auth.userId) return mcpError("Forbidden", 403);
+      } else if (bodyAgentId) {
+        const claim = await ctx.runQuery(internal.bountyClaims.getByIdInternal, {
+          claimId: claimId as Id<"bountyClaims">,
+        });
+        if (!claim) return mcpError("Claim not found", 404);
+        if (claim.agentId !== (bodyAgentId as Id<"users">)) return mcpError("Forbidden", 403);
+      }
+
       await ctx.runMutation(internal.bountyClaims.updateBranchInfo, {
         claimId: claimId as Id<"bountyClaims">,
         featureBranchName,
@@ -1006,9 +1038,15 @@ http.route({
     }
 
     let vId: Id<"verifications"> | undefined;
+    let resolvedSubmissionId: Id<"submissions"> | undefined;
 
     if (verificationId) {
       vId = verificationId as Id<"verifications">;
+      const verification = await ctx.runQuery(internal.verifications.getByIdInternal, {
+        verificationId: vId,
+      });
+      if (!verification) return mcpError("Verification not found", 404);
+      resolvedSubmissionId = verification.submissionId;
     } else if (submissionId) {
       const verification = await ctx.runQuery(
         internal.verifications.getBySubmissionInternal,
@@ -1016,9 +1054,27 @@ http.route({
       );
       if (!verification) return mcpError("Verification not found", 404);
       vId = verification._id;
+      resolvedSubmissionId = verification.submissionId;
     }
 
     if (!vId) return mcpError("Verification not found", 404);
+    if (!resolvedSubmissionId) return mcpError("Verification not found", 404);
+
+    if (auth.authMethod === "api_key") {
+      const submission = await ctx.runQuery(internal.submissions.getByIdInternal, {
+        submissionId: resolvedSubmissionId,
+      });
+      if (!submission) return mcpError("Verification not found", 404);
+
+      const userId = auth.userId as string;
+      const allowedAsAgent = submission.agentId === userId;
+      const allowedAsCreator = await isBountyCreator(
+        ctx,
+        userId,
+        submission.bountyId,
+      );
+      if (!allowedAsAgent && !allowedAsCreator) return mcpError("Forbidden", 403);
+    }
 
     // Use getAgentStatus to filter hidden test details for agent-facing consumers
     const result = await ctx.runQuery(internal.verifications.getAgentStatus, {
@@ -1043,6 +1099,19 @@ http.route({
     if (!bountyId) return mcpError("Missing bountyId");
 
     const typedBountyId = bountyId as Id<"bounties">;
+    if (auth.authMethod === "api_key") {
+      const userId = auth.userId as string;
+      const creatorAccess = await isBountyCreator(ctx, userId, typedBountyId);
+      let solverAccess = false;
+      if (!creatorAccess) {
+        const submissions = await ctx.runQuery(internal.submissions.listByAgentId, {
+          agentId: userId as Id<"users">,
+          bountyId: typedBountyId,
+        });
+        solverAccess = submissions.length > 0;
+      }
+      if (!creatorAccess && !solverAccess) return mcpError("Forbidden", 403);
+    }
 
     // Get the latest verification for this bounty (most recent first)
     const latestVerification = await ctx.runQuery(
@@ -1430,6 +1499,12 @@ http.route({
         workspaceId,
       });
       if (!ws) return mcpError("Workspace not found", 404);
+      if (ws.agentId !== (agentId as Id<"users">)) {
+        return mcpError("Forbidden: workspace does not belong to agent", 403);
+      }
+      if (ws.bountyId !== (bountyId as Id<"bounties">)) {
+        return mcpError("Forbidden: workspace bounty mismatch", 403);
+      }
 
       // Create submission with workspace metadata
       const submissionId = await ctx.runMutation(
@@ -1506,12 +1581,16 @@ http.route({
     if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { notificationIds } = body as { notificationIds: string[] };
+    const { notificationIds, userId: bodyUserId } = body as { notificationIds: string[]; userId?: string };
     if (!notificationIds || !Array.isArray(notificationIds)) {
       return mcpError("Missing notificationIds array");
     }
 
-    await ctx.runMutation(internal.notifications.markRead, {
+    const userId = auth.authMethod === "api_key" ? auth.userId! : bodyUserId;
+    if (!userId) return mcpError("Missing userId");
+
+    await ctx.runMutation(internal.notifications.markReadForUser, {
+      userId: userId as Id<"users">,
       notificationIds: notificationIds as Id<"notifications">[],
     });
 
@@ -1729,10 +1808,33 @@ http.route({
     const { bountyId } = body as { bountyId: string };
     if (!bountyId) return mcpError("Missing bountyId");
 
-    const reports = await ctx.runQuery(
-      internal.workspaceCrashReports.getCrashReports,
-      { bountyId: bountyId as Id<"bounties"> }
-    );
+    const typedBountyId = bountyId as Id<"bounties">;
+    let reports;
+    if (auth.authMethod === "api_key") {
+      const userId = auth.userId as string;
+      const creatorAccess = await isBountyCreator(ctx, userId, typedBountyId);
+      if (creatorAccess) {
+        reports = await ctx.runQuery(
+          internal.workspaceCrashReports.getCrashReports,
+          { bountyId: typedBountyId }
+        );
+      } else {
+        const claim = await ctx.runQuery(internal.bountyClaims.getByAgentAndBountyAnyStatus, {
+          agentId: userId as Id<"users">,
+          bountyId: typedBountyId,
+        });
+        if (!claim) return mcpError("Forbidden", 403);
+        reports = await ctx.runQuery(
+          internal.workspaceCrashReports.getCrashReportsForBountyAndAgent,
+          { bountyId: typedBountyId, agentId: userId as Id<"users"> }
+        );
+      }
+    } else {
+      reports = await ctx.runQuery(
+        internal.workspaceCrashReports.getCrashReports,
+        { bountyId: typedBountyId }
+      );
+    }
 
     return mcpJson({ reports });
   }),

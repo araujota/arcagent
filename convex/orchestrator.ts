@@ -469,77 +469,105 @@ export const runAutonomousGeneration = internalAction({
         existingTestExemplars,
       });
 
-      // 8. Validate tests + 1-retry regeneration loop
-      const updatedTestForValidation = await ctx.runQuery(
-        internal.generatedTests.getByConversationIdInternal,
-        { conversationId: args.conversationId }
-      );
+      // 8. Validate tests and allow one regeneration attempt.
+      let validationPassed = false;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const testForValidation = await ctx.runQuery(
+          internal.generatedTests.getByConversationIdInternal,
+          { conversationId: args.conversationId }
+        );
+        if (!testForValidation) {
+          throw new Error("Generated test record missing before validation");
+        }
+        generatedTest = testForValidation;
 
-      if (updatedTestForValidation) {
         const validationResult = await ctx.runAction(
           internal.pipelines.validateTests.validateTests,
           {
             bountyId: args.bountyId,
             conversationId: args.conversationId,
             generatedTestId: generatedTest._id,
-            gherkinPublic: updatedTestForValidation.gherkinPublic,
-            gherkinHidden: updatedTestForValidation.gherkinHidden,
-            stepDefinitions: updatedTestForValidation.stepDefinitions || "",
+            gherkinPublic: generatedTest.gherkinPublic,
+            gherkinHidden: generatedTest.gherkinHidden,
+            stepDefinitions: generatedTest.stepDefinitions || "",
             extractedCriteria,
           }
         );
 
-        // If validation indicates regeneration is needed, retry once
-        if (validationResult.needsRegeneration) {
-          console.log("[autonomous] Validation flagged gaps — retrying BDD generation");
+        if (!validationResult.needsRegeneration && validationResult.valid) {
+          validationPassed = true;
+          break;
+        }
 
-          const gapDescription = [
-            ...(validationResult.uncoveredCriteria || []).map(
+        if (attempt === 2) {
+          const issueSummary = [
+            ...(validationResult.issues ?? []),
+            ...(validationResult.uncoveredCriteria ?? []).map(
               (c: string) => `Uncovered criterion: ${c}`
             ),
-            ...(validationResult.parsedReview?.missingScenarios || []).map(
+            ...(validationResult.parsedReview?.missingScenarios ?? []).map(
               (s: string) => `Missing scenario: ${s}`
             ),
-          ].join("\n");
-
-          const supplementaryPrompt = gapDescription
-            ? `\n\nThe previous generation had coverage gaps. Please also cover:\n${gapDescription}`
-            : "";
-
-          // Re-generate BDD with gap info appended to description
-          await ctx.runAction(internal.pipelines.generateBDD.generateBDD, {
-            bountyId: args.bountyId,
-            conversationId: args.conversationId,
-            description: bounty.description + supplementaryPrompt,
-            repoContext,
-            existingGherkin,
-            existingFeatureExemplars,
-            extractedCriteria,
-          });
-
-          // Re-fetch and re-generate TDD
-          const retryTest = await ctx.runQuery(
-            internal.generatedTests.getByConversationIdInternal,
-            { conversationId: args.conversationId }
+          ]
+            .filter(Boolean)
+            .slice(0, 10)
+            .join("; ");
+          throw new Error(
+            `Generated tests failed quality gates after retry${issueSummary ? `: ${issueSummary}` : ""}`
           );
-          if (retryTest) {
-            generatedTest = retryTest;
-            await ctx.runMutation(internal.generatedTests.updateStatus, {
-              generatedTestId: retryTest._id,
-              status: "approved",
-            });
-            await ctx.runAction(internal.pipelines.generateTDD.generateTDD, {
-              bountyId: args.bountyId,
-              conversationId: args.conversationId,
-              generatedTestId: retryTest._id,
-              gherkinPublic: retryTest.gherkinPublic,
-              gherkinHidden: retryTest.gherkinHidden,
-              repoContext: conversation?.repoContextSnapshot || undefined,
-              primaryLanguage,
-              existingTestExemplars,
-            });
-          }
         }
+
+        console.log("[autonomous] Validation flagged gaps — retrying BDD/TDD generation");
+        const gapDescription = [
+          ...(validationResult.uncoveredCriteria || []).map(
+            (c: string) => `Uncovered criterion: ${c}`
+          ),
+          ...(validationResult.parsedReview?.missingScenarios || []).map(
+            (s: string) => `Missing scenario: ${s}`
+          ),
+          ...(validationResult.issues || []).map((i: string) => `Validation issue: ${i}`),
+        ].join("\n");
+
+        const supplementaryPrompt = gapDescription
+          ? `\n\nThe previous generation had quality gaps. Please also cover:\n${gapDescription}`
+          : "";
+
+        await ctx.runAction(internal.pipelines.generateBDD.generateBDD, {
+          bountyId: args.bountyId,
+          conversationId: args.conversationId,
+          description: bounty.description + supplementaryPrompt,
+          repoContext,
+          existingGherkin,
+          existingFeatureExemplars,
+          extractedCriteria,
+        });
+
+        const retryTest = await ctx.runQuery(
+          internal.generatedTests.getByConversationIdInternal,
+          { conversationId: args.conversationId }
+        );
+        if (!retryTest) {
+          throw new Error("Generated test record missing after regeneration");
+        }
+        generatedTest = retryTest;
+        await ctx.runMutation(internal.generatedTests.updateStatus, {
+          generatedTestId: retryTest._id,
+          status: "approved",
+        });
+        await ctx.runAction(internal.pipelines.generateTDD.generateTDD, {
+          bountyId: args.bountyId,
+          conversationId: args.conversationId,
+          generatedTestId: retryTest._id,
+          gherkinPublic: retryTest.gherkinPublic,
+          gherkinHidden: retryTest.gherkinHidden,
+          repoContext: conversation?.repoContextSnapshot || undefined,
+          primaryLanguage,
+          existingTestExemplars,
+        });
+      }
+
+      if (!validationPassed) {
+        throw new Error("Generated tests did not pass quality gates");
       }
 
       // 9. Mark as published

@@ -129,6 +129,22 @@ export const getCrashReports = internalQuery({
   },
 });
 
+export const getCrashReportsForBountyAndAgent = internalQuery({
+  args: {
+    bountyId: v.id("bounties"),
+    agentId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const reports = await ctx.db
+      .query("workspaceCrashReports")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .order("desc")
+      .collect();
+
+    return reports.filter((r) => r.agentId === args.agentId).slice(0, 20);
+  },
+});
+
 /**
  * Get crash reports for a specific workspace.
  *

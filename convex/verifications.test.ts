@@ -131,6 +131,78 @@ describe("timeoutStale", () => {
   });
 });
 
+describe("worker configuration fail-closed", () => {
+  it("runVerification fails verification/submission when worker URL is missing", async () => {
+    const t = convexTest(schema);
+    const { verificationId, submissionId, bountyId } = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "pending" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "pending",
+        timeoutSeconds: 600,
+      });
+      return { verificationId, submissionId, bountyId };
+    });
+
+    const originalWorkerUrl = process.env.WORKER_API_URL;
+    delete process.env.WORKER_API_URL;
+    try {
+      await t.action(internal.verifications.runVerification, {
+        verificationId,
+        submissionId,
+        bountyId,
+      });
+    } finally {
+      process.env.WORKER_API_URL = originalWorkerUrl;
+    }
+
+    const verification = await t.run(async (ctx) => ctx.db.get(verificationId));
+    const submission = await t.run(async (ctx) => ctx.db.get(submissionId));
+    expect(verification?.status).toBe("failed");
+    expect(verification?.errorLog).toContain("WORKER_API_URL");
+    expect(submission?.status).toBe("failed");
+  });
+
+  it("runVerificationFromDiff fails verification/submission when worker URL is missing", async () => {
+    const t = convexTest(schema);
+    const { verificationId, submissionId, bountyId } = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "pending" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "pending",
+        timeoutSeconds: 600,
+      });
+      return { verificationId, submissionId, bountyId };
+    });
+
+    const originalWorkerUrl = process.env.WORKER_API_URL;
+    delete process.env.WORKER_API_URL;
+    try {
+      await t.action(internal.verifications.runVerificationFromDiff, {
+        verificationId,
+        submissionId,
+        bountyId,
+        baseRepoUrl: "https://github.com/acme/repo",
+        baseCommitSha: "a".repeat(40),
+        diffPatch: "diff --git a/file.ts b/file.ts\n",
+        sourceWorkspaceId: "ws_test_123",
+      });
+    } finally {
+      process.env.WORKER_API_URL = originalWorkerUrl;
+    }
+
+    const verification = await t.run(async (ctx) => ctx.db.get(verificationId));
+    const submission = await t.run(async (ctx) => ctx.db.get(submissionId));
+    expect(verification?.status).toBe("failed");
+    expect(verification?.errorLog).toContain("WORKER_API_URL");
+    expect(submission?.status).toBe("failed");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // triggerPayoutOnVerificationPass guards
 // ---------------------------------------------------------------------------

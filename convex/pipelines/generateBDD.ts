@@ -164,6 +164,37 @@ export function parseBDDResponse(response: string): {
   }
 }
 
+export interface BddQualitySnapshot {
+  publicScenarioCount: number;
+  hiddenScenarioCount: number;
+  publicValid: boolean;
+  hiddenValid: boolean;
+  qualityIssues: string[];
+}
+
+export function assessBddQuality(gherkinPublic: string, gherkinHidden: string): BddQualitySnapshot {
+  const publicValidation = validateGherkin(gherkinPublic);
+  const hiddenValidation = validateGherkin(gherkinHidden);
+  const qualityIssues: string[] = [];
+
+  if (!publicValidation.valid) qualityIssues.push("Public Gherkin syntax is invalid");
+  if (!hiddenValidation.valid) qualityIssues.push("Hidden Gherkin syntax is invalid");
+  if (publicValidation.stats.scenarios < 8) {
+    qualityIssues.push(`Public Gherkin has ${publicValidation.stats.scenarios} scenarios (need at least 8)`);
+  }
+  if (hiddenValidation.stats.scenarios < 8) {
+    qualityIssues.push(`Hidden Gherkin has ${hiddenValidation.stats.scenarios} scenarios (need at least 8)`);
+  }
+
+  return {
+    publicScenarioCount: publicValidation.stats.scenarios,
+    hiddenScenarioCount: hiddenValidation.stats.scenarios,
+    publicValid: publicValidation.valid,
+    hiddenValid: hiddenValidation.valid,
+    qualityIssues,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Convex internalAction handler (thin wrapper)
 // ---------------------------------------------------------------------------
@@ -257,6 +288,7 @@ export const generateBDD = internalAction({
       // Validate both Gherkin files
       const publicValidation = validateGherkin(gherkinPublic);
       const hiddenValidation = validateGherkin(gherkinHidden);
+      const quality = assessBddQuality(gherkinPublic, gherkinHidden);
 
       if (!publicValidation.valid) {
         console.warn(
@@ -282,6 +314,9 @@ export const generateBDD = internalAction({
           `Hidden Gherkin has only ${hiddenValidation.stats.scenarios} scenarios (target: 8+)`
         );
       }
+      if (quality.qualityIssues.length > 0) {
+        console.warn("BDD quality issues:", quality.qualityIssues);
+      }
 
       // Store as conversation message
       await ctx.runMutation(internal.conversations.addMessage, {
@@ -300,8 +335,13 @@ export const generateBDD = internalAction({
             valid: hiddenValidation.valid,
             stats: hiddenValidation.stats,
           },
+          quality,
         }),
       });
+
+      if (quality.qualityIssues.length > 0) {
+        throw new Error(`BDD quality gate failed: ${quality.qualityIssues.join("; ")}`);
+      }
 
       // Store generated tests — upsert to avoid orphan records on retry
       const existing = await ctx.runQuery(
