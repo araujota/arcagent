@@ -95,7 +95,7 @@ export interface BlobContent {
  */
 export function parseGitHubUrl(url: string): ParsedGitHubUrl {
   // Clean up the URL
-  let cleaned = url.trim().replace(/\.git$/, "").replace(/\/$/, "");
+  const cleaned = url.trim().replace(/\.git$/, "").replace(/\/$/, "");
 
   // Handle SSH format: git@github.com:owner/repo
   const sshMatch = cleaned.match(/^git@github\.com:([^/]+)\/(.+)$/);

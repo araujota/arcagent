@@ -140,7 +140,7 @@ describe.skipIf(process.env.RUN_HEAVY_E2E !== "1")(
     let composeFile = "";
     let composeProject = "";
     let redisContainerName = "";
-    let originalPath = process.env.PATH ?? "";
+    const originalPath = process.env.PATH ?? "";
 
     let workerServer: Server;
     let convexServer: Server;

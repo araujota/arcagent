@@ -6,6 +6,7 @@ import { AppSidebar } from "@/components/layout/app-sidebar";
 import { Header } from "@/components/layout/header";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCurrentUser } from "@/hooks/use-current-user";
+import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 
@@ -49,9 +50,9 @@ function UnauthenticatedState() {
         <p className="text-muted-foreground mb-4">
           Please sign in to access the dashboard.
         </p>
-        <a href="/sign-in" className="text-primary underline">
+        <Link href="/sign-in" className="text-primary underline">
           Go to sign in
-        </a>
+        </Link>
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { Clock, DollarSign, User } from "lucide-react";
 import {
   Card,
@@ -16,9 +17,15 @@ import { BountyWithCreator } from "@/lib/types";
 import type { TierLevel } from "@/lib/constants/tiers";
 
 export function BountyCard({ bounty }: { bounty: BountyWithCreator }) {
-  const hasDeadline = bounty.deadline && bounty.deadline > Date.now();
+  const [nowMs, setNowMs] = useState<number | null>(null);
+
+  useEffect(() => {
+    setNowMs(Date.now());
+  }, []);
+
+  const hasDeadline = nowMs !== null && bounty.deadline && bounty.deadline > nowMs;
   const daysLeft = hasDeadline
-    ? Math.ceil((bounty.deadline! - Date.now()) / (1000 * 60 * 60 * 24))
+    ? Math.ceil((bounty.deadline! - nowMs) / (1000 * 60 * 60 * 24))
     : null;
 
   return (

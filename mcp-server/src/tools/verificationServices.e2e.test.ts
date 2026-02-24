@@ -62,7 +62,7 @@ async function startHttpServer(app: express.Express): Promise<{ server: Server; 
 
 describe("e2e: redis + sonar/snyk gates + mcp result relay", () => {
   let redisContainerName = "";
-  let redisPort = 16379;
+  const redisPort = 16379;
   let workerServer: Server;
   let convexServer: Server;
   let sonarServer: Server;
@@ -72,7 +72,7 @@ describe("e2e: redis + sonar/snyk gates + mcp result relay", () => {
   let gitRepoDir = "";
   let binDir = "";
   let tempRoot = "";
-  let originalPath = process.env.PATH ?? "";
+  const originalPath = process.env.PATH ?? "";
   let queue: Awaited<ReturnType<typeof import("../../../worker/src/queue/jobQueue").createVerificationQueue>>["queue"];
   let worker: Awaited<ReturnType<typeof import("../../../worker/src/queue/jobQueue").createVerificationQueue>>["worker"];
   let queueEvents: Awaited<ReturnType<typeof import("../../../worker/src/queue/jobQueue").createVerificationQueue>>["queueEvents"];

@@ -181,7 +181,7 @@ export default function SettingsPage() {
             <div className="space-y-0.5">
               <Label htmlFor="technical-mode">Technical User Mode</Label>
               <p className="text-xs text-muted-foreground">
-                When enabled, you'll see full code previews and direct editing
+                When enabled, you&apos;ll see full code previews and direct editing
                 capabilities during test generation. Disable for a simplified,
                 summary-based review experience.
               </p>

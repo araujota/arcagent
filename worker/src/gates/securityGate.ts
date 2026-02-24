@@ -37,7 +37,7 @@ export async function runSecurityGate(
   const durationMs = Date.now() - start;
 
   // Post-hoc filter findings if diff context is available
-  let trivyFindings = trivyResult.findings;
+  const trivyFindings = trivyResult.findings;
   let semgrepFindings = semgrepResult.findings;
   let langSastFindings = langSastResult.findings;
 
@@ -410,7 +410,7 @@ function parseLanguageSastOutput(language: string, output: string): ScanSummary 
     case "ruby": {
       const parsed = parseJsonSafe<BrakemanOutput>(output);
       if (!parsed?.warnings) return { totalFindings: 0, criticalCount: 0, highCount: 0, findings: [] };
-      let criticalCount = 0;
+      const criticalCount = 0;
       let highCount = 0;
       const findings: LanguageSastFinding[] = [];
       for (const w of parsed.warnings) {
@@ -429,7 +429,7 @@ function parseLanguageSastOutput(language: string, output: string): ScanSummary 
     case "rust": {
       const parsed = parseJsonSafe<CargoAuditOutput>(output);
       if (!parsed?.vulnerabilities?.list) return { totalFindings: 0, criticalCount: 0, highCount: 0, findings: [] };
-      let criticalCount = 0;
+      const criticalCount = 0;
       let highCount = 0;
       const findings: LanguageSastFinding[] = [];
       for (const v of parsed.vulnerabilities.list) {
@@ -448,7 +448,7 @@ function parseLanguageSastOutput(language: string, output: string): ScanSummary 
     case "cpp": {
       const parsed = parseJsonSafe<FlawfinderFinding[]>(output);
       if (!parsed) return { totalFindings: 0, criticalCount: 0, highCount: 0, findings: [] };
-      let criticalCount = 0;
+      const criticalCount = 0;
       let highCount = 0;
       const findings: LanguageSastFinding[] = [];
       for (const f of parsed) {

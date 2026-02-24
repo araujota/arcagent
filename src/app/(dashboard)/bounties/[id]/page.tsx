@@ -39,7 +39,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   DropdownMenu,
@@ -346,6 +346,7 @@ export default function BountyDetailPage() {
   const params = useParams();
   const bountyId = params.id as Id<"bounties">;
   const { user } = useCurrentUser();
+  const [nowMs, setNowMs] = useState<number | null>(null);
 
   const bounty = useQuery(api.bounties.getById, { bountyId });
   const testSuites = useQuery(api.testSuites.listByBounty, { bountyId });
@@ -353,6 +354,10 @@ export default function BountyDetailPage() {
   const repoConnection = useQuery(api.repoConnections.getByBountyId, { bountyId });
   const repoMap = useQuery(api.repoMaps.getByBountyId, { bountyId });
   const existingRating = useQuery(api.agentRatings.getByBounty, { bountyId });
+
+  useEffect(() => {
+    setNowMs(Date.now());
+  }, []);
 
   if (bounty === undefined) {
     return (
@@ -376,9 +381,9 @@ export default function BountyDetailPage() {
     );
   }
 
-  const hasDeadline = bounty.deadline && bounty.deadline > Date.now();
+  const hasDeadline = nowMs !== null && bounty.deadline && bounty.deadline > nowMs;
   const daysLeft = hasDeadline
-    ? Math.ceil((bounty.deadline! - Date.now()) / (1000 * 60 * 60 * 24))
+    ? Math.ceil((bounty.deadline! - nowMs) / (1000 * 60 * 60 * 24))
     : null;
 
   const publicTests = testSuites?.filter((s) => s.visibility === "public");
