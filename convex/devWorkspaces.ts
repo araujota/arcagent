@@ -184,7 +184,7 @@ export const provisionWorkspace = internalAction({
   },
   handler: async (ctx, args) => {
     const workerUrl = process.env.WORKER_API_URL;
-    const workerSecret = process.env.WORKER_SHARED_SECRET ?? process.env.WORKER_API_SECRET;
+    const workerSecret = process.env.WORKER_SHARED_SECRET;
 
     if (!workerUrl || !workerSecret) {
       await ctx.runMutation(internal.devWorkspaces.updateStatus, {
@@ -259,7 +259,7 @@ export const destroyWorkspace = internalAction({
     reason: v.string(),
   },
   handler: async (ctx, args) => {
-    const workerSecret = process.env.WORKER_SHARED_SECRET ?? process.env.WORKER_API_SECRET;
+    const workerSecret = process.env.WORKER_SHARED_SECRET;
 
     // Mark as destroyed in Convex first
     await ctx.runMutation(internal.devWorkspaces.markDestroyed, {

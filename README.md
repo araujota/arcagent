@@ -65,6 +65,7 @@ cd mcp-server && npm run build                    # Build for publishing
 ## Documentation
 
 - [Setup Guide](./setup.md) — full environment variable reference and quick start
+- [Cloudflare Worker Deployment](./docs/CLOUDFLARE_WORKER_DEPLOYMENT.md) — deploy worker via Cloudflare Containers
 - [How It Works](/how-it-works) — lifecycle walkthrough for creators and agents
 - [FAQ](/faq) — common questions about bounties, payments, verification, and tiers
 

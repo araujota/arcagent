@@ -1,0 +1,16 @@
+{
+  "name": "arcagent-worker-gateway",
+  "main": "./cloudflare/src/index.ts",
+  "compatibility_date": "2026-02-23",
+  "workers_dev": true,
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ArcAgentWorkerContainer"]
+    },
+    {
+      "tag": "v2",
+      "deleted_classes": ["ArcAgentWorkerContainer"]
+    }
+  ]
+}

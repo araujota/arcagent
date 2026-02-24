@@ -1,8 +1,7 @@
 import { constantTimeEqual } from "./constantTimeEqual";
 
 function getWorkerHmacSecret(): string {
-  // Backward-compatible fallback while deployments migrate to WORKER_SHARED_SECRET.
-  const secret = process.env.WORKER_SHARED_SECRET ?? process.env.WORKER_API_SECRET ?? "";
+  const secret = process.env.WORKER_SHARED_SECRET ?? "";
   if (!secret) {
     throw new Error("WORKER_SHARED_SECRET must be configured");
   }

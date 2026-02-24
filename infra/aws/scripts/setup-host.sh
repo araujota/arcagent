@@ -31,7 +31,9 @@ WORKER_CONCURRENCY="${worker_concurrency}"
 WORKSPACE_IDLE_TIMEOUT_MS="${workspace_idle_timeout_ms}"
 ROOTFS_BUCKET="${rootfs_bucket}"
 ROOTFS_VERSION="${rootfs_version}"
+ROOTFS_UPLOAD_ON_BOOT="${rootfs_upload_on_boot}"
 AWS_REGION="${aws_region}"
+WORKER_ARTIFACT_S3_KEY="${worker_artifact_s3_key}"
 
 # Auto-detect public IP via IMDSv2 (EIP isn't known at user-data render time)
 echo ">>> Detecting public IP via IMDSv2..."
@@ -74,7 +76,8 @@ apt-get install -y -qq \
   acl \
   unzip \
   awscli \
-  zstd
+  zstd \
+  debootstrap
 
 # ---------------------------------------------------------------------------
 # 2. Enable KVM
@@ -110,14 +113,9 @@ iptables-save > /etc/iptables/rules.v4
 systemctl enable netfilter-persistent 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# 4. Install Firecracker + Jailer
+# 4. Firecracker install is executed after script sync in step 8
 # ---------------------------------------------------------------------------
-echo ">>> Installing Firecracker v$FIRECRACKER_VERSION..."
-if [ -f /opt/arcagent/scripts/install-firecracker.sh ]; then
-  bash /opt/arcagent/scripts/install-firecracker.sh "$FIRECRACKER_VERSION"
-else
-  echo "Skipping — install-firecracker.sh not yet deployed."
-fi
+echo ">>> Firecracker install deferred until provisioning scripts are synced."
 
 # ---------------------------------------------------------------------------
 # 5. Install Node.js
@@ -164,16 +162,40 @@ chown -R arcagent:arcagent /opt/arcagent
 # ---------------------------------------------------------------------------
 echo ">>> Deploying provisioning scripts..."
 mkdir -p /opt/arcagent/scripts
+SCRIPT_NAMES=(setup-worker.sh install-firecracker.sh detect-host-url.sh build-rootfs.sh)
+for script in "$${SCRIPT_NAMES[@]}"; do
+  if aws s3 cp "s3://$ROOTFS_BUCKET/scripts/$${script}" "/opt/arcagent/scripts/$${script}" --region "$AWS_REGION" --quiet; then
+    chmod 755 "/opt/arcagent/scripts/$${script}"
+  else
+    echo "ERROR: Missing provisioning script s3://$ROOTFS_BUCKET/scripts/$${script}"
+    exit 1
+  fi
+done
+chown -R root:root /opt/arcagent/scripts
+echo "Provisioning scripts downloaded to /opt/arcagent/scripts."
 
-# If scripts aren't already on disk (e.g. custom AMI), download from release
-# For now, check if they exist from a prior run or AMI bake
-if [ ! -f /opt/arcagent/scripts/install-firecracker.sh ]; then
-  echo "WARNING: Provisioning scripts not found at /opt/arcagent/scripts/."
-  echo "You need to copy infra/aws/scripts/* to /opt/arcagent/scripts/ on the host."
-  echo "This is typically done via:"
-  echo "  1. Baking a custom AMI with packer"
-  echo "  2. Or: scp infra/aws/scripts/* ubuntu@<host>:/opt/arcagent/scripts/"
-  echo "  3. Then re-run this script: sudo bash /var/lib/cloud/instance/user-data.txt"
+# Install Firecracker + Jailer once install-firecracker.sh is available.
+echo ">>> Installing Firecracker v$FIRECRACKER_VERSION..."
+bash /opt/arcagent/scripts/install-firecracker.sh "$FIRECRACKER_VERSION"
+
+# Optional: deploy worker build artifact from S3
+if [ -n "$WORKER_ARTIFACT_S3_KEY" ]; then
+  echo ">>> Downloading worker artifact s3://$ROOTFS_BUCKET/$WORKER_ARTIFACT_S3_KEY..."
+  mkdir -p /opt/arcagent/worker
+  if aws s3 cp "s3://$ROOTFS_BUCKET/$WORKER_ARTIFACT_S3_KEY" /tmp/worker-build.tar.gz --region "$AWS_REGION"; then
+    tar -xzf /tmp/worker-build.tar.gz -C /opt/arcagent/worker
+    chown -R arcagent:arcagent /opt/arcagent/worker
+    rm -f /tmp/worker-build.tar.gz
+    if [ -f /opt/arcagent/worker/package-lock.json ]; then
+      echo "Installing worker runtime dependencies..."
+      cd /opt/arcagent/worker
+      npm ci --omit=dev
+    fi
+  else
+    echo "WARNING: Failed to download worker artifact from S3 key '$WORKER_ARTIFACT_S3_KEY'."
+  fi
+else
+  echo "No worker artifact key configured (worker_artifact_s3_key)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -182,6 +204,7 @@ fi
 echo ">>> Downloading pre-built rootfs images from s3://$ROOTFS_BUCKET/$ROOTFS_VERSION/..."
 ROOTFS_IMAGES=(base node-20 python-312 rust-stable go-122 java-21)
 ROOTFS_DOWNLOAD_FAILED=false
+BUILT_ROOTFS_IMAGES=()
 
 for img in "$${ROOTFS_IMAGES[@]}"; do
   dest="/var/lib/firecracker/rootfs/$${img}.ext4"
@@ -208,10 +231,36 @@ if [ "$ROOTFS_DOWNLOAD_FAILED" = "true" ]; then
   echo "Falling back to local build if build-rootfs.sh is available..."
   if [ -f /opt/arcagent/scripts/build-rootfs.sh ]; then
     bash /opt/arcagent/scripts/build-rootfs.sh
+    for img in "$${ROOTFS_IMAGES[@]}"; do
+      if [ -f "/var/lib/firecracker/rootfs/$${img}.ext4" ]; then
+        BUILT_ROOTFS_IMAGES+=("$${img}")
+      fi
+    done
   else
     echo "ERROR: No rootfs images available and no build script found."
     echo "Upload images to S3 first: bash infra/rootfs/build-and-upload.sh $ROOTFS_BUCKET $ROOTFS_VERSION"
   fi
+fi
+
+if [ "$ROOTFS_UPLOAD_ON_BOOT" = "true" ] && [ "$${#BUILT_ROOTFS_IMAGES[@]}" -gt 0 ]; then
+  echo ">>> Uploading locally-built rootfs images to s3://$ROOTFS_BUCKET/$ROOTFS_VERSION/ ..."
+  for img in "$${BUILT_ROOTFS_IMAGES[@]}"; do
+    ext4_path="/var/lib/firecracker/rootfs/$${img}.ext4"
+    s3_key="$ROOTFS_VERSION/$${img}.ext4.zst"
+
+    if aws s3api head-object --bucket "$ROOTFS_BUCKET" --key "$s3_key" --region "$AWS_REGION" >/dev/null 2>&1; then
+      echo "  $${img}.ext4.zst already exists in S3 - skipping upload"
+      continue
+    fi
+
+    tmp_zst="/tmp/$${img}.ext4.zst"
+    echo "  Compressing $ext4_path ..."
+    zstd -3 -f "$ext4_path" -o "$tmp_zst"
+
+    echo "  Uploading s3://$ROOTFS_BUCKET/$s3_key ..."
+    aws s3 cp "$tmp_zst" "s3://$ROOTFS_BUCKET/$s3_key" --region "$AWS_REGION"
+    rm -f "$tmp_zst"
+  done
 fi
 
 echo "Rootfs images in /var/lib/firecracker/rootfs/:"

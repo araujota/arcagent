@@ -214,7 +214,7 @@ export const syncWorkerUrls = internalAction({
 export const healthCheckWorker = internalAction({
   args: { workerHost: v.string() },
   handler: async (_ctx, args) => {
-    const workerSecret = process.env.WORKER_SHARED_SECRET ?? process.env.WORKER_API_SECRET;
+    const workerSecret = process.env.WORKER_SHARED_SECRET;
     if (!workerSecret) {
       return { healthy: false, error: "WORKER_SHARED_SECRET not configured" };
     }

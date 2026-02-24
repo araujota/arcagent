@@ -2,9 +2,13 @@
 # Outputs
 # ---------------------------------------------------------------------------
 
+locals {
+  worker_public_ips = var.allocate_eip ? aws_eip.worker[*].public_ip : aws_instance.worker[*].public_ip
+}
+
 output "worker_public_ips" {
   description = "Public IP addresses of worker instances"
-  value       = aws_eip.worker[*].public_ip
+  value       = local.worker_public_ips
 }
 
 output "worker_instance_ids" {
@@ -14,7 +18,7 @@ output "worker_instance_ids" {
 
 output "worker_host_urls" {
   description = "WORKER_HOST_URL values — set these in Convex environment"
-  value       = [for eip in aws_eip.worker : "http://${eip.public_ip}:3001"]
+  value       = [for ip in local.worker_public_ips : "http://${ip}:3001"]
 }
 
 output "vpc_id" {
@@ -29,7 +33,7 @@ output "security_group_id" {
 
 output "ssh_command" {
   description = "SSH command template"
-  value       = length(aws_eip.worker) > 0 ? "ssh -i <key.pem> ubuntu@${aws_eip.worker[0].public_ip}" : "No workers deployed"
+  value       = length(local.worker_public_ips) > 0 ? "ssh -i <key.pem> ubuntu@${local.worker_public_ips[0]}" : "No workers deployed"
 }
 
 output "rootfs_bucket" {

@@ -135,6 +135,8 @@ Set via `npx convex env set VARIABLE_NAME "value"` or in the Convex Dashboard un
 
 Create `worker/.env`.
 
+For Cloudflare Containers deployment, use `docs/CLOUDFLARE_WORKER_DEPLOYMENT.md`.
+
 ### Core
 
 | Variable | Required | Description | How to get it |
@@ -142,6 +144,7 @@ Create `worker/.env`.
 | `CONVEX_URL` | Yes | Convex deployment URL for posting results | Same as `NEXT_PUBLIC_CONVEX_URL` |
 | `CONVEX_DEPLOY_KEY` | Yes | Convex deploy key for scheduled jobs | Convex Dashboard > Settings > Deploy Key |
 | `WORKER_SHARED_SECRET` | Yes | Auth with Convex HTTP endpoints | Must match value set in Convex env |
+| `WORKER_EXECUTION_BACKEND` | No | Execution backend (`firecracker` or `process`) | Use `process` for Cloudflare Containers |
 | `REDIS_URL` | Yes | Redis for BullMQ job queue | `redis://localhost:6379` locally, or Redis cloud connection string |
 | `PORT` | No | Express server port (default: `3001`) | Set if port 3001 is taken |
 | `LOG_LEVEL` | No | Winston log level (default: `"info"`) | Options: `error`, `warn`, `info`, `debug` |

@@ -31,6 +31,12 @@ variable "worker_count" {
   default     = 1
 }
 
+variable "allocate_eip" {
+  description = "Allocate and attach Elastic IPs to workers. Disable when EIP quota is exhausted."
+  type        = bool
+  default     = true
+}
+
 variable "ssh_key_name" {
   description = "Name of an existing EC2 key pair for SSH access"
   type        = string
@@ -111,4 +117,16 @@ variable "rootfs_version" {
   description = "Version tag for pre-built rootfs images in S3 (e.g. v1, v2)"
   type        = string
   default     = "v1"
+}
+
+variable "rootfs_upload_on_boot" {
+  description = "When true, upload locally-built rootfs images to S3 cache if missing."
+  type        = bool
+  default     = true
+}
+
+variable "worker_artifact_s3_key" {
+  description = "Optional S3 key for a worker build tarball (dist + package files) in the rootfs bucket."
+  type        = string
+  default     = ""
 }

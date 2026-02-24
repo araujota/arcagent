@@ -28,6 +28,12 @@ if [ ! -d "$WORKER_DIR/dist" ]; then
   mkdir -p "$WORKER_DIR"
 fi
 
+if [ -f "$WORKER_DIR/package-lock.json" ]; then
+  echo "Installing worker production dependencies..."
+  cd "$WORKER_DIR"
+  npm ci --omit=dev
+fi
+
 # ---------------------------------------------------------------------------
 # 2. Create systemd service
 # ---------------------------------------------------------------------------
