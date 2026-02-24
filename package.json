@@ -17,7 +17,8 @@
     "deploy:worker:local": "npm run env:sync:worker && cd worker && docker compose up -d --build redis worker",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:e2e:webhooks": "node --test scripts/e2e/webhooks.e2e.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
