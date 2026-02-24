@@ -68,7 +68,6 @@ Create a `.env` file at the repo root (loaded by all services via `env_file`). R
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `CONVEX_URL` | Yes | Your Convex deployment URL (e.g. `https://your-app.convex.cloud`) |
-| `CONVEX_DEPLOY_KEY` | Yes | Convex deploy key for server-to-server calls |
 | `WORKER_SHARED_SECRET` | Yes | Must match the value set in Convex env |
 | `REDIS_URL` | No | Overridden to `redis://redis:6379` by Docker Compose |
 | `PORT` | No | Default: `3001` |
@@ -84,6 +83,16 @@ cd worker && npm run dev
 ```
 
 This starts the Express server with BullMQ but VM operations will fail unless KVM is available.
+
+### Pulling worker envs from Vercel before local deploy
+
+From repo root:
+
+```bash
+npm run env:sync:worker
+```
+
+This generates `worker/.env.generated` (gitignored, mode `0600`) and overlays it on top of `worker/.env` in both root and worker `docker compose` configurations.
 
 ## Production Deployment to AWS (Terraform)
 
@@ -361,7 +370,6 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `CONVEX_URL` | Yes | — | Convex deployment URL |
-| `CONVEX_DEPLOY_KEY` | Yes | — | Convex deploy key for server-to-server calls |
 | `WORKER_SHARED_SECRET` | Yes | — | Shared secret (must match Convex env) |
 | `REDIS_URL` | Yes | `redis://localhost:6379` | Redis connection URL |
 | `PORT` | No | `3001` | Server port |
@@ -380,7 +388,8 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 | `SONARQUBE_URL` | No | — | SonarQube server URL (enables gate) |
 | `SONARQUBE_TOKEN` | No | — | SonarQube auth token |
 | `SNYK_TOKEN` | No | — | Snyk API token (enables gate) |
-| `GITHUB_API_TOKEN` | No | — | GitHub token for repo access |
+| `GITHUB_API_TOKEN` | No | — | Primary GitHub token for repo access and language detection |
+| `GITHUB_TOKEN` | Deprecated fallback | — | Backward-compatible fallback token. Prefer `GITHUB_API_TOKEN` |
 
 ### Terraform variables (`infra/aws/terraform.tfvars.example`)
 

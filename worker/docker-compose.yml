@@ -2,11 +2,11 @@
 # Worker Docker Compose — deploy from this device
 # ---------------------------------------------------------------------------
 #
-# All secrets and config come from worker/.env — fill it out before running:
+# All secrets and config come from worker/.env (+ optional worker/.env.generated
+# produced by `npm --prefix .. run env:sync:worker`) before running:
 #
 #   Required in .env:
 #     CONVEX_URL           — Convex deployment URL
-#     CONVEX_DEPLOY_KEY    — server-to-server Convex auth key
 #     WORKER_SHARED_SECRET — must match the value set in Convex env
 #
 #   Optional in .env:
@@ -42,7 +42,10 @@ services:
     ports:
       - "${PORT:-3001}:${PORT:-3001}"
     env_file:
-      - .env
+      - path: .env
+        required: true
+      - path: .env.generated
+        required: false
     environment:
       # Override REDIS_URL to point at the compose redis service
       REDIS_URL: redis://redis:6379

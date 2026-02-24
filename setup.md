@@ -142,13 +142,32 @@ For Cloudflare Containers deployment, use `docs/CLOUDFLARE_WORKER_DEPLOYMENT.md`
 | Variable | Required | Description | How to get it |
 |----------|----------|-------------|---------------|
 | `CONVEX_URL` | Yes | Convex deployment URL for posting results | Same as `NEXT_PUBLIC_CONVEX_URL` |
-| `CONVEX_DEPLOY_KEY` | Yes | Convex deploy key for scheduled jobs | Convex Dashboard > Settings > Deploy Key |
 | `WORKER_SHARED_SECRET` | Yes | Auth with Convex HTTP endpoints | Must match value set in Convex env |
 | `WORKER_EXECUTION_BACKEND` | No | Execution backend (`firecracker` or `process`) | Use `process` for Cloudflare Containers |
 | `REDIS_URL` | Yes | Redis for BullMQ job queue | `redis://localhost:6379` locally, or Redis cloud connection string |
 | `PORT` | No | Express server port (default: `3001`) | Set if port 3001 is taken |
 | `LOG_LEVEL` | No | Winston log level (default: `"info"`) | Options: `error`, `warn`, `info`, `debug` |
 | `WORKER_CONCURRENCY` | No | Parallel verification jobs (default: `2`) | Increase based on available resources |
+
+### Automated local env sync (recommended)
+
+Generate `worker/.env.generated` from Vercel and use it as an overlay on top of `worker/.env`:
+
+```bash
+npm run env:sync:worker
+```
+
+Parity-sync all Convex production env vars into dev:
+
+```bash
+npm run env:sync:convex-parity
+```
+
+Bootstrap missing GitHub/Stripe secrets into Convex prod+dev (CLI sources first, secure prompt fallback):
+
+```bash
+npm run env:bootstrap:secrets
+```
 
 ### Security Scanning (optional gates)
 
@@ -168,7 +187,8 @@ For Cloudflare Containers deployment, use `docs/CLOUDFLARE_WORKER_DEPLOYMENT.md`
 | `FC_ROOTFS_DIR` | No | Root filesystem directory (default: `/var/lib/firecracker/rootfs`) | Build per-language rootfs images |
 | `FC_USE_VSOCK` | No | Use vsock instead of SSH (default: `"true"`) | Set `"false"` to fallback to SSH |
 | `FC_HARDEN_EGRESS` | No | Enable strict egress filtering (default: `"false"`) | Set `"true"` in production |
-| `GITHUB_TOKEN` | No | GitHub API token for language detection | Reuse `GITHUB_API_TOKEN` or create a separate one |
+| `GITHUB_API_TOKEN` | No | GitHub API token for language detection | Reuse the Convex `GITHUB_API_TOKEN` value or create a dedicated token |
+| `GITHUB_TOKEN` | Deprecated fallback | Backward-compatible fallback for language detection token lookup | Prefer `GITHUB_API_TOKEN` |
 
 ---
 
@@ -253,7 +273,6 @@ EOF
 # 6. Create worker/.env
 cat > worker/.env <<EOF
 CONVEX_URL=$(grep NEXT_PUBLIC_CONVEX_URL .env.local | cut -d= -f2)
-CONVEX_DEPLOY_KEY=your-deploy-key
 WORKER_SHARED_SECRET=$WORKER_SECRET
 REDIS_URL=redis://localhost:6379
 EOF
@@ -261,6 +280,8 @@ EOF
 # 7. Run services
 npm run dev          # Next.js + Convex (port 3000)
 cd worker && npm run dev   # Worker (port 3001)
+# or use the local deploy helper (pulls Vercel env overlay first):
+npm run deploy:worker:local
 
 # 8. Publish the MCP package (so agents can npx arcagent-mcp)
 # First update DEFAULT_CONVEX_URL in mcp-server/src/index.ts to your Convex URL

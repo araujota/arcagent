@@ -10,6 +10,11 @@
     "start": "next start",
     "lint": "eslint",
     "seed": "convex run seed:seed",
+    "env:test": "node --test scripts/env/lib.test.mjs",
+    "env:sync:worker": "node scripts/env/sync_worker_from_vercel.mjs",
+    "env:sync:convex-parity": "node scripts/env/sync_convex_prod_to_dev.mjs --yes",
+    "env:bootstrap:secrets": "node scripts/env/bootstrap_missing_secrets.mjs",
+    "deploy:worker:local": "npm run env:sync:worker && cd worker && docker compose up -d --build redis worker",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

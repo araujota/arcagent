@@ -55,6 +55,10 @@ npx tsc --noEmit         # Type-check
 # Worker — verification pipeline (port 3001)
 cd worker && npm run dev      # tsx watch
 cd worker && npm run build    # tsc
+npm run env:sync:worker       # Pull worker env overlay from Vercel to worker/.env.generated
+npm run deploy:worker:local   # Sync env + docker compose up -d --build redis worker
+npm run env:sync:convex-parity  # Copy all Convex prod env vars to dev
+npm run env:bootstrap:secrets # Resolve/set GitHub + Stripe secrets in Convex (CLI-first + secure prompt)
 
 # MCP Server — development only (production agents use npx arcagent-mcp)
 cd mcp-server && npm run dev                     # stdio transport (local dev)

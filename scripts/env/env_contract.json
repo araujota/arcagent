@@ -1,0 +1,26 @@
+{
+  "worker": {
+    "required_local": [
+      "CONVEX_URL",
+      "WORKER_SHARED_SECRET"
+    ],
+    "local_defaults": {
+      "REDIS_URL": "redis://localhost:6379",
+      "PORT": "3001",
+      "LOG_LEVEL": "info",
+      "WORKER_EXECUTION_BACKEND": "process"
+    }
+  },
+  "vercel_pull_keys_for_worker": [
+    "CONVEX_URL",
+    "WORKER_SHARED_SECRET",
+    "WORKER_API_URL"
+  ],
+  "sensitive_keys_for_bootstrap": [
+    "GITHUB_API_TOKEN",
+    "GITHUB_BOT_TOKEN",
+    "STRIPE_SECRET_KEY",
+    "STRIPE_WEBHOOK_SECRET"
+  ],
+  "convex_parity_mode": "all_prod_vars"
+}

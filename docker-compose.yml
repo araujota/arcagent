@@ -40,6 +40,8 @@ services:
     env_file:
       - path: ./worker/.env
         required: true
+      - path: ./worker/.env.generated
+        required: false
     environment:
       - REDIS_URL=redis://redis:6379
     depends_on:
