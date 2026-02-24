@@ -50,6 +50,10 @@ resource "aws_instance" "worker" {
     rootfs_upload_on_boot     = var.rootfs_upload_on_boot
     aws_region                = var.aws_region
     worker_artifact_s3_key    = var.worker_artifact_s3_key
+    enable_sonarqube          = var.enable_sonarqube
+    sonarqube_url             = var.sonarqube_url
+    sonarqube_token           = var.sonarqube_token
+    snyk_token                = var.snyk_token
   }))
 
   tags = {

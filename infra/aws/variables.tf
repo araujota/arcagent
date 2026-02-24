@@ -130,3 +130,29 @@ variable "worker_artifact_s3_key" {
   type        = string
   default     = ""
 }
+
+variable "enable_sonarqube" {
+  description = "Deploy SonarQube + Postgres containers on the worker host."
+  type        = bool
+  default     = false
+}
+
+variable "sonarqube_url" {
+  description = "Optional SonarQube URL for worker gate execution. Use an HTTPS URL reachable from execution environments."
+  type        = string
+  default     = ""
+}
+
+variable "sonarqube_token" {
+  description = "SonarQube authentication token for gate execution."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "snyk_token" {
+  description = "Snyk API token used by the Snyk gate."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

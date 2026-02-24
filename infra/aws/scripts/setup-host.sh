@@ -34,6 +34,10 @@ ROOTFS_VERSION="${rootfs_version}"
 ROOTFS_UPLOAD_ON_BOOT="${rootfs_upload_on_boot}"
 AWS_REGION="${aws_region}"
 WORKER_ARTIFACT_S3_KEY="${worker_artifact_s3_key}"
+ENABLE_SONARQUBE="${enable_sonarqube}"
+SONARQUBE_URL="${sonarqube_url}"
+SONARQUBE_TOKEN="${sonarqube_token}"
+SNYK_TOKEN="${snyk_token}"
 
 # Auto-detect public IP via IMDSv2 (EIP isn't known at user-data render time)
 echo ">>> Detecting public IP via IMDSv2..."
@@ -77,7 +81,9 @@ apt-get install -y -qq \
   unzip \
   awscli \
   zstd \
-  debootstrap
+  debootstrap \
+  docker.io \
+  docker-compose-plugin
 
 # ---------------------------------------------------------------------------
 # 2. Enable KVM
@@ -128,14 +134,95 @@ fi
 echo "Node.js: $(node --version)"
 
 # ---------------------------------------------------------------------------
-# 6. Configure Redis (local, no auth needed — only localhost access)
+# 6. Configure container runtime sidecars (Redis + optional SonarQube)
 # ---------------------------------------------------------------------------
-echo ">>> Configuring Redis..."
-systemctl enable redis-server
-systemctl start redis-server
+echo ">>> Configuring runtime sidecars..."
+systemctl enable docker
+systemctl start docker
 
-# Verify Redis is running
-redis-cli ping || { echo "ERROR: Redis not responding"; exit 1; }
+mkdir -p /opt/arcagent/runtime
+cat > /opt/arcagent/runtime/docker-compose.yml <<'COMPOSEEOF'
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  sonarqube-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: sonarqube
+      POSTGRES_PASSWORD: sonarqube
+      POSTGRES_DB: sonarqube
+    volumes:
+      - sonarqube-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonarqube -d sonarqube"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  sonarqube:
+    image: sonarqube:community
+    ports:
+      - "9000:9000"
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonarqube-db:5432/sonarqube
+      SONAR_JDBC_USERNAME: sonarqube
+      SONAR_JDBC_PASSWORD: sonarqube
+    depends_on:
+      sonarqube-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/api/system/status | grep -q UP"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  sonarqube-db-data:
+COMPOSEEOF
+
+cat > /etc/systemd/system/arcagent-runtime-stack.service <<'SERVICEEOF'
+[Unit]
+Description=ArcAgent runtime sidecars (Redis/SonarQube)
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/arcagent/runtime
+ExecStart=/usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml up -d
+ExecStop=/usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml down
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
+
+systemctl daemon-reload
+systemctl enable arcagent-runtime-stack
+systemctl start arcagent-runtime-stack
+
+/usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml up -d redis
+/usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml ps redis
+if [ "$ENABLE_SONARQUBE" = "true" ]; then
+  /usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml up -d sonarqube-db sonarqube
+fi
 
 # ---------------------------------------------------------------------------
 # 7. Create worker user and directories
@@ -359,6 +446,16 @@ NODE_ENV=production
 # SONARQUBE_TOKEN=
 # GITHUB_TOKEN=
 ENVEOF
+
+if [ -n "$SNYK_TOKEN" ]; then
+  echo "SNYK_TOKEN=$SNYK_TOKEN" >> /opt/arcagent/worker.env
+fi
+if [ -n "$SONARQUBE_URL" ]; then
+  echo "SONARQUBE_URL=$SONARQUBE_URL" >> /opt/arcagent/worker.env
+fi
+if [ -n "$SONARQUBE_TOKEN" ]; then
+  echo "SONARQUBE_TOKEN=$SONARQUBE_TOKEN" >> /opt/arcagent/worker.env
+fi
 
 chown arcagent:arcagent /opt/arcagent/worker.env
 chmod 600 /opt/arcagent/worker.env

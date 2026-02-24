@@ -165,6 +165,7 @@ export const getFullStatus = internalQuery({
         tool: g.tool,
         status: g.status,
         issues: g.issues,
+        details: g.detailsJson ? safeParseJson(g.detailsJson) : undefined,
       })),
       steps: steps.map((s) => ({
         scenarioName: s.scenarioName,
@@ -238,6 +239,7 @@ export const getAgentStatus = internalQuery({
         tool: g.tool,
         status: g.status,
         issues: g.issues,
+        details: g.detailsJson ? safeParseJson(g.detailsJson) : undefined,
       })),
       steps: publicSteps,
       hiddenSummary: {
@@ -259,6 +261,14 @@ export const getAgentStatus = internalQuery({
     };
   },
 });
+
+function safeParseJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
 
 async function failVerificationDispatch(
   ctx: {

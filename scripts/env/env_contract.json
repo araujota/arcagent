@@ -14,7 +14,10 @@
   "vercel_pull_keys_for_worker": [
     "CONVEX_URL",
     "WORKER_SHARED_SECRET",
-    "WORKER_API_URL"
+    "WORKER_API_URL",
+    "SONARQUBE_URL",
+    "SONARQUBE_TOKEN",
+    "SNYK_TOKEN"
   ],
   "sensitive_keys_for_bootstrap": [
     "GITHUB_API_TOKEN",

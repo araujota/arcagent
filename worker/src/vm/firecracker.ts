@@ -136,18 +136,19 @@ export async function createFirecrackerVM(
   let dnsResolver: DnsResolverHandle | null = null;
   let egressProxy: EgressProxyHandle | null = null;
   const vmConfig = getVMConfig(opts.rootfsImage.replace(/\.ext4$/, "").replace(/-\d+$/, ""));
+  const allowedDomains = buildAllowedDomains(vmConfig.allowedDomains);
   const hardenEgress = process.env.FC_HARDEN_EGRESS !== "false"
     && (process.env.FC_HARDEN_EGRESS === "true" || process.env.NODE_ENV === "production");
 
-  if (hardenEgress && vmConfig.allowedDomains.length > 0) {
+  if (hardenEgress && allowedDomains.length > 0) {
     const gatewayIp = "10.0.0.1";
     try {
-      dnsResolver = await startDnsResolver(vmId, gatewayIp, vmConfig.allowedDomains);
+      dnsResolver = await startDnsResolver(vmId, gatewayIp, allowedDomains);
       await applyDnsRedirect(tapDevice, gatewayIp);
-      egressProxy = await startEgressProxy(vmId, vmConfig.allowedDomains);
+      egressProxy = await startEgressProxy(vmId, allowedDomains);
       await applyProxyRedirect(tapDevice, egressProxy.port);
       await applyRateLimiting(tapDevice);
-      logger.info("Hardened egress applied", { vmId, domains: vmConfig.allowedDomains.length });
+      logger.info("Hardened egress applied", { vmId, domains: allowedDomains.length });
     } catch (err) {
       logger.warn("Hardened egress setup failed, using basic filtering", {
         vmId,
@@ -325,6 +326,28 @@ export async function createFirecrackerVM(
     releaseGuestIp(guestIp);
     throw err;
   }
+}
+
+function buildAllowedDomains(baseDomains: string[]): string[] {
+  const merged = new Set(baseDomains);
+
+  if (process.env.SNYK_TOKEN) {
+    merged.add("api.snyk.io");
+    merged.add("app.snyk.io");
+    merged.add("*.snyk.io");
+  }
+
+  const sonarUrl = process.env.SONARQUBE_URL;
+  if (sonarUrl) {
+    try {
+      const host = new URL(sonarUrl).hostname;
+      if (host) merged.add(host);
+    } catch {
+      // Invalid URL is handled by the SonarQube gate with a clear error.
+    }
+  }
+
+  return [...merged];
 }
 
 /**

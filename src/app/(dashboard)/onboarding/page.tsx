@@ -166,7 +166,7 @@ export default function OnboardingPage() {
                       setSettingUpStripe(true);
                       try {
                         const result = await setupPaymentMethod();
-                        window.location.href = `https://checkout.stripe.com/setup/${result.setupIntentId}?client_secret=${result.clientSecret}&return_url=${encodeURIComponent(result.returnUrl)}`;
+                        window.location.href = result.checkoutUrl;
                       } catch {
                         toast.error("Failed to set up payment. You can try again in Settings.");
                         setSettingUpStripe(false);

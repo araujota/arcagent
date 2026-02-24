@@ -28,6 +28,7 @@ interface ConvexResultPayload {
     details?: Record<string, unknown>;
   }>;
   totalDurationMs: number;
+  feedbackJson?: string;
   steps?: Array<{
     scenarioName: string;
     featureName: string;
@@ -99,6 +100,7 @@ export async function postVerificationResult(
       details: g.details,
     })),
     totalDurationMs: result.totalDurationMs,
+    feedbackJson: result.feedbackJson,
     steps: result.steps,
     jobHmac: result.jobHmac,
   };

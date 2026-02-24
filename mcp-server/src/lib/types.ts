@@ -6,6 +6,14 @@ export interface AuthenticatedUser {
   scopes: string[];
 }
 
+export interface SessionRecord {
+  sessionId: string;
+  userId: string;
+  createdAt: number;
+  lastSeenAt: number;
+  expiresAt: number;
+}
+
 export interface ConvexBounty {
   _id: string;
   title: string;
@@ -67,6 +75,7 @@ export interface VerificationGate {
   tool: string;
   status: string;
   issues?: string[];
+  details?: unknown;
 }
 
 export interface VerificationStep {

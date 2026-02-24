@@ -75,3 +75,17 @@ jobs:
         with:
           name: coverage-mcp
           path: mcp-server/coverage/
+
+  release-readiness-mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: cd mcp-server && npm ci
+      - run: cd mcp-server && npm run test
+      - run: cd mcp-server && npx tsc --noEmit
+      - run: cd mcp-server && npm audit --omit=dev
+      - run: cd mcp-server && npm run prepack
+      - run: cd mcp-server && npm run pack:check

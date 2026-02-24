@@ -32,6 +32,7 @@ export const record = internalMutation({
       v.literal("warning")
     ),
     issues: v.optional(v.array(v.string())),
+    detailsJson: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("sanityGates", args);

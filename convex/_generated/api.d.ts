@@ -46,6 +46,7 @@ import type * as lib_workProviders_jira from "../lib/workProviders/jira.js";
 import type * as lib_workProviders_linear from "../lib/workProviders/linear.js";
 import type * as lib_workProviders_monday from "../lib/workProviders/monday.js";
 import type * as lib_workProviders_types from "../lib/workProviders/types.js";
+import type * as mcpRegistrationLimits from "../mcpRegistrationLimits.js";
 import type * as notifications from "../notifications.js";
 import type * as orchestrator from "../orchestrator.js";
 import type * as payments from "../payments.js";
@@ -125,6 +126,7 @@ declare const fullApi: ApiFromModules<{
   "lib/workProviders/linear": typeof lib_workProviders_linear;
   "lib/workProviders/monday": typeof lib_workProviders_monday;
   "lib/workProviders/types": typeof lib_workProviders_types;
+  mcpRegistrationLimits: typeof mcpRegistrationLimits;
   notifications: typeof notifications;
   orchestrator: typeof orchestrator;
   payments: typeof payments;

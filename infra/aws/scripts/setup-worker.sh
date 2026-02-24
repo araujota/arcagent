@@ -43,8 +43,8 @@ cat > "$SERVICE_FILE" <<'SERVICEEOF'
 [Unit]
 Description=ArcAgent Worker — Firecracker VM orchestrator
 Documentation=https://github.com/your-org/arcagent
-After=network-online.target redis-server.service
-Wants=network-online.target redis-server.service
+After=network-online.target arcagent-runtime-stack.service
+Wants=network-online.target arcagent-runtime-stack.service
 
 [Service]
 Type=simple

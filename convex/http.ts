@@ -410,21 +410,67 @@ http.route({
     if (!verifyMcpSecret(request)) return mcpUnauthorized();
 
     const body = await request.json();
-    const { name, email, clerkId, keyHash, keyPrefix, githubUsername } =
+    const { name, email, clerkId, githubUsername } =
       body as {
         name: string;
         email: string;
         clerkId: string;
-        keyHash: string;
-        keyPrefix: string;
         githubUsername?: string;
       };
 
-    if (!name || !email || !clerkId || !keyHash || !keyPrefix) {
+    if (!name || !email || !clerkId) {
       return mcpError("Missing required fields");
     }
 
     try {
+      // Convex-side registration throttling (IP + email + clerkId windows).
+      const ip =
+        request.headers.get("cf-connecting-ip") ||
+        request.headers.get("x-real-ip") ||
+        request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+        "unknown";
+
+      const limitsApi = internal as unknown as {
+        mcpRegistrationLimits: { consume: unknown };
+      };
+
+      const ipLimit = await ctx.runMutation(limitsApi.mcpRegistrationLimits.consume as never, {
+        key: `ip:${ip}`,
+        maxRequests: 20,
+        windowMs: 60_000,
+      });
+      if (!ipLimit.allowed) {
+        return mcpJson(
+          { error: "Registration rate limit exceeded", retryAfterMs: ipLimit.retryAfterMs },
+          429,
+        );
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      const emailLimit = await ctx.runMutation(limitsApi.mcpRegistrationLimits.consume as never, {
+        key: `email:${normalizedEmail}`,
+        maxRequests: 5,
+        windowMs: 60_000,
+      });
+      if (!emailLimit.allowed) {
+        return mcpJson(
+          { error: "Registration rate limit exceeded", retryAfterMs: emailLimit.retryAfterMs },
+          429,
+        );
+      }
+
+      const clerkLimit = await ctx.runMutation(limitsApi.mcpRegistrationLimits.consume as never, {
+        key: `clerk:${clerkId}`,
+        maxRequests: 5,
+        windowMs: 60_000,
+      });
+      if (!clerkLimit.allowed) {
+        return mcpJson(
+          { error: "Registration rate limit exceeded", retryAfterMs: clerkLimit.retryAfterMs },
+          429,
+        );
+      }
+
       // Upsert user via the same path as Clerk webhooks — unified accounts
       const userId = await ctx.runMutation(internal.users.upsertFromClerk, {
         clerkId,
@@ -432,6 +478,18 @@ http.route({
         email,
         githubUsername,
       });
+
+      // Generate and hash API key in Convex so issuance is centrally indexed.
+      const randomPart = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+      const rawKey = `arc_${randomPart}`;
+      const keyPrefix = rawKey.slice(0, 8);
+      const encoder = new TextEncoder();
+      const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(rawKey));
+      const keyHash = Array.from(new Uint8Array(hashBuffer))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
 
       await ctx.runMutation(internal.apiKeys.create, {
         userId,
@@ -441,7 +499,7 @@ http.route({
         scopes: ["bounties:read", "bounties:claim", "bounties:create", "submissions:write", "workspace:read", "workspace:write", "workspace:exec"],
       });
 
-      return mcpJson({ userId });
+      return mcpJson({ userId, apiKey: rawKey, keyPrefix });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create agent";
       return mcpError(message);
@@ -1299,13 +1357,25 @@ http.route({
     }
 
     try {
-      const result = await ctx.runAction(internal.stripe.createSetupIntent, {
+      const hosted = await ctx.runAction(internal.stripe.createHostedSetupCheckout, {
+        userId: userId as Id<"users">,
+        email,
+        name,
+        successPath: "/settings?setup_complete=true",
+        cancelPath: "/settings?setup_canceled=true",
+      });
+
+      const setupIntent = await ctx.runAction(internal.stripe.createSetupIntent, {
         userId: userId as Id<"users">,
         email,
         name,
       });
 
-      return mcpJson(result);
+      return mcpJson({
+        ...setupIntent,
+        checkoutUrl: hosted.checkoutUrl,
+        sessionId: hosted.sessionId,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create setup intent";
       return mcpError(message);
@@ -1888,6 +1958,7 @@ http.route({
         details?: Record<string, unknown>;
       }>;
       totalDurationMs: number;
+      feedbackJson?: string;
       steps?: Array<{
         scenarioName: string;
         featureName: string;
@@ -1956,12 +2027,14 @@ http.route({
         if (gateType && gateStatus) {
           const issues: string[] = [];
           if (gate.summary) issues.push(gate.summary);
+          const detailsJson = gate.details ? JSON.stringify(gate.details) : undefined;
           await ctx.runMutation(internal.sanityGates.record, {
             verificationId,
             gateType: gateType as "build" | "lint" | "typecheck" | "security" | "sonarqube" | "snyk" | "memory",
             tool: gate.summary || gate.gate,
             status: gateStatus as "passed" | "failed" | "warning",
             issues: issues.length > 0 ? issues : undefined,
+            detailsJson,
           });
         }
       }
@@ -1988,6 +2061,7 @@ http.route({
         verificationId,
         status: verificationStatus as "passed" | "failed",
         completedAt: Date.now(),
+        feedbackJson: body.feedbackJson,
       });
 
       // 4. Update submission status
@@ -2104,6 +2178,15 @@ http.route({
               paymentIntentId: pi.id,
             });
           }
+        }
+        break;
+      }
+      case "setup_intent.succeeded": {
+        const si = event.data.object as { metadata?: { convexUserId?: string } };
+        if (si.metadata?.convexUserId) {
+          await ctx.runMutation(internal.users.markHasPaymentMethod, {
+            userId: si.metadata.convexUserId as Id<"users">,
+          });
         }
         break;
       }

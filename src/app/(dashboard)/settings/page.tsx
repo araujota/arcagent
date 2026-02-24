@@ -115,8 +115,8 @@ export default function SettingsPage() {
     setSettingUpPayment(true);
     try {
       const result = await setupPaymentMethod();
-      // Redirect to Stripe hosted setup using the client secret
-      window.location.href = `https://checkout.stripe.com/setup/${result.setupIntentId}?client_secret=${result.clientSecret}&return_url=${encodeURIComponent(result.returnUrl)}`;
+      // Redirect to Stripe-hosted payment method setup checkout.
+      window.location.href = result.checkoutUrl;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to set up payment method");
     } finally {

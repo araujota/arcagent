@@ -17,6 +17,7 @@
 # Usage:
 #   cd worker
 #   docker compose up -d          # start worker + redis
+#   docker compose --profile sonarqube up -d   # include SonarQube + postgres
 #   docker compose logs -f worker # tail logs
 #   docker compose down           # stop everything
 # ---------------------------------------------------------------------------
@@ -49,9 +50,14 @@ services:
     environment:
       # Override REDIS_URL to point at the compose redis service
       REDIS_URL: redis://redis:6379
+      # Canonical internal SonarQube URL for process backend compose runs.
+      SONARQUBE_URL: ${SONARQUBE_URL:-http://sonarqube:9000}
     depends_on:
       redis:
         condition: service_healthy
+      sonarqube:
+        condition: service_healthy
+        required: false
     devices:
       - /dev/kvm:/dev/kvm
       - /dev/net/tun:/dev/net/tun
@@ -65,5 +71,44 @@ services:
       - /var/lib/firecracker:/var/lib/firecracker:ro
     restart: unless-stopped
 
+  sonarqube-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: sonarqube
+      POSTGRES_PASSWORD: sonarqube
+      POSTGRES_DB: sonarqube
+    volumes:
+      - sonarqube-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonarqube -d sonarqube"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    profiles:
+      - sonarqube
+
+  sonarqube:
+    image: sonarqube:community
+    ports:
+      - "9000:9000"
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonarqube-db:5432/sonarqube
+      SONAR_JDBC_USERNAME: sonarqube
+      SONAR_JDBC_PASSWORD: sonarqube
+    depends_on:
+      sonarqube-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/api/system/status | grep -q UP"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
+    profiles:
+      - sonarqube
+
 volumes:
   redis-data:
+  sonarqube-db-data:

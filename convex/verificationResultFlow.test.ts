@@ -242,4 +242,55 @@ describe("verification result processing", () => {
     const recordedTypes = gates.map((g: any) => g.gateType).sort();
     expect(recordedTypes).toEqual([...gateTypes].sort());
   });
+
+  it("persists structured gate details and feedback JSON", async () => {
+    const t = convexTest(schema);
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "running" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "running",
+        startedAt: Date.now(),
+        timeoutSeconds: 600,
+      });
+      return { verificationId };
+    });
+
+    await t.mutation(internal.sanityGates.record, {
+      verificationId: ids.verificationId,
+      gateType: "snyk",
+      tool: "snyk test",
+      status: "failed",
+      issues: ["Snyk found 1 high severity issue"],
+      detailsJson: JSON.stringify({ highCount: 1, criticalCount: 0 }),
+    });
+
+    const feedbackJson = JSON.stringify({
+      overallStatus: "fail",
+      actionItems: ["Update vulnerable dependency"],
+    });
+
+    await t.mutation(internal.verifications.updateResult, {
+      verificationId: ids.verificationId,
+      status: "failed",
+      feedbackJson,
+      completedAt: Date.now(),
+    });
+
+    const verification = await t.run(async (ctx) => ctx.db.get(ids.verificationId));
+    expect(verification?.feedbackJson).toBe(feedbackJson);
+
+    const gates = await t.run(async (ctx) =>
+      ctx.db
+        .query("sanityGates")
+        .withIndex("by_verificationId", (q: any) =>
+          q.eq("verificationId", ids.verificationId)
+        )
+        .collect()
+    );
+    expect(gates).toHaveLength(1);
+    expect(gates[0].detailsJson).toBe(JSON.stringify({ highCount: 1, criticalCount: 0 }));
+  });
 });

@@ -2,13 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../convex/client", () => ({ callConvex: vi.fn() }));
 vi.mock("../lib/clerk", () => ({ findOrCreateClerkUser: vi.fn() }));
-vi.mock("../lib/crypto", () => ({
-  generateApiKey: vi.fn(() => ({
-    plaintext: "arc_testkey123456789012345678",
-    hash: "a".repeat(64),
-    prefix: "arc_test",
-  })),
-}));
 
 import { callConvex } from "../convex/client";
 import { findOrCreateClerkUser } from "../lib/clerk";
@@ -43,7 +36,11 @@ describe("registerAccount", () => {
       clerkId: "user_2abc",
       isExisting: false,
     });
-    mockCallConvex.mockResolvedValue({ userId: "user-123" });
+    mockCallConvex.mockResolvedValue({
+      userId: "user-123",
+      apiKey: "arc_testkey123456789012345678",
+      keyPrefix: "arc_test",
+    });
 
     const result = await handler({ name: "Alice", email: "alice@test.com" });
 
@@ -80,7 +77,11 @@ describe("registerAccount", () => {
       clerkId: "user_existing",
       isExisting: true,
     });
-    mockCallConvex.mockResolvedValue({ userId: "user-456" });
+    mockCallConvex.mockResolvedValue({
+      userId: "user-456",
+      apiKey: "arc_testkey123456789012345678",
+      keyPrefix: "arc_test",
+    });
 
     const result = await handler({ name: "Carol", email: "carol@test.com" });
 

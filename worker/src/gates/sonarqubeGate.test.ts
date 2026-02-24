@@ -1,92 +1,110 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { mockVM, expectGatePass, expectGateFail, expectGateSkipped } from "./__test-helpers__";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("../index", () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
 }));
 
-import { runSonarQubeGate } from "./sonarqubeGate";
+let runSonarQubeGate!: typeof import("./sonarqubeGate").runSonarQubeGate;
+
+function makeVmExec(responses: Array<{ stdout?: string; stderr?: string; exitCode: number }>) {
+  const exec = vi.fn(async () => {
+    const next = responses.shift();
+    if (!next) throw new Error("No VM response queued");
+    return {
+      stdout: next.stdout ?? "",
+      stderr: next.stderr ?? "",
+      exitCode: next.exitCode,
+    };
+  });
+  return { exec, jobId: "job-123" } as any;
+}
 
 describe("runSonarQubeGate", () => {
-  const origUrl = process.env.SONARQUBE_URL;
-  const origToken = process.env.SONARQUBE_TOKEN;
+  beforeAll(async () => {
+    ({ runSonarQubeGate } = await import("./sonarqubeGate"));
+  });
 
   afterEach(() => {
-    if (origUrl !== undefined) process.env.SONARQUBE_URL = origUrl;
-    else delete process.env.SONARQUBE_URL;
-    if (origToken !== undefined) process.env.SONARQUBE_TOKEN = origToken;
-    else delete process.env.SONARQUBE_TOKEN;
+    process.env.SONARQUBE_URL = "";
+    process.env.SONARQUBE_TOKEN = "";
+    process.env.FC_HARDEN_EGRESS = "";
+    process.env.NODE_ENV = "";
   });
 
-  it("missing config -> 'skipped'", async () => {
-    delete process.env.SONARQUBE_URL;
-    delete process.env.SONARQUBE_TOKEN;
-    const vm = mockVM();
+  it("skips when SonarQube env vars are missing", async () => {
+    const vm = makeVmExec([]);
     const result = await runSonarQubeGate(vm, "typescript", 60_000, null);
-    expectGateSkipped(result);
-    expect(result.summary).toContain("not configured");
+    expect(result.status).toBe("skipped");
   });
 
-  it("quality gate OK -> 'pass'", async () => {
-    process.env.SONARQUBE_URL = "https://sonar.example.com";
-    process.env.SONARQUBE_TOKEN = "test-token";
-    const vm = mockVM(async (cmd: string) => {
-      if (cmd.includes("curl")) {
-        return {
-          stdout: JSON.stringify({
-            projectStatus: { status: "OK", conditions: [] },
-          }),
-          stderr: "",
-          exitCode: 0,
-        };
-      }
-      // Scanner runs
-      return { stdout: "", stderr: "", exitCode: 0 };
-    });
-    const result = await runSonarQubeGate(vm, "typescript", 60_000, null);
-    expectGatePass(result);
-    expect(result.summary).toContain("passed");
-  });
+  it("returns error when hardened egress is enabled but URL is not HTTPS", async () => {
+    process.env.SONARQUBE_URL = "http://sonarqube:9000";
+    process.env.SONARQUBE_TOKEN = "token";
+    process.env.FC_HARDEN_EGRESS = "true";
 
-  it("quality gate ERROR -> 'fail'", async () => {
-    process.env.SONARQUBE_URL = "https://sonar.example.com";
-    process.env.SONARQUBE_TOKEN = "test-token";
-    const vm = mockVM(async (cmd: string) => {
-      if (cmd.includes("curl")) {
-        return {
-          stdout: JSON.stringify({
-            projectStatus: {
-              status: "ERROR",
-              conditions: [{
-                status: "ERROR",
-                metricKey: "new_reliability_rating",
-                comparator: "GT",
-                errorThreshold: "1",
-                actualValue: "4",
-              }],
-            },
-          }),
-          stderr: "",
-          exitCode: 0,
-        };
-      }
-      return { stdout: "", stderr: "", exitCode: 0 };
-    });
-    const result = await runSonarQubeGate(vm, "typescript", 60_000, null);
-    expectGateFail(result);
-    expect(result.summary).toContain("failed");
-  });
-
-  it("scanner failure -> 'error'", async () => {
-    process.env.SONARQUBE_URL = "https://sonar.example.com";
-    process.env.SONARQUBE_TOKEN = "test-token";
-    const vm = mockVM(async () => ({
-      stdout: "",
-      stderr: "Scanner crashed",
-      exitCode: 2,
-    }));
+    const vm = makeVmExec([]);
     const result = await runSonarQubeGate(vm, "typescript", 60_000, null);
     expect(result.status).toBe("error");
-    expect(result.summary).toContain("exit code 2");
+    expect(result.summary).toContain("https://");
+  });
+
+  it("returns error when scanner command fails", async () => {
+    process.env.SONARQUBE_URL = "https://sonar.example.com";
+    process.env.SONARQUBE_TOKEN = "token";
+
+    const vm = makeVmExec([
+      { exitCode: 0 },
+      { exitCode: 1, stderr: "scanner failed" },
+    ]);
+
+    const result = await runSonarQubeGate(vm, "typescript", 60_000, null);
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain("scanner failed");
+  });
+
+  it("skips unsupported languages", async () => {
+    process.env.SONARQUBE_URL = "https://sonar.example.com";
+    process.env.SONARQUBE_TOKEN = "token";
+
+    const vm = makeVmExec([]);
+    const result = await runSonarQubeGate(vm, "python", 60_000, null);
+    expect(result.status).toBe("skipped");
+    expect(result.summary).toContain("not enabled for language");
+  });
+
+  it("fails when quality gate is ERROR", async () => {
+    process.env.SONARQUBE_URL = "https://sonar.example.com";
+    process.env.SONARQUBE_TOKEN = "token";
+
+    const vm = makeVmExec([
+      { exitCode: 0 },
+      { exitCode: 0, stdout: "scanner ok" },
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          projectStatus: {
+            status: "ERROR",
+            conditions: [
+              {
+                status: "ERROR",
+                metricKey: "bugs",
+                actualValue: "2",
+                errorThreshold: "0",
+                comparator: "GT",
+              },
+            ],
+          },
+        }),
+      },
+    ]);
+
+    const result = await runSonarQubeGate(vm, "typescript", 60_000, null);
+    expect(result.status).toBe("fail");
+    expect(result.summary).toContain("quality gate failed");
   });
 });

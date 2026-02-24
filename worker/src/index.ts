@@ -1,4 +1,5 @@
 import express from "express";
+import { execFileSync } from "node:child_process";
 import { createLogger, format, transports } from "winston";
 import { existsSync, readdirSync } from "node:fs";
 import { createVerificationQueue, closeQueue } from "./queue/jobQueue";
@@ -51,6 +52,18 @@ async function main(): Promise<void> {
   const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
   const executionBackend = (process.env.WORKER_EXECUTION_BACKEND ?? "firecracker").toLowerCase();
 
+  if (executionBackend === "process") {
+    const requiredTools: string[] = [];
+    if (process.env.SNYK_TOKEN) requiredTools.push("snyk");
+    if (process.env.SONARQUBE_URL && process.env.SONARQUBE_TOKEN) requiredTools.push("sonar-scanner");
+    for (const tool of requiredTools) {
+      if (!hasBinary(tool)) {
+        logger.error("Required scanner binary missing", { tool, executionBackend });
+        process.exit(1);
+      }
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Startup cleanup — remove orphaned resources from prior unclean shutdowns
   // -------------------------------------------------------------------------
@@ -94,6 +107,20 @@ async function main(): Promise<void> {
     }
 
     checks.executionBackend = executionBackend;
+    checks.snykCli = hasBinary("snyk") ? "ok" : "missing";
+    checks.sonarScanner = hasBinary("sonar-scanner") ? "ok" : "missing";
+
+    if (executionBackend === "process" && process.env.SNYK_TOKEN && checks.snykCli !== "ok") {
+      healthy = false;
+    }
+    if (
+      executionBackend === "process" &&
+      process.env.SONARQUBE_URL &&
+      process.env.SONARQUBE_TOKEN &&
+      checks.sonarScanner !== "ok"
+    ) {
+      healthy = false;
+    }
 
     if (executionBackend === "firecracker") {
       // Firecracker binary
@@ -224,3 +251,14 @@ main().catch((err) => {
   logger.error("Fatal startup error", err);
   process.exit(1);
 });
+
+function hasBinary(binary: string): boolean {
+  try {
+    execFileSync("bash", ["-lc", `command -v ${binary} >/dev/null 2>&1`], {
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}

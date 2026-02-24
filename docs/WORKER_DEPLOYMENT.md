@@ -59,7 +59,7 @@ Starts all services: `redis`, `web` (Next.js on port 3000), `worker` (port 3001)
 docker compose --profile sonarqube up
 ```
 
-This adds `sonarqube` (port 9000) and its `sonarqube-db` (Postgres) service. SonarQube is an optional verification gate — it only runs if enabled per-bounty by the creator.
+This adds `sonarqube` (port 9000) and its `sonarqube-db` (Postgres) service in the same compose environment as worker+redis. SonarQube is an optional verification gate — it only runs if enabled per-bounty by the creator.
 
 ### Environment variables
 
@@ -387,7 +387,7 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 | `WORKSPACE_IDLE_TIMEOUT_MS` | No | `1800000` | Idle workspace timeout (30 min) |
 | `SONARQUBE_URL` | No | — | SonarQube server URL (enables gate) |
 | `SONARQUBE_TOKEN` | No | — | SonarQube auth token |
-| `SNYK_TOKEN` | No | — | Snyk API token (enables gate) |
+| `SNYK_TOKEN` | No | — | Snyk CLI token (SaaS-backed gate) |
 | `GITHUB_API_TOKEN` | No | — | Primary GitHub token for repo access and language detection |
 | `GITHUB_TOKEN` | Deprecated fallback | — | Backward-compatible fallback token. Prefer `GITHUB_API_TOKEN` |
 
@@ -412,6 +412,10 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 | `firecracker_version` | No | `1.7.0` | Firecracker release version |
 | `node_version` | No | `20` | Node.js major version |
 | `harden_egress` | No | `true` | Enable egress filtering |
+| `enable_sonarqube` | No | `false` | Deploy SonarQube + Postgres sidecars on worker hosts |
+| `sonarqube_url` | No | `""` | SonarQube endpoint passed to worker env (`https://...` recommended for hardened/prod) |
+| `sonarqube_token` | No | `""` | SonarQube auth token passed to worker env |
+| `snyk_token` | No | `""` | Snyk token passed to worker env |
 
 ### Convex environment variables
 

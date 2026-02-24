@@ -18,6 +18,7 @@ export async function runSnykGate(
   _diff: DiffContext | null,
 ): Promise<GateResult> {
   const start = Date.now();
+  const normalizedLanguage = language.toLowerCase();
 
   const snykToken = process.env.SNYK_TOKEN;
   if (!snykToken) {
@@ -26,6 +27,26 @@ export async function runSnykGate(
       status: "skipped",
       durationMs: Date.now() - start,
       summary: "Snyk not configured (SNYK_TOKEN missing)",
+    };
+  }
+
+  const supportedLanguages = new Set(["typescript", "javascript"]);
+  if (!supportedLanguages.has(normalizedLanguage)) {
+    return {
+      gate: "snyk",
+      status: "skipped",
+      durationMs: Date.now() - start,
+      summary: `Snyk gate is not enabled for language "${language}" in this execution image set`,
+    };
+  }
+
+  const cliCheck = await vm.exec("command -v snyk >/dev/null 2>&1", 10_000);
+  if (cliCheck.exitCode !== 0) {
+    return {
+      gate: "snyk",
+      status: "error",
+      durationMs: Date.now() - start,
+      summary: `Snyk CLI not available in execution environment for language "${language}"`,
     };
   }
 
@@ -43,20 +64,36 @@ export async function runSnykGate(
   const totalCritical = scaResult.criticalCount + sastResult.criticalCount;
   const totalFindings = scaResult.totalFindings + sastResult.totalFindings;
   const hasBlockingIssues = totalHigh > 0 || totalCritical > 0;
+  const scannerErrors = [scaResult.error, sastResult.error].filter(Boolean) as string[];
+  const hasScannerErrors = scannerErrors.length > 0;
+
+  let status: "pass" | "fail" | "error" = "pass";
+  if (hasScannerErrors) {
+    status = "error";
+  } else if (hasBlockingIssues) {
+    status = "fail";
+  }
+
+  let summary = `Snyk scan passed (${totalFindings} low/medium finding(s))`;
+  if (hasBlockingIssues) {
+    summary = `Snyk found ${totalCritical} critical and ${totalHigh} high severity issue(s)`;
+  }
+  if (hasScannerErrors) {
+    summary = `Snyk scanner execution error: ${scannerErrors.join("; ")}`;
+  }
 
   return {
     gate: "snyk",
-    status: hasBlockingIssues ? "fail" : "pass",
+    status,
     durationMs,
-    summary: hasBlockingIssues
-      ? `Snyk found ${totalCritical} critical and ${totalHigh} high severity issue(s)`
-      : `Snyk scan passed (${totalFindings} low/medium finding(s))`,
+    summary,
     details: {
       sca: scaResult,
       sast: sastResult,
       totalFindings,
       criticalCount: totalCritical,
       highCount: totalHigh,
+      scannerErrors,
     },
   };
 }

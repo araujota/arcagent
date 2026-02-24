@@ -155,6 +155,7 @@ export default defineSchema({
       v.literal("warning")
     ),
     issues: v.optional(v.array(v.string())),
+    detailsJson: v.optional(v.string()),
   }).index("by_verificationId", ["verificationId"]),
 
   verificationSteps: defineTable({
@@ -383,6 +384,16 @@ export default defineSchema({
     .index("by_keyHash", ["keyHash"])
     .index("by_userId", ["userId"])
     .index("by_status", ["status"]),
+
+  mcpRegistrationLimits: defineTable({
+    key: v.string(),
+    windowStartMs: v.number(),
+    count: v.number(),
+    expiresAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_key_and_windowStartMs", ["key", "windowStartMs"])
+    .index("by_expiresAt", ["expiresAt"]),
 
   pmConnections: defineTable({
     userId: v.id("users"),

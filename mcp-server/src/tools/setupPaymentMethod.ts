@@ -31,6 +31,7 @@ export function registerSetupPaymentMethod(server: McpServer): void {
           clientSecret: string;
           setupIntentId: string;
           customerId: string;
+          checkoutUrl?: string;
         }>("/api/mcp/stripe/setup-intent", {
           userId,
           email: args.email,
@@ -42,7 +43,11 @@ export function registerSetupPaymentMethod(server: McpServer): void {
         text += `**Customer ID:** ${result.customerId}\n`;
         text += `**Client Secret:** ${result.clientSecret}\n\n`;
         text += `## Next Steps\n\n`;
-        text += `Use the client secret to attach a payment method:\n`;
+        if (result.checkoutUrl) {
+          text += `Open this Stripe-hosted setup page to attach a card:\n`;
+          text += `${result.checkoutUrl}\n\n`;
+        }
+        text += `Alternative manual methods:\n`;
         text += `- **Stripe CLI:** \`stripe setup_intents confirm ${result.setupIntentId} --payment-method pm_card_visa\`\n`;
         text += `- **Stripe.js:** Use \`stripe.confirmCardSetup(clientSecret, {payment_method: ...})\`\n`;
 

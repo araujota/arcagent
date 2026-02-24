@@ -173,8 +173,8 @@ npm run env:bootstrap:secrets
 
 | Variable | Required | Description | How to get it |
 |----------|----------|-------------|---------------|
-| `SNYK_TOKEN` | No | Snyk SCA + SAST scanning | Snyk Dashboard > Settings > API Token |
-| `SONARQUBE_URL` | No | SonarQube server endpoint | `http://localhost:9000` locally, or SonarQube Cloud URL |
+| `SNYK_TOKEN` | No | Snyk CLI token (SaaS-backed SCA + SAST scanning) | Snyk Dashboard > Settings > API Token |
+| `SONARQUBE_URL` | No | SonarQube server endpoint | `http://localhost:9000` for local process backend, `https://...` in hardened/prod |
 | `SONARQUBE_TOKEN` | No | SonarQube auth token | SonarQube > Administration > Security > Users > Generate token |
 
 ### Firecracker VM (Linux host only)
