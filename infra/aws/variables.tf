@@ -17,7 +17,7 @@ variable "environment" {
 variable "instance_type" {
   description = "EC2 instance type — must be .metal for KVM/Firecracker support"
   type        = string
-  default     = "m5.metal"
+  default     = "c6i.metal"
 
   validation {
     condition     = can(regex("\\.metal$", var.instance_type))

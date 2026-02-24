@@ -100,7 +100,7 @@ The `infra/aws/` directory contains complete Terraform configuration for deployi
 
 Terraform provisions:
 - **VPC** (`10.1.0.0/16`) with public subnets — uses `10.1.x.x` to avoid collision with Firecracker's internal `10.0.0.0/24` TAP subnet
-- **Bare-metal EC2 instances** (`m5.metal` by default) with KVM support
+- **Bare-metal EC2 instances** (`c6i.metal` by default) with KVM support
 - **Elastic IPs** for stable worker addressing
 - **Security group** — port 3001 open for Convex/MCP inbound, SSH restricted to specified CIDRs
 - **IAM role** with CloudWatch Logs, SSM, and ECR read access
@@ -121,7 +121,7 @@ aws_region   = "us-east-1"
 environment  = "production"
 
 # Must be .metal for KVM/Firecracker support
-instance_type = "m5.metal"
+instance_type = "c6i.metal"
 worker_count  = 1
 ssh_key_name  = "your-key-pair-name"
 
@@ -249,7 +249,7 @@ Each language has a fixed resource profile defined in `worker/src/vm/vmConfig.ts
 | Swift | 4 | 2048 | 3 min | `swift-6.ext4` |
 | Kotlin | 4 | 2048 | 3 min | `kotlin-jvm21.ext4` |
 
-An `m5.metal` instance has 96 vCPUs and 384 GiB RAM — plan your `worker_concurrency` and `max_dev_vms` accordingly.
+A `c6i.metal` instance has 128 vCPUs and 256 GiB RAM — plan your `worker_concurrency` and `max_dev_vms` accordingly.
 
 ## Updating / Redeploying
 
@@ -388,7 +388,7 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 |----------|----------|---------|-------------|
 | `aws_region` | No | `us-east-1` | AWS region |
 | `environment` | No | `production` | Environment name |
-| `instance_type` | No | `m5.metal` | EC2 instance type (must be `.metal`) |
+| `instance_type` | No | `c6i.metal` | EC2 instance type (must be `.metal`) |
 | `worker_count` | No | `1` | Number of worker instances |
 | `ssh_key_name` | Yes | — | EC2 key pair name |
 | `ssh_allowed_cidrs` | No | `[]` | CIDRs allowed to SSH (empty = no SSH) |
