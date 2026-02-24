@@ -2063,7 +2063,7 @@ http.route({
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const Stripe = require("stripe");
       const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-      event = stripe.webhooks.constructEvent(
+      event = await stripe.webhooks.constructEventAsync(
         payload,
         signature,
         webhookSecret
