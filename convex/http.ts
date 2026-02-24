@@ -2,6 +2,7 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
+import { Webhook as SvixWebhook } from "svix";
 import { constantTimeEqual } from "./lib/constantTimeEqual";
 import { verifyJobHmac } from "./lib/hmac";
 
@@ -33,8 +34,7 @@ http.route({
     }
 
     // Verify the webhook signature
-    const { Webhook } = await import("svix");
-    const wh = new Webhook(webhookSecret);
+    const wh = new SvixWebhook(webhookSecret);
 
     let event: {
       type: string;
