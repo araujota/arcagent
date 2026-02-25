@@ -54,7 +54,6 @@ describe("get_bounty_details tool", () => {
         deadline: 1700000000000,
         testSuites: [
           { title: "Login Suite", version: 1, gherkinContent: "Feature: Login\n  Scenario: Valid login\n    Given a user", visibility: "public" },
-          { title: "Security Suite", version: 1, gherkinContent: "Feature: Security\n  Scenario: SQL injection", visibility: "hidden" },
         ],
         repoMap: { repoMapText: "src/\n  index.ts\n  login.ts" },
         testFramework: "vitest",
@@ -69,8 +68,8 @@ describe("get_bounty_details tool", () => {
     const text = result.content[0].text;
     expect(text).toContain("Fix login");
     expect(text).toContain("Alice");
-    expect(text).toContain("Public Tests");
-    expect(text).toContain("Hidden Tests");
+    expect(text).toContain("Public Test Suites");
+    expect(text).not.toContain("Hidden Tests");
     expect(text).toContain("Repository Structure");
     expect(text).toContain("vitest");
   });

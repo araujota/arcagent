@@ -6,12 +6,9 @@
  * blocked by iptables. This prevents DNS tunneling and data exfiltration.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { writeFile, unlink } from "node:fs/promises";
 import { logger } from "../index";
-
-const execFileAsync = promisify(execFile);
+import { execFileAsync } from "../lib/execFileAsync";
 
 // ---------------------------------------------------------------------------
 // Types

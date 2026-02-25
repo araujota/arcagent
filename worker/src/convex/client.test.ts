@@ -27,6 +27,7 @@ function makeResult(overrides: Partial<VerificationResult> = {}): VerificationRe
       { gate: "build", status: "pass", durationMs: 100, summary: "OK" },
     ],
     totalDurationMs: 500,
+    jobHmac: "default_job_hmac",
     ...overrides,
   };
 }
@@ -62,15 +63,17 @@ describe("postVerificationResult", () => {
     const [, options] = mockFetch.mock.calls[0];
     const body = JSON.parse(options.body);
     expect(body.jobHmac).toBe("abc123hmac");
+    expect(typeof body.callbackTimestampMs).toBe("number");
+    expect(typeof body.callbackNonce).toBe("string");
+    expect(typeof body.callbackSignature).toBe("string");
   });
 
-  it("omits jobHmac when not present", async () => {
-    const result = makeResult(); // no jobHmac
-    await postVerificationResult("https://test.convex.cloud", result);
-
-    const [, options] = mockFetch.mock.calls[0];
-    const body = JSON.parse(options.body);
-    expect(body.jobHmac).toBeUndefined();
+  it("requires jobHmac", async () => {
+    const result = makeResult();
+    delete (result as { jobHmac?: string }).jobHmac;
+    await expect(
+      postVerificationResult("https://test.convex.cloud", result),
+    ).rejects.toThrow("Missing jobHmac");
   });
 
   it("rejects untrusted Convex URLs (C4)", async () => {

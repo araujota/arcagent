@@ -1,5 +1,6 @@
 import { logger } from "../index";
 import { VerificationResult } from "../queue/jobQueue";
+import { buildWorkerCallbackEnvelope } from "../lib/callbackAuth";
 
 /**
  * HTTP client for posting verification results back to the Convex deployment.
@@ -40,6 +41,10 @@ interface ConvexResultPayload {
   }>;
   /** SECURITY (H6): Per-job HMAC token for result verification. */
   jobHmac?: string;
+  /** SECURITY (H7): Signed callback envelope metadata. */
+  callbackTimestampMs?: number;
+  callbackNonce?: string;
+  callbackSignature?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,8 +112,27 @@ export async function postVerificationResult(
 
   const secret = process.env.WORKER_SHARED_SECRET;
 
+  if (!payload.jobHmac) {
+    throw new Error("Missing jobHmac in verification result payload");
+  }
+  if (!secret) {
+    throw new Error("WORKER_SHARED_SECRET must be configured");
+  }
+
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
+      const callbackEnvelope = buildWorkerCallbackEnvelope({
+        secret,
+        submissionId: payload.submissionId,
+        bountyId: payload.bountyId,
+        jobId: payload.jobId,
+        overallStatus: payload.overallStatus,
+        jobHmac: payload.jobHmac,
+      });
+      payload.callbackTimestampMs = callbackEnvelope.callbackTimestampMs;
+      payload.callbackNonce = callbackEnvelope.callbackNonce;
+      payload.callbackSignature = callbackEnvelope.callbackSignature;
+
       const controller = new AbortController();
       const timeoutId = setTimeout(
         () => controller.abort(),

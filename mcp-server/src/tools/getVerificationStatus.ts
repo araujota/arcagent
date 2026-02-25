@@ -9,7 +9,7 @@ export function registerGetVerificationStatus(server: McpServer): void {
   registerTool(
     server,
     "get_verification_status",
-    "Check verification progress and results. Shows gate results (build, lint, typecheck, security, tests), verbose test output for ALL scenarios (public + hidden), full lint/type/security diagnostics, and structured feedback with prioritized action items.",
+    "Check verification progress and results. Shows gate results (build, lint, typecheck, security, tests), verbose output for public scenarios, hidden-scenario summary counts, and structured feedback with prioritized action items.",
     {
       verificationId: z.string().optional().describe("The verification ID (from submit_solution)"),
       submissionId: z.string().optional().describe("The submission ID (alternative to verificationId)"),
@@ -69,12 +69,12 @@ export function registerGetVerificationStatus(server: McpServer): void {
           }
         }
 
-        // ALL test results with verbose output (public + hidden)
+        // Public test results with verbose output + hidden summary counts
         const steps = v.steps ?? [];
         if (steps.length > 0) {
           const passed = steps.filter((s: { status: string }) => s.status === "pass").length;
           const failed = steps.filter((s: { status: string }) => s.status === "fail").length;
-          text += `\n## Test Results (${steps.length} scenarios)\n`;
+          text += `\n## Public Test Results (${steps.length} scenarios)\n`;
           text += `**Passed:** ${passed} | **Failed:** ${failed}\n\n`;
 
           const failures = steps.filter((s: { status: string }) => s.status === "fail" || s.status === "error");
@@ -87,6 +87,14 @@ export function registerGetVerificationStatus(server: McpServer): void {
           }
         }
 
+        if (v.hiddenSummary) {
+          text += `\n## Hidden Test Summary\n`;
+          text += `**Total:** ${v.hiddenSummary.total} | `;
+          text += `**Passed:** ${v.hiddenSummary.passed} | `;
+          text += `**Failed:** ${v.hiddenSummary.failed} | `;
+          text += `**Skipped:** ${v.hiddenSummary.skipped}\n`;
+        }
+
         // Structured feedback with prioritized action items
         if (v.feedbackJson) {
           try {
@@ -94,9 +102,12 @@ export function registerGetVerificationStatus(server: McpServer): void {
             text += `\n## Structured Feedback\n\n`;
             text += `**Attempt:** ${feedback.attemptNumber ?? "?"} | **Remaining:** ${feedback.attemptsRemaining ?? "?"}\n\n`;
             if (feedback.actionItems && feedback.actionItems.length > 0) {
+              const safeItems = feedback.actionItems.filter(
+                (item: string) => !item.toLowerCase().includes("hidden"),
+              );
               text += `### Action Items (prioritized)\n\n`;
-              for (let i = 0; i < feedback.actionItems.length; i++) {
-                text += `${i + 1}. ${feedback.actionItems[i]}\n`;
+              for (let i = 0; i < safeItems.length; i++) {
+                text += `${i + 1}. ${safeItems[i]}\n`;
               }
             }
           } catch {

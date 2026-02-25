@@ -63,4 +63,10 @@ crons.interval(
   internal.devWorkspaces.cleanupOrphaned,
 );
 
+crons.interval(
+  "prune expired worker callback nonces",
+  { minutes: 15 },
+  internal.workerCallbackNonces.pruneExpired,
+);
+
 export default crons;

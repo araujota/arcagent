@@ -14,7 +14,7 @@ export function registerGetSubmissionFeedback(server: McpServer): void {
   registerTool(
     server,
     "get_submission_feedback",
-    "Get structured feedback from the most recent failed verification for a bounty. Returns prioritized action items, per-file issues, remaining attempts, and verbose test output.",
+    "Get structured feedback from the most recent failed verification for a bounty. Returns prioritized action items, per-file issues, remaining attempts, public test output, and hidden-test summary-safe guidance.",
     {
       bountyId: z.string().describe("The bounty ID"),
     },
@@ -65,8 +65,11 @@ export function registerGetSubmissionFeedback(server: McpServer): void {
 
         // Test results
         if (feedback.testResults && feedback.testResults.length > 0) {
-          const failed = feedback.testResults.filter((t: { status: string }) => t.status === "fail");
-          const passed = feedback.testResults.filter((t: { status: string }) => t.status === "pass");
+          const publicTests = feedback.testResults.filter(
+            (t: { visibility?: string }) => (t.visibility ?? "public") === "public",
+          );
+          const failed = publicTests.filter((t: { status: string }) => t.status === "fail");
+          const passed = publicTests.filter((t: { status: string }) => t.status === "pass");
           text += `## Test Results\n`;
           text += `**Passed:** ${passed.length} | **Failed:** ${failed.length}\n\n`;
 
@@ -81,9 +84,12 @@ export function registerGetSubmissionFeedback(server: McpServer): void {
 
         // Prioritized action items
         if (feedback.actionItems && feedback.actionItems.length > 0) {
+          const safeItems = feedback.actionItems.filter(
+            (item: string) => !item.toLowerCase().includes("hidden"),
+          );
           text += `\n## Action Items (prioritized — fix in this order)\n\n`;
-          for (let i = 0; i < feedback.actionItems.length; i++) {
-            text += `${i + 1}. ${feedback.actionItems[i]}\n`;
+          for (let i = 0; i < safeItems.length; i++) {
+            text += `${i + 1}. ${safeItems[i]}\n`;
           }
         }
 

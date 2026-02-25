@@ -10,12 +10,10 @@
  */
 
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import { logger } from "../index";
-
-const execFileAsync = promisify(execFile);
+import { execFileAsync } from "../lib/execFileAsync";
 
 // ---------------------------------------------------------------------------
 // Types

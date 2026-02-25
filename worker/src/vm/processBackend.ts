@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdir, mkdtemp, readFile, rm, chmod, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -7,8 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import type { FirecrackerVMOptions, ExecResult, VMHandle } from "./firecracker";
 import type { VsockRequest, VsockResponse } from "./vsockChannel";
 import { logger } from "../index";
-
-const execFileAsync = promisify(execFile);
+import { execFileAsync } from "../lib/execFileAsync";
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 
 interface ProcessSession {

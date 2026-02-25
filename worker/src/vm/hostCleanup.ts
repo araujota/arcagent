@@ -11,12 +11,9 @@
  * in encryptedOverlay.ts.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { readdir, unlink } from "node:fs/promises";
 import { logger } from "../index";
-
-const execFileAsync = promisify(execFile);
+import { execFileAsync } from "../lib/execFileAsync";
 
 /**
  * Clean up all orphaned host resources from prior unclean shutdowns.

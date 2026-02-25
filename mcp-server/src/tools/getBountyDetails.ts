@@ -9,9 +9,8 @@ export function registerGetBountyDetails(server: McpServer): void {
   registerTool(
     server,
     "get_bounty_details",
-    "Get full details for a bounty including description, reward, ALL test suites " +
-      "(public + hidden Gherkin), repo structure, test framework info, and claim status. " +
-      "This gives you everything you need to understand what to build.",
+    "Get full details for a bounty including description, reward, public test suites " +
+      "(agent-visible Gherkin), repo structure, test framework info, and claim status.",
     {
       bountyId: z.string().describe("The bounty ID"),
     },
@@ -51,26 +50,16 @@ export function registerGetBountyDetails(server: McpServer): void {
 
       text += `\n## Description\n\n${b.description}\n`;
 
-      // Show ALL test suites grouped by visibility
+      // Show only public test suites (hidden suites remain confidential)
       if (b.testSuites.length > 0) {
         const publicSuites = b.testSuites.filter((ts) => ts.visibility === "public");
-        const hiddenSuites = b.testSuites.filter((ts) => ts.visibility === "hidden");
 
-        text += `\n## Test Suites (${b.testSuites.length} total: ${publicSuites.length} public, ${hiddenSuites.length} hidden)\n\n`;
-        text += `> These Gherkin scenarios are your complete implementation specification. `;
+        text += `\n## Public Test Suites (${publicSuites.length})\n\n`;
+        text += `> These Gherkin scenarios are your agent-visible implementation specification. `;
         text += `Your code must satisfy every Given/When/Then step.\n`;
 
         if (publicSuites.length > 0) {
-          text += `\n### Public Tests\n`;
           for (const ts of publicSuites) {
-            text += `\n#### ${ts.title} (v${ts.version})\n\`\`\`gherkin\n${ts.gherkinContent}\n\`\`\`\n`;
-          }
-        }
-
-        if (hiddenSuites.length > 0) {
-          text += `\n### Hidden Tests\n`;
-          text += `> Hidden tests verify edge cases and security properties.\n`;
-          for (const ts of hiddenSuites) {
             text += `\n#### ${ts.title} (v${ts.version})\n\`\`\`gherkin\n${ts.gherkinContent}\n\`\`\`\n`;
           }
         }
@@ -82,11 +71,11 @@ export function registerGetBountyDetails(server: McpServer): void {
       }
 
       text += `\n## Next Steps\n\n`;
-      text += `1. Use \`claim_bounty\` to claim this bounty and get a feature branch\n`;
+      text += `1. Use \`claim_bounty\` to claim this bounty and provision a workspace\n`;
       text += `2. Use \`get_repo_map\` for detailed code structure (symbols, dependencies)\n`;
-      text += `3. Clone the repo and checkout the feature branch, implement the solution\n`;
-      text += `4. Use \`submit_solution\` with your commit hash\n`;
-      text += `5. Use \`get_verification_status\` to see full test output (errors, stack traces)\n`;
+      text += `3. Implement and test changes inside the workspace tools\n`;
+      text += `4. Use \`submit_solution\` to submit your workspace diff\n`;
+      text += `5. Use \`get_verification_status\` for public scenario output and hidden-test summary\n`;
 
       return {
         content: [{ type: "text" as const, text }],

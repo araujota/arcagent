@@ -4,7 +4,11 @@ import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { Webhook as SvixWebhook } from "svix";
 import { constantTimeEqual } from "./lib/constantTimeEqual";
-import { verifyJobHmac } from "./lib/hmac";
+import {
+  verifyJobHmac,
+  verifyWorkerCallbackSignature,
+  isFreshWorkerCallbackTimestamp,
+} from "./lib/hmac";
 
 const http = httpRouter();
 
@@ -786,7 +790,7 @@ http.route({
   }),
 });
 
-// --- Bounties: Test Suites (ALL Gherkin — public + hidden, no step defs) ---
+// --- Bounties: Test Suites (public Gherkin only, no step defs) ---
 http.route({
   path: "/api/mcp/bounties/test-suites",
   method: "POST",
@@ -800,9 +804,9 @@ http.route({
 
     const typedBountyId = bountyId as Id<"bounties">;
 
-    // Get ALL test suites (public + hidden) — agents see all Gherkin as their spec
+    // SECURITY: Only expose public suites to agent-facing MCP clients.
     const testSuites = await ctx.runQuery(
-      internal.testSuites.listAllByBounty,
+      internal.testSuites.listPublicByBounty,
       { bountyId: typedBountyId }
     );
 
@@ -1955,6 +1959,9 @@ http.route({
       jobId: string;
       overallStatus: "pass" | "fail" | "error";
       jobHmac?: string;
+      callbackTimestampMs?: number;
+      callbackNonce?: string;
+      callbackSignature?: string;
       gates: Array<{
         gate: string;
         status: string;
@@ -2012,6 +2019,50 @@ http.route({
       );
       if (!hmacValid) {
         return mcpError("Invalid job HMAC token", 403);
+      }
+
+      // SECURITY (H7): Verify signed callback envelope (timestamp + nonce).
+      if (
+        body.callbackTimestampMs === undefined ||
+        !body.callbackNonce ||
+        !body.callbackSignature
+      ) {
+        return mcpError(
+          "Missing callback auth envelope fields: callbackTimestampMs, callbackNonce, callbackSignature",
+          403,
+        );
+      }
+      if (!isFreshWorkerCallbackTimestamp(body.callbackTimestampMs)) {
+        return mcpError("Stale or invalid callback timestamp", 403);
+      }
+      const callbackSignatureValid = await verifyWorkerCallbackSignature(
+        body.callbackSignature,
+        {
+          submissionId: body.submissionId,
+          bountyId: body.bountyId,
+          jobId: body.jobId,
+          overallStatus: body.overallStatus,
+          jobHmac: body.jobHmac,
+          callbackTimestampMs: body.callbackTimestampMs,
+          callbackNonce: body.callbackNonce,
+        },
+      );
+      if (!callbackSignatureValid) {
+        return mcpError("Invalid callback signature", 403);
+      }
+      const callbackNonceApi = internal as unknown as {
+        workerCallbackNonces: { consume: unknown };
+      };
+      const nonceResult = await ctx.runMutation(
+        callbackNonceApi.workerCallbackNonces.consume as never,
+        {
+          nonce: body.callbackNonce,
+          verificationId,
+          ttlMs: 10 * 60 * 1000,
+        },
+      );
+      if (!nonceResult.accepted) {
+        return mcpError("Callback nonce already used", 409);
       }
 
       // SECURITY (M12): Reject late results for verifications that have

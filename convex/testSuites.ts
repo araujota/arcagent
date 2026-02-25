@@ -46,6 +46,18 @@ export const listAllByBounty = internalQuery({
   },
 });
 
+export const listPublicByBounty = internalQuery({
+  args: { bountyId: v.id("bounties") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("testSuites")
+      .withIndex("by_bountyId_and_visibility", (q) =>
+        q.eq("bountyId", args.bountyId).eq("visibility", "public")
+      )
+      .collect();
+  },
+});
+
 export const getById = query({
   args: { testSuiteId: v.id("testSuites") },
   handler: async (ctx, args) => {

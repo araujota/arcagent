@@ -153,8 +153,8 @@ describe("generateFeedback", () => {
       }),
     ];
     const feedback = generateFeedback(gates, 1);
-    expect(feedback.testResults).toHaveLength(2);
+    expect(feedback.testResults).toHaveLength(1);
     expect(feedback.testResults[0]!.scenarioName).toBe("Login works");
-    expect(feedback.testResults[1]!.visibility).toBe("hidden");
+    expect(feedback.actionItems.some((a) => a.includes("hidden scenario(s) failed"))).toBe(true);
   });
 });

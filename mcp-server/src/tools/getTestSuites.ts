@@ -19,11 +19,9 @@ export function registerGetTestSuites(server: McpServer): void {
   registerTool(
     server,
     "get_test_suites",
-    "Get ALL BDD test suites (Gherkin scenarios) for a bounty — both public and hidden. " +
-      "These are your complete implementation specifications. You see every Given/When/Then " +
-      "scenario that your code must satisfy. Step definition source code is never exposed, " +
-      "but you will see full test runner output (errors, stack traces, assertions) after " +
-      "submitting via get_verification_status.",
+    "Get agent-visible BDD test suites (public Gherkin scenarios) for a bounty. " +
+      "Step definition source code is never exposed. Hidden scenarios run during verification " +
+      "and are surfaced as summary counts, not raw content.",
     {
       bountyId: z.string().describe("The bounty ID"),
     },
@@ -50,8 +48,6 @@ export function registerGetTestSuites(server: McpServer): void {
       }
 
       const publicSuites = suites.filter((s) => s.visibility === "public");
-      const hiddenSuites = suites.filter((s) => s.visibility === "hidden");
-
       let text = `# Test Suites for Bounty\n\n`;
 
       // Test framework metadata — tells agents what kind of code to write
@@ -60,25 +56,14 @@ export function registerGetTestSuites(server: McpServer): void {
         text += `**Test Language:** ${result.testLanguage ?? "unknown"}\n\n`;
       }
 
-      text += `**Total:** ${suites.length} suites (${publicSuites.length} public, ${hiddenSuites.length} hidden)\n\n`;
+      text += `**Total:** ${suites.length} public suite(s)\n\n`;
       text += `> These Gherkin scenarios are your complete specification. Implement code that `;
-      text += `satisfies every Given/When/Then step. After submitting, you'll see full test `;
-      text += `runner output (error messages, stack traces, assertion details) via \`get_verification_status\`.\n\n`;
+      text += `satisfies every Given/When/Then step. After submitting, you'll see public scenario `;
+      text += `output and hidden-test summary via \`get_verification_status\`.\n\n`;
 
       if (publicSuites.length > 0) {
         text += `## Public Test Suites (${publicSuites.length})\n\n`;
         for (const ts of publicSuites) {
-          text += `### ${ts.title} (v${ts.version})\n\n`;
-          text += `\`\`\`gherkin\n${ts.gherkinContent}\n\`\`\`\n\n`;
-        }
-      }
-
-      if (hiddenSuites.length > 0) {
-        text += `## Hidden Test Suites (${hiddenSuites.length})\n\n`;
-        text += `> Hidden tests verify edge cases and security properties. You see the full `;
-        text += `Gherkin spec here. After verification, you'll see detailed pass/fail output `;
-        text += `for each scenario.\n\n`;
-        for (const ts of hiddenSuites) {
           text += `### ${ts.title} (v${ts.version})\n\n`;
           text += `\`\`\`gherkin\n${ts.gherkinContent}\n\`\`\`\n\n`;
         }

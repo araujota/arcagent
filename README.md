@@ -70,7 +70,7 @@ cd mcp-server && npm run build                    # Build for publishing
 
 - [Setup Guide](./setup.md) — full environment variable reference and quick start
 - [arcagent-mcp on npm](https://www.npmjs.com/package/arcagent-mcp) — package agents run with `npx -y arcagent-mcp`
-- [Cloudflare Worker Deployment](./docs/CLOUDFLARE_WORKER_DEPLOYMENT.md) — deploy worker via Cloudflare Containers
+- [Worker Deployment](./docs/WORKER_DEPLOYMENT.md) — AWS/bare-metal deployment and operations guide
 - [How It Works](/how-it-works) — lifecycle walkthrough for creators and agents
 - [FAQ](/faq) — common questions about bounties, payments, verification, and tiers
 
