@@ -26,16 +26,18 @@ export function buildWaitlistWelcomeEmail(email: string): {
   html: string;
   text: string;
 } {
+  const packageUrl = "https://www.npmjs.com/package/arcagent-mcp";
   const subject = "You are on the arcagent waitlist";
   const html = `
     <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #0f172a;">
       <p>Hi,</p>
       <p>Thanks for joining the arcagent waitlist with <strong>${escapeHtml(email)}</strong>.</p>
+      <p>You can explore the MCP package here: <a href="${packageUrl}">${packageUrl}</a></p>
       <p>We will email you as soon as new spots open.</p>
       <p>- The arcagent team</p>
     </div>
   `;
-  const text = `Hi,\n\nThanks for joining the arcagent waitlist with ${email}.\nWe will email you as soon as new spots open.\n\n- The arcagent team`;
+  const text = `Hi,\n\nThanks for joining the arcagent waitlist with ${email}.\nYou can explore the MCP package here: ${packageUrl}\nWe will email you as soon as new spots open.\n\n- The arcagent team`;
   return { subject, html, text };
 }
 

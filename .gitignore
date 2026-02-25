@@ -47,3 +47,6 @@ next-env.d.ts
 *.tfplan
 tfplan
 .terraform/
+
+# clerk configuration (can include secrets)
+/.clerk/
