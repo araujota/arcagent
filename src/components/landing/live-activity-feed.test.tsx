@@ -96,7 +96,7 @@ describe("LiveActivityFeed", () => {
     ]);
     render(<LiveActivityFeed />);
     expect(
-      screen.getByText("Add Tests claimed by AgentSmith")
+      screen.getByText("Add Tests claimed and started by AgentSmith")
     ).toBeInTheDocument();
   });
 
@@ -148,7 +148,20 @@ describe("LiveActivityFeed", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders all 5 event types together", () => {
+  it("renders agent_registered event correctly", () => {
+    mockUseQuery.mockReturnValue([
+      {
+        _id: "6",
+        type: "agent_registered",
+        actorName: "NewAgent",
+        createdAt: Date.now(),
+      },
+    ]);
+    render(<LiveActivityFeed />);
+    expect(screen.getByText("NewAgent registered")).toBeInTheDocument();
+  });
+
+  it("renders all supported event types together", () => {
     mockUseQuery.mockReturnValue([
       {
         _id: "1",
@@ -185,11 +198,17 @@ describe("LiveActivityFeed", () => {
         actorName: "Agent3",
         createdAt: Date.now(),
       },
+      {
+        _id: "6",
+        type: "agent_registered",
+        actorName: "Agent4",
+        createdAt: Date.now(),
+      },
     ]);
-    const { container } = render(<LiveActivityFeed />);
-    // All 5 event rows should render
-    const rows = container.querySelectorAll("[style]");
-    expect(rows.length).toBe(5);
+    render(<LiveActivityFeed />);
+    const rows = screen.getAllByTestId("live-activity-row");
+    expect(rows.length).toBe(6);
+    expect(screen.getByText("Live feed")).toBeInTheDocument();
   });
 
   it("handles missing optional fields with defaults", () => {
@@ -228,7 +247,7 @@ describe("LiveActivityFeed", () => {
     expect(screen.getByText("No Amount posted")).toBeInTheDocument();
     // bounty_claimed without actorName falls back to "an agent"
     expect(
-      screen.getByText("No Actor claimed by an agent")
+      screen.getByText("No Actor claimed and started by an agent")
     ).toBeInTheDocument();
     // payout_sent without amount defaults to 0
     expect(
@@ -267,5 +286,83 @@ describe("LiveActivityFeed", () => {
     ]);
     render(<LiveActivityFeed />);
     expect(screen.getByText("just now")).toBeInTheDocument();
+  });
+
+  it("auto-scrolls to top when a new event arrives and user is near top", () => {
+    const initialEvents = [
+      {
+        _id: "1",
+        type: "bounty_posted",
+        bountyTitle: "Initial Event",
+        amount: 10,
+        createdAt: Date.now(),
+      },
+    ];
+    const nextEvents = [
+      {
+        _id: "2",
+        type: "bounty_resolved",
+        bountyTitle: "New Event",
+        actorName: "AgentZero",
+        createdAt: Date.now(),
+      },
+      ...initialEvents,
+    ];
+    let queryResult = initialEvents;
+    mockUseQuery.mockImplementation(() => queryResult);
+
+    const { rerender } = render(<LiveActivityFeed />);
+    const scroller = screen.getByTestId("live-activity-scroller") as HTMLDivElement & {
+      scrollTo: ReturnType<typeof vi.fn>;
+    };
+    scroller.scrollTo = vi.fn();
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      value: 0,
+      writable: true,
+    });
+
+    queryResult = nextEvents;
+    rerender(<LiveActivityFeed />);
+    expect(scroller.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
+  });
+
+  it("does not auto-scroll when user has scrolled away from top", () => {
+    const initialEvents = [
+      {
+        _id: "1",
+        type: "bounty_posted",
+        bountyTitle: "Initial Event",
+        amount: 10,
+        createdAt: Date.now(),
+      },
+    ];
+    const nextEvents = [
+      {
+        _id: "2",
+        type: "bounty_claimed",
+        bountyTitle: "New Event",
+        actorName: "AgentOne",
+        createdAt: Date.now(),
+      },
+      ...initialEvents,
+    ];
+    let queryResult = initialEvents;
+    mockUseQuery.mockImplementation(() => queryResult);
+
+    const { rerender } = render(<LiveActivityFeed />);
+    const scroller = screen.getByTestId("live-activity-scroller") as HTMLDivElement & {
+      scrollTo: ReturnType<typeof vi.fn>;
+    };
+    scroller.scrollTo = vi.fn();
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      value: 200,
+      writable: true,
+    });
+
+    queryResult = nextEvents;
+    rerender(<LiveActivityFeed />);
+    expect(scroller.scrollTo).not.toHaveBeenCalled();
   });
 });

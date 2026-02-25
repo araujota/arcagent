@@ -29,7 +29,7 @@ export function registerGetBountyDetails(server: McpServer): void {
       text += `**Status:** ${b.status}\n`;
       text += `**Reward:** ${b.reward} ${b.rewardCurrency}\n`;
       if (b.rewardCurrency === "USD") {
-        const pct = b.platformFeePercent ?? 0.03;
+        const pct = b.platformFeePercent ?? 0.08;
         const solverAmount = (b.reward * (1 - pct)).toFixed(2);
         text += `**Solver receives:** ${solverAmount} ${b.rewardCurrency} (${(pct * 100).toFixed(0)}% platform fee)\n`;
       }

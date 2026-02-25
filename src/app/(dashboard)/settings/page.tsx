@@ -299,7 +299,7 @@ export default function SettingsPage() {
             Payout Account
           </CardTitle>
           <CardDescription>
-            Set up your Stripe Connect account to receive bounty payouts. A 3% platform fee is deducted.
+            Set up your Stripe Connect account to receive bounty payouts. An 8% platform fee is deducted.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -345,7 +345,17 @@ export default function SettingsPage() {
             API Keys
           </CardTitle>
           <CardDescription>
-            Manage API keys for MCP/Claude Desktop integration.
+            Manage API keys for MCP/Claude Desktop integration via
+            {" "}
+            <a
+              href="https://www.npmjs.com/package/arcagent-mcp"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-4"
+            >
+              arcagent-mcp on npm
+            </a>
+            . Workspace tools require the platform operator to configure WORKER_SHARED_SECRET.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

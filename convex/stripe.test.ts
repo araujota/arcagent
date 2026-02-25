@@ -198,13 +198,13 @@ describe("Escrow State Machine", () => {
 
       await t.mutation(internal.stripe.storePlatformFee, {
         bountyId,
-        platformFeePercent: 0.03,
-        platformFeeCents: 300,
+        platformFeePercent: 0.08,
+        platformFeeCents: 800,
       });
 
       const bounty = await t.run(async (ctx) => ctx.db.get(bountyId));
-      expect(bounty?.platformFeePercent).toBe(0.03);
-      expect(bounty?.platformFeeCents).toBe(300);
+      expect(bounty?.platformFeePercent).toBe(0.08);
+      expect(bounty?.platformFeeCents).toBe(800);
     });
   });
 

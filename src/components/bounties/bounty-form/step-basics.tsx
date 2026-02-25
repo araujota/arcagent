@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Import } from "lucide-react";
 
 // Must match PLATFORM_FEE_RATE in convex/lib/fees.ts
-const PLATFORM_FEE_RATE = 0.03;
+const PLATFORM_FEE_RATE = 0.08;
 
 export interface BasicsData {
   title: string;

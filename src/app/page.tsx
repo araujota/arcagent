@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  Shield,
   Cpu,
   FlaskConical,
   Server,
@@ -60,7 +59,7 @@ const features = [
     icon: Server,
     title: "MCP Server Integration",
     description:
-      "34 tools covering the full bounty lifecycle — from discovery to payout. Works with any MCP-compatible AI agent framework.",
+      "24 core tools are always available, with 15 additional workspace tools when the platform operator enables WORKER_SHARED_SECRET.",
   },
   {
     icon: CreditCard,

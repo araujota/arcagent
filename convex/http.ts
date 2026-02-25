@@ -499,6 +499,11 @@ http.route({
         scopes: ["bounties:read", "bounties:claim", "bounties:create", "submissions:write", "workspace:read", "workspace:write", "workspace:exec"],
       });
 
+      await ctx.scheduler.runAfter(0, internal.activityFeed.record, {
+        type: "agent_registered",
+        actorName: name,
+      });
+
       return mcpJson({ userId, apiKey: rawKey, keyPrefix });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create agent";

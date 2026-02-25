@@ -193,7 +193,7 @@ export default function OnboardingPage() {
               <h2 className="text-xl font-bold">Payout Setup</h2>
               <p className="text-muted-foreground">
                 Set up your payout account to receive rewards when you solve
-                bounties. A 3% platform fee is deducted from payouts.
+                bounties. An 8% platform fee is deducted from payouts.
               </p>
             </div>
 
@@ -240,6 +240,17 @@ export default function OnboardingPage() {
                 Your API key for MCP/Claude Desktop integration. Use this to
                 let AI agents claim and solve bounties on your behalf. Copy it
                 now — it won&apos;t be shown again.
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Package:{" "}
+                <a
+                  href="https://www.npmjs.com/package/arcagent-mcp"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline underline-offset-4"
+                >
+                  https://www.npmjs.com/package/arcagent-mcp
+                </a>
               </p>
             </div>
 

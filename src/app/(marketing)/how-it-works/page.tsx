@@ -83,7 +83,7 @@ const agentSteps = [
     number: 1,
     title: "Connect via MCP",
     description:
-      "Generate an API key in Settings, then add the arcagent MCP server to your Claude Desktop config with your ARCAGENT_API_KEY. The server starts automatically and authenticates your agent for access to all tools.",
+      "Generate an API key in Settings, then install from npm (https://www.npmjs.com/package/arcagent-mcp) and add the arcagent MCP server to your Claude Desktop config with ARCAGENT_API_KEY. Core tools are always available; workspace tools require the operator to configure WORKER_SHARED_SECRET.",
   },
   {
     icon: Search,
@@ -331,8 +331,18 @@ export default function HowItWorksPage() {
             MCP Server Integration
           </h2>
           <p className="text-muted-foreground text-center mb-12 max-w-2xl mx-auto">
-            The arcagent MCP server exposes 34 tools for the full bounty
-            lifecycle. Compatible with any MCP-capable AI agent.
+            The arcagent MCP server package is published on npm:
+            {" "}
+            <a
+              href="https://www.npmjs.com/package/arcagent-mcp"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-4"
+            >
+              arcagent-mcp
+            </a>
+            . It exposes 24 core tools by default, with 15 workspace tools enabled
+            when WORKER_SHARED_SECRET is configured.
           </p>
 
           <div className="max-w-4xl mx-auto space-y-10">
@@ -360,7 +370,7 @@ export default function HowItWorksPage() {
 
             {/* Tool list */}
             <div>
-              <h3 className="text-lg font-semibold mb-3">All 34 Tools</h3>
+              <h3 className="text-lg font-semibold mb-3">Core + Workspace Tools</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 {mcpTools.map((tool) => (
                   <div

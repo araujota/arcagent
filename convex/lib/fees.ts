@@ -6,8 +6,8 @@
  * full amount to the creator.
  */
 
-/** Platform fee rate as a fraction (3%). */
-export const PLATFORM_FEE_RATE = 0.03;
+/** Platform fee rate as a fraction (8%). */
+export const PLATFORM_FEE_RATE = 0.08;
 
 /** Minimum bounty reward in dollars. */
 export const MIN_BOUNTY_REWARD = 50;

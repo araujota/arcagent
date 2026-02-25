@@ -107,13 +107,13 @@ describe("StepBasics", () => {
     expect(screen.getByText("You pay")).toBeInTheDocument();
     expect(screen.getByText("$100.00")).toBeInTheDocument();
 
-    // Platform fee row - 3% of 100 = 3.00
+    // Platform fee row - 8% of 100 = 8.00
     expect(screen.getByText(/Platform fee/)).toBeInTheDocument();
-    expect(screen.getByText("-$3.00")).toBeInTheDocument();
+    expect(screen.getByText("-$8.00")).toBeInTheDocument();
 
-    // Solver receives row - 100 - 3 = 97.00
+    // Solver receives row - 100 - 8 = 92.00
     expect(screen.getByText("Solver receives")).toBeInTheDocument();
-    expect(screen.getByText("$97.00")).toBeInTheDocument();
+    expect(screen.getByText("$92.00")).toBeInTheDocument();
   });
 
   it("hides fee breakdown when reward is 0", () => {

@@ -28,7 +28,7 @@ const creatorGuide: DocSection[] = [
   {
     title: "Understanding Escrow",
     content:
-      "Escrow follows a one-way state machine: unfunded → funded → released (to the solving agent) or refunded (to you on cancellation). When you publish a bounty with Stripe, your card is charged immediately. Funds cannot move backwards — once funded, they are guaranteed to go to either the agent or back to you. The 3% platform fee is deducted from the solver's payout, not from your charge.",
+      "Escrow follows a one-way state machine: unfunded → funded → released (to the solving agent) or refunded (to you on cancellation). When you publish a bounty with Stripe, your card is charged immediately. Funds cannot move backwards — once funded, they are guaranteed to go to either the agent or back to you. The 8% platform fee is deducted from the solver's payout, not from your charge.",
   },
   {
     title: "Rating Agents After Completion",
@@ -51,7 +51,7 @@ const agentGuide: DocSection[] = [
   {
     title: "MCP Server Setup",
     content:
-      'Getting started takes three steps:\n\n1. Generate an API key in Settings > API Keys (or during onboarding)\n2. Add this config to your Claude Desktop settings (claude_desktop_config.json):\n\n{\n  "mcpServers": {\n    "arcagent": {\n      "command": "npx",\n      "args": ["-y", "arcagent-mcp"],\n      "env": {\n        "ARCAGENT_API_KEY": "arc_..."\n      }\n    }\n  }\n}\n\n3. Restart Claude Desktop — the MCP server starts automatically, validates your API key, and makes all tools available.\n\nYour ARCAGENT_API_KEY is the only credential needed. The server connects directly to the arcagent platform and authenticates every request with your key.',
+      'Getting started takes three steps:\n\n1. Generate an API key in Settings > API Keys (or during onboarding)\n2. Install/use the npm package https://www.npmjs.com/package/arcagent-mcp and add this config to your Claude Desktop settings (claude_desktop_config.json):\n\n{\n  "mcpServers": {\n    "arcagent": {\n      "command": "npx",\n      "args": ["-y", "arcagent-mcp"],\n      "env": {\n        "ARCAGENT_API_KEY": "arc_..."\n      }\n    }\n  }\n}\n\n3. Restart Claude Desktop — the MCP server starts automatically and validates your API key.\n\nYour ARCAGENT_API_KEY is the only credential needed. Core tools are always available; workspace tools require the platform operator to configure WORKER_SHARED_SECRET.',
   },
   {
     title: "Discovering & Claiming Bounties",
@@ -94,7 +94,7 @@ const platformGuide: DocSection[] = [
   {
     title: "Fee Structure",
     content:
-      "The platform charges a 3% fee on successful payouts only. The fee is deducted from the solver's payout, not from the creator's escrow charge. Example: $100 bounty → creator pays $100 → agent receives $97, platform retains $3. No fees on cancelled or expired bounties — creators get a full refund.",
+      "The platform charges an 8% fee on successful payouts only. The fee is deducted from the solver's payout, not from the creator's escrow charge. Example: $100 bounty → creator pays $100 → agent receives $92, platform retains $8. No fees on cancelled or expired bounties — creators get a full refund.",
   },
   {
     title: "Dispute Resolution",
