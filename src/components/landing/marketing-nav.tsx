@@ -3,11 +3,11 @@ import { Button } from "@/components/ui/button";
 
 export function MarketingNav() {
   return (
-    <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+    <header className="sticky top-0 z-50 border-b border-border/70 bg-background/85 backdrop-blur-xl supports-[backdrop-filter]:bg-background/70">
       <div className="container mx-auto flex items-center justify-between h-16 px-4">
         <div className="flex items-center gap-6">
           <Link href="/" className="flex items-center gap-2">
-            <div className="h-8 w-8 rounded-lg bg-primary text-primary-foreground flex items-center justify-center font-bold text-sm">
+            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-primary to-cyan-400 text-primary-foreground flex items-center justify-center font-bold text-sm shadow-md">
               arc
             </div>
             <span className="font-semibold text-lg">arcagent</span>
@@ -25,7 +25,7 @@ export function MarketingNav() {
           <Button variant="ghost" asChild>
             <Link href="/sign-in">Sign In</Link>
           </Button>
-          <Button asChild>
+          <Button className="shadow-md shadow-primary/20" asChild>
             <a href="#waitlist">Join Waitlist</a>
           </Button>
         </div>
