@@ -22,6 +22,7 @@ import type * as crons from "../crons.js";
 import type * as devWorkspaces from "../devWorkspaces.js";
 import type * as generatedTests from "../generatedTests.js";
 import type * as http from "../http.js";
+import type * as investorMetrics from "../investorMetrics.js";
 import type * as lib_adfToMarkdown from "../lib/adfToMarkdown.js";
 import type * as lib_bitbucket from "../lib/bitbucket.js";
 import type * as lib_chunker from "../lib/chunker.js";
@@ -102,6 +103,7 @@ declare const fullApi: ApiFromModules<{
   devWorkspaces: typeof devWorkspaces;
   generatedTests: typeof generatedTests;
   http: typeof http;
+  investorMetrics: typeof investorMetrics;
   "lib/adfToMarkdown": typeof lib_adfToMarkdown;
   "lib/bitbucket": typeof lib_bitbucket;
   "lib/chunker": typeof lib_chunker;
