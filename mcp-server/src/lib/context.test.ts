@@ -1,4 +1,3 @@
-import { vi, beforeEach } from "vitest";
 import type { AuthenticatedUser } from "./types";
 import { runWithAuth, getAuthUser, requireAuthUser, requireScope, setStdioAuthUser } from "./context";
 
@@ -61,11 +60,11 @@ describe("requireScope", () => {
     });
   });
 
-  it("silently passes when no auth context (stdio mode)", () => {
-    // Outside runWithAuth — simulates stdio transport with no auth context
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    expect(() => requireScope("bounties:read")).not.toThrow();
-    warnSpy.mockRestore();
+  it("throws when no auth context is set", () => {
+    // Outside runWithAuth with no stdio user set
+    expect(() => requireScope("bounties:read")).toThrow(
+      'Authentication required: cannot verify required "bounties:read" scope',
+    );
   });
 
   it("throws when user has empty scopes array", () => {
@@ -80,19 +79,9 @@ describe("requireScope", () => {
     });
   });
 
-  it("warns but doesn't throw without user in non-production", () => {
-    // Ensure we're outside runWithAuth and no stdio user is set
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const origEnv = process.env.NODE_ENV;
-    process.env.NODE_ENV = "development";
-
-    expect(() => requireScope("bounties:submit")).not.toThrow();
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("bounties:submit"),
-    );
-
-    process.env.NODE_ENV = origEnv;
-    warnSpy.mockRestore();
+  it("supports stdio-authenticated users", () => {
+    setStdioAuthUser(mockUser);
+    expect(() => requireScope("bounties:read")).not.toThrow();
   });
 });
 

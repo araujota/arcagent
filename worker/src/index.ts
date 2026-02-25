@@ -51,6 +51,20 @@ async function main(): Promise<void> {
   const port = parseInt(process.env.PORT ?? "3001", 10);
   const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
   const executionBackend = (process.env.WORKER_EXECUTION_BACKEND ?? "firecracker").toLowerCase();
+  const isProduction = process.env.NODE_ENV === "production";
+
+  if (isProduction && executionBackend !== "firecracker") {
+    logger.error("Invalid production execution backend", {
+      executionBackend,
+      expected: "firecracker",
+    });
+    process.exit(1);
+  }
+
+  if (isProduction && executionBackend === "firecracker" && process.env.FC_HARDEN_EGRESS !== "true") {
+    logger.error("FC_HARDEN_EGRESS must be true in production firecracker mode");
+    process.exit(1);
+  }
 
   if (executionBackend === "process") {
     const requiredTools: string[] = [];

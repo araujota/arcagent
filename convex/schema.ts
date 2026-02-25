@@ -395,6 +395,15 @@ export default defineSchema({
     .index("by_key_and_windowStartMs", ["key", "windowStartMs"])
     .index("by_expiresAt", ["expiresAt"]),
 
+  workerCallbackNonces: defineTable({
+    nonce: v.string(),
+    verificationId: v.id("verifications"),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+  })
+    .index("by_nonce", ["nonce"])
+    .index("by_expiresAt", ["expiresAt"]),
+
   pmConnections: defineTable({
     userId: v.id("users"),
     provider: v.union(

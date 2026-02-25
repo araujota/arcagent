@@ -321,6 +321,7 @@ exit 0
         bountyId,
         repoUrl: gitRepoDir,
         commitSha,
+        jobHmac: "e2e_job_hmac",
         language: "typescript",
         timeoutSeconds: 180,
         gateSettings: {

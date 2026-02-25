@@ -94,16 +94,22 @@ export function generateFeedback(
     issues: g.details?.normalizedIssues as GateIssue[] ?? [],
   }));
 
-  // Collect test results from test gate steps
+  // Collect only public test results for agent-visible structured feedback.
+  // Hidden scenarios remain confidential and are represented via aggregate guidance.
   const testResults: TestFeedback[] = [];
+  let hiddenFailures = 0;
   for (const g of gateResults) {
     if (g.steps) {
       for (const step of g.steps) {
+        if (step.visibility === "hidden") {
+          if (step.status === "fail" || step.status === "error") hiddenFailures += 1;
+          continue;
+        }
         testResults.push({
           scenarioName: step.scenarioName,
           featureName: step.featureName,
           status: step.status,
-          visibility: step.visibility,
+          visibility: "public",
           output: step.output,
         });
       }
@@ -111,7 +117,7 @@ export function generateFeedback(
   }
 
   // Build prioritized action items
-  const actionItems = buildActionItems(gates, testResults);
+  const actionItems = buildActionItems(gates, testResults, hiddenFailures);
 
   return {
     overallStatus,
@@ -140,6 +146,7 @@ function computeStatus(gates: GateResult[]): "pass" | "fail" | "error" {
 function buildActionItems(
   gates: GateFeedback[],
   testResults: TestFeedback[],
+  hiddenFailures: number,
 ): string[] {
   const items: { priority: number; text: string }[] = [];
 
@@ -188,12 +195,20 @@ function buildActionItems(
         text: `[test] Scenario "${t.scenarioName}" (${t.featureName}, ${t.visibility}) failed${t.output ? `: ${t.output.slice(0, 200)}` : ""}`,
       });
     }
-    if (failedTests.length > 20) {
+  if (failedTests.length > 20) {
       items.push({
         priority,
         text: `[test] ... and ${failedTests.length - 20} more failed scenarios`,
       });
     }
+  }
+
+  if (hiddenFailures > 0) {
+    const priority = CATEGORY_PRIORITY["test"] ?? 99;
+    items.push({
+      priority,
+      text: `[test] ${hiddenFailures} hidden scenario(s) failed. Fix public failures first, then harden edge-case handling, input validation, and error paths.`,
+    });
   }
 
   // Sort by priority

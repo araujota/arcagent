@@ -78,10 +78,8 @@ describe("create_bounty tool", () => {
     expect(result.content[0].text).toContain("No repository URL provided");
   });
 
-  it("no auth -> 'Authentication required'", async () => {
-    const result = await handler(defaultArgs);
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("Authentication required");
+  it("no auth -> throws authentication error", async () => {
+    await expect(handler(defaultArgs)).rejects.toThrow("Authentication required");
   });
 
   it("TOS not accepted -> TOS error", async () => {

@@ -166,11 +166,9 @@ describe("submit_solution tool", () => {
     expect(mockCallConvex).not.toHaveBeenCalled();
   });
 
-  it("returns isError when no auth context", async () => {
-    // Call without runWithAuth so getAuthUser() returns undefined
-    const result = await handler({ bountyId: "bounty_1" }, {});
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("Authentication required");
+  it("throws when no auth context", async () => {
+    await expect(handler({ bountyId: "bounty_1" }, {})).rejects.toThrow(
+      'Authentication required: cannot verify required "submissions:write" scope',
+    );
   });
 });

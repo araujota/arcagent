@@ -3,13 +3,41 @@ import { query, internalMutation } from "./_generated/server";
 export const recompute = internalMutation({
   args: {},
   handler: async (ctx) => {
+    const [allClaims, passedVerifications, completedBounties, allUsers, allBounties, allSubmissions] =
+      await Promise.all([
+        ctx.db.query("bountyClaims").collect(),
+        ctx.db
+          .query("verifications")
+          .withIndex("by_status", (q) => q.eq("status", "passed"))
+          .collect(),
+        ctx.db
+          .query("bounties")
+          .withIndex("by_status", (q) => q.eq("status", "completed"))
+          .collect(),
+        ctx.db.query("users").collect(),
+        ctx.db.query("bounties").collect(),
+        ctx.db.query("submissions").collect(),
+      ]);
+
+    const bountyById = new Map(allBounties.map((b) => [String(b._id), b]));
+    const submissionById = new Map(allSubmissions.map((s) => [String(s._id), s]));
+
+    const latestClaimByBountyAgent = new Map<string, number>();
+    for (const claim of allClaims) {
+      const key = `${String(claim.bountyId)}:${String(claim.agentId)}`;
+      const existing = latestClaimByBountyAgent.get(key) ?? 0;
+      const claimedAt = claim.claimedAt ?? 0;
+      if (claimedAt > existing) {
+        latestClaimByBountyAgent.set(key, claimedAt);
+      }
+    }
+
     // --- Avg time to claim ---
-    const allClaims = await ctx.db.query("bountyClaims").collect();
     let totalClaimDelta = 0;
     let claimCount = 0;
     for (const claim of allClaims) {
       if (claim.claimedAt) {
-        const bounty = await ctx.db.get(claim.bountyId);
+        const bounty = bountyById.get(String(claim.bountyId));
         if (bounty) {
           totalClaimDelta += claim.claimedAt - bounty._creationTime;
           claimCount++;
@@ -19,27 +47,16 @@ export const recompute = internalMutation({
     const avgTimeToClaimMs = claimCount > 0 ? totalClaimDelta / claimCount : 0;
 
     // --- Avg time to solve ---
-    const passedVerifications = await ctx.db
-      .query("verifications")
-      .withIndex("by_status", (q) => q.eq("status", "passed"))
-      .collect();
-
     let totalSolveDelta = 0;
     let solveCount = 0;
     for (const v of passedVerifications) {
       if (v.completedAt) {
-        const submission = await ctx.db.get(v.submissionId);
+        const submission = submissionById.get(String(v.submissionId));
         if (!submission) continue;
-        // Find the most recent claim for this bounty by this agent
-        const claims = await ctx.db
-          .query("bountyClaims")
-          .withIndex("by_bountyId", (q) => q.eq("bountyId", v.bountyId))
-          .collect();
-        const agentClaim = claims.find(
-          (c) => c.agentId === submission.agentId
-        );
-        if (agentClaim?.claimedAt) {
-          totalSolveDelta += v.completedAt - agentClaim.claimedAt;
+        const claimKey = `${String(v.bountyId)}:${String(submission.agentId)}`;
+        const latestClaimedAt = latestClaimByBountyAgent.get(claimKey);
+        if (latestClaimedAt) {
+          totalSolveDelta += v.completedAt - latestClaimedAt;
           solveCount++;
         }
       }
@@ -48,18 +65,12 @@ export const recompute = internalMutation({
       solveCount > 0 ? totalSolveDelta / solveCount : 0;
 
     // --- Total bounties processed (completed) ---
-    const completedBounties = await ctx.db
-      .query("bounties")
-      .withIndex("by_status", (q) => q.eq("status", "completed"))
-      .collect();
     const totalBountiesProcessed = completedBounties.length;
 
     // --- Total users ---
-    const allUsers = await ctx.db.query("users").collect();
     const totalUsers = allUsers.length;
 
     // --- Total repos (distinct repositoryUrl) ---
-    const allBounties = await ctx.db.query("bounties").collect();
     const repoUrls = new Set<string>();
     for (const b of allBounties) {
       if (b.repositoryUrl) {

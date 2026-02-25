@@ -73,6 +73,7 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
       if (!body.bountyId) missing.push("bountyId");
       if (!body.repoUrl) missing.push("repoUrl");
       if (!body.commitSha) missing.push("commitSha");
+      if (!body.jobHmac) missing.push("jobHmac");
 
       if (missing.length > 0) {
         res.status(400).json({

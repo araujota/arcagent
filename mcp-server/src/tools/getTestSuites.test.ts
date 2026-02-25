@@ -38,11 +38,10 @@ describe("get_test_suites tool", () => {
     handler = server.tools["get_test_suites"].handler;
   });
 
-  it("renders public + hidden suites with framework metadata", async () => {
+  it("renders public suites with framework metadata", async () => {
     mockCallConvex.mockResolvedValue({
       testSuites: [
         { title: "Auth", version: 1, gherkinContent: "Feature: Auth\n  Scenario: Login", visibility: "public" },
-        { title: "Security", version: 2, gherkinContent: "Feature: XSS\n  Scenario: XSS", visibility: "hidden" },
       ],
       testFramework: "vitest",
       testLanguage: "typescript",
@@ -54,10 +53,9 @@ describe("get_test_suites tool", () => {
 
     const text = result.content[0].text;
     expect(text).toContain("Public Test Suites (1)");
-    expect(text).toContain("Hidden Test Suites (1)");
     expect(text).toContain("vitest");
     expect(text).toContain("Auth");
-    expect(text).toContain("Security");
+    expect(text).not.toContain("Hidden Test Suites");
   });
 
   it("empty suites -> generation hint message", async () => {

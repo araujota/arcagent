@@ -460,10 +460,13 @@ export const getForMcp = internalQuery({
 
     const creator = await ctx.db.get(bounty.creatorId);
 
-    // Get ALL test suites (public + hidden) — agents see all Gherkin as their spec
+    // MCP-facing bounty details expose only public test suites.
+    // Hidden suites execute in verification but are never disclosed to agents.
     const testSuites = await ctx.db
       .query("testSuites")
-      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .withIndex("by_bountyId_and_visibility", (q) =>
+        q.eq("bountyId", args.bountyId).eq("visibility", "public")
+      )
       .collect();
 
     // Get test framework/language metadata from generated tests

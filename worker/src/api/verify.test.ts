@@ -62,6 +62,7 @@ describe("POST /api/verify", () => {
         submissionId: "sub_1",
         bountyId: "bounty_1",
         commitSha: "abc123",
+        jobHmac: "hmac_123",
         // repoUrl: missing
       });
     expect(res.status).toBe(400);
@@ -76,6 +77,7 @@ describe("POST /api/verify", () => {
         submissionId: "sub_1",
         bountyId: "bounty_1",
         repoUrl: "https://github.com/test/repo",
+        jobHmac: "hmac_123",
         // commitSha: missing
       });
     expect(res.status).toBe(400);
@@ -90,6 +92,7 @@ describe("POST /api/verify", () => {
         bountyId: "bounty_1",
         repoUrl: "https://github.com/test/repo",
         commitSha: "abc123",
+        jobHmac: "hmac_123",
       });
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("submissionId");
@@ -104,6 +107,7 @@ describe("POST /api/verify", () => {
         bountyId: "bounty_1",
         repoUrl: "https://github.com/test/repo",
         commitSha: "abc123",
+        jobHmac: "hmac_123",
       });
     expect(res.status).toBe(202);
     expect(res.body.jobId).toBeDefined();
@@ -136,6 +140,7 @@ describe("POST /api/verify", () => {
         bountyId: "bounty_1",
         repoUrl: "https://github.com/test/repo",
         commitSha: "abc123",
+        jobHmac: "hmac_123",
         convexUrl: "https://attacker.com",
       });
 
@@ -154,6 +159,7 @@ describe("POST /api/verify", () => {
         bountyId: "bounty_1",
         repoUrl: "https://github.com/test/repo",
         commitSha: "abc123",
+        jobHmac: "hmac_123",
         timeoutSeconds: 10,
       });
     expect(res1.status).toBe(202);
@@ -170,6 +176,7 @@ describe("POST /api/verify", () => {
         bountyId: "bounty_2",
         repoUrl: "https://github.com/test/repo",
         commitSha: "abc123",
+        jobHmac: "hmac_123",
         timeoutSeconds: 9999,
       });
     expect(res2.status).toBe(202);
@@ -185,7 +192,22 @@ describe("POST /api/verify", () => {
         bountyId: "bounty_1",
         repoUrl: "https://github.com/test/repo",
         commitSha: "abc123",
+        jobHmac: "hmac_123",
       });
     expect(res.status).toBe(401);
+  });
+
+  it("returns 400 when jobHmac missing", async () => {
+    const res = await supertest(app)
+      .post("/api/verify")
+      .set("Authorization", AUTH_HEADER)
+      .send({
+        submissionId: "sub_1",
+        bountyId: "bounty_1",
+        repoUrl: "https://github.com/test/repo",
+        commitSha: "abc123",
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("jobHmac");
   });
 });

@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "../index";
 import { vsockExec, vsockExecWithStdin, vsockWriteFile, waitForVsock, sendVsockRequestPooled, VsockRequest, VsockResponse, vsockPool } from "./vsockChannel";
@@ -8,8 +7,7 @@ import { startDnsResolver, stopDnsResolver, applyDnsRedirect, removeDnsRedirect,
 import { startEgressProxy, stopEgressProxy, applyProxyRedirect, removeProxyRedirect, applyRateLimiting, removeRateLimiting, EgressProxyHandle } from "./egressProxy";
 import { getVMConfig } from "./vmConfig";
 import { createProcessVM, destroyProcessVM, isProcessHandle } from "./processBackend";
-
-const execFileAsync = promisify(execFile);
+import { execFileAsync } from "../lib/execFileAsync";
 
 // ---------------------------------------------------------------------------
 // Types

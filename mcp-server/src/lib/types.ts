@@ -103,6 +103,12 @@ export interface ConvexAgentVerification {
   errorLog?: string;
   gates: VerificationGate[];
   steps: AgentVerificationStep[];
+  hiddenSummary?: {
+    total: number;
+    passed: number;
+    failed: number;
+    skipped: number;
+  };
   feedbackJson?: string;
   job: {
     status: string;

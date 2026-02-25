@@ -2,9 +2,6 @@
 
 This guide covers deploying the ArcAgent verification worker — from local development through production on AWS.
 
-> Cloudflare production deployment now has a dedicated guide:
-> `docs/CLOUDFLARE_WORKER_DEPLOYMENT.md`.
-
 ## Architecture Overview
 
 ```

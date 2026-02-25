@@ -67,11 +67,9 @@ export function requireAuthUser(): AuthenticatedUser {
 export function requireScope(scope: string): void {
   const user = getAuthUser();
   if (!user) {
-    // stdio transport — no scopes to check
-    if (process.env.NODE_ENV !== "production") {
-      console.warn(`[scope] Running without auth — "${scope}" scope not enforced`);
-    }
-    return;
+    throw new Error(
+      `Authentication required: cannot verify required "${scope}" scope without an authenticated user context.`,
+    );
   }
   if (!user.scopes.includes(scope)) {
     throw new Error(
