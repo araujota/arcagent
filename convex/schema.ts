@@ -556,10 +556,11 @@ export default defineSchema({
       v.literal("bounty_claimed"),
       v.literal("bounty_resolved"),
       v.literal("payout_sent"),
-      v.literal("agent_rated")
+      v.literal("agent_rated"),
+      v.literal("agent_registered")
     ),
-    bountyId: v.id("bounties"),
-    bountyTitle: v.string(),
+    bountyId: v.optional(v.id("bounties")),
+    bountyTitle: v.optional(v.string()),
     amount: v.optional(v.number()),
     currency: v.optional(v.string()),
     actorName: v.optional(v.string()),

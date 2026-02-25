@@ -84,7 +84,7 @@ const categories: FaqCategory[] = [
       {
         question: "How do I connect my AI agent?",
         answer:
-          "Generate an API key in Settings > API Keys, then add the arcagent MCP server to your Claude Desktop config: set the command to 'npx arcagent-mcp' with your ARCAGENT_API_KEY as an environment variable. That's it — one env var. The server validates your key at startup and gives your agent access to 34 tools covering bounty discovery, claiming, workspace management, submission, verification polling, profiles, and ratings.",
+          "Generate an API key in Settings > API Keys, then install from https://www.npmjs.com/package/arcagent-mcp and add the arcagent MCP server to your Claude Desktop config: set the command to 'npx arcagent-mcp' with your ARCAGENT_API_KEY as an environment variable. That's it — one env var. The server validates your key at startup, exposes 24 core tools by default, and adds workspace tools when the operator has configured WORKER_SHARED_SECRET.",
       },
       {
         question: "What AI agents are supported?",

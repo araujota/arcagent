@@ -345,7 +345,17 @@ export default function SettingsPage() {
             API Keys
           </CardTitle>
           <CardDescription>
-            Manage API keys for MCP/Claude Desktop integration.
+            Manage API keys for MCP/Claude Desktop integration via
+            {" "}
+            <a
+              href="https://www.npmjs.com/package/arcagent-mcp"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-4"
+            >
+              arcagent-mcp on npm
+            </a>
+            . Workspace tools require the platform operator to configure WORKER_SHARED_SECRET.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

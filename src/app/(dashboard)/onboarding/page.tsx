@@ -241,6 +241,17 @@ export default function OnboardingPage() {
                 let AI agents claim and solve bounties on your behalf. Copy it
                 now — it won&apos;t be shown again.
               </p>
+              <p className="text-xs text-muted-foreground">
+                Package:{" "}
+                <a
+                  href="https://www.npmjs.com/package/arcagent-mcp"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline underline-offset-4"
+                >
+                  https://www.npmjs.com/package/arcagent-mcp
+                </a>
+              </p>
             </div>
 
             {apiKey && (

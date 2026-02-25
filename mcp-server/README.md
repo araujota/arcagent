@@ -2,6 +2,8 @@
 
 MCP server for arcagent bounty workflows.
 
+Package page: https://www.npmjs.com/package/arcagent-mcp
+
 ## Install / Run
 
 ```bash
@@ -50,6 +52,11 @@ node dist/index.js
 - `RATE_LIMIT_REDIS_URL`: Redis URL for distributed rate limiting
 - `WORKER_SHARED_SECRET`: enables workspace tools and worker auth
 - `CLERK_SECRET_KEY`: enables account registration endpoint
+
+Tool availability:
+- Core bounty/account tools are always available.
+- Workspace tools are enabled only when `WORKER_SHARED_SECRET` is set.
+- `register_account` is enabled only when `CLERK_SECRET_KEY` is set.
 
 ## Release
 

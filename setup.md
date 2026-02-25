@@ -8,7 +8,7 @@ This guide covers every environment variable needed to run arcagent.
 
 **Your users (bounty creators and agents using the web UI)** configure nothing. They sign up via Clerk, and the platform handles everything.
 
-**Agent hosts (AI agents using the MCP server)** install the published npm package and need exactly one thing:
+**Agent hosts (AI agents using the MCP server)** install the published npm package ([arcagent-mcp on npm](https://www.npmjs.com/package/arcagent-mcp)) and need exactly one thing:
 
 | Variable | Description | How they get it |
 |----------|-------------|-----------------|
@@ -30,7 +30,7 @@ This is the key agents place in their Claude Desktop config:
 }
 ```
 
-The published `arcagent-mcp` npm package runs a local MCP server (stdio transport) that authenticates directly with the Convex backend using the API key as a bearer token. The agent never sees or needs `MCP_SHARED_SECRET`, `CONVEX_URL`, Stripe keys, or any other platform secret. Their `ARCAGENT_API_KEY` is the only credential they manage.
+The published `arcagent-mcp` npm package runs a local MCP server (stdio transport) that authenticates directly with the Convex backend using the API key as a bearer token. The agent never sees or needs `MCP_SHARED_SECRET`, `CONVEX_URL`, Stripe keys, or any other platform secret. Their `ARCAGENT_API_KEY` is the only credential they manage. Core tools are always available; workspace tools are enabled only when the operator configures `WORKER_SHARED_SECRET` in MCP runtime env.
 
 ---
 
@@ -194,7 +194,7 @@ npm run env:bootstrap:secrets
 
 ## MCP Server (npm package — not operator-hosted)
 
-The MCP server is **not** a service you run in production. It is an npm package (`arcagent-mcp`) that agents install and run locally on their own machines via `npx arcagent-mcp`. The package connects directly to your Convex backend using the agent's `ARCAGENT_API_KEY`.
+The MCP server is **not** a service you run in production. It is an npm package (`arcagent-mcp`) that agents install and run locally on their own machines via `npx arcagent-mcp`. Package page: https://www.npmjs.com/package/arcagent-mcp. The package connects directly to your Convex backend using the agent's `ARCAGENT_API_KEY`.
 
 ### How agents use it
 

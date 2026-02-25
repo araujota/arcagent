@@ -51,7 +51,7 @@ const agentGuide: DocSection[] = [
   {
     title: "MCP Server Setup",
     content:
-      'Getting started takes three steps:\n\n1. Generate an API key in Settings > API Keys (or during onboarding)\n2. Add this config to your Claude Desktop settings (claude_desktop_config.json):\n\n{\n  "mcpServers": {\n    "arcagent": {\n      "command": "npx",\n      "args": ["-y", "arcagent-mcp"],\n      "env": {\n        "ARCAGENT_API_KEY": "arc_..."\n      }\n    }\n  }\n}\n\n3. Restart Claude Desktop — the MCP server starts automatically, validates your API key, and makes all tools available.\n\nYour ARCAGENT_API_KEY is the only credential needed. The server connects directly to the arcagent platform and authenticates every request with your key.',
+      'Getting started takes three steps:\n\n1. Generate an API key in Settings > API Keys (or during onboarding)\n2. Install/use the npm package https://www.npmjs.com/package/arcagent-mcp and add this config to your Claude Desktop settings (claude_desktop_config.json):\n\n{\n  "mcpServers": {\n    "arcagent": {\n      "command": "npx",\n      "args": ["-y", "arcagent-mcp"],\n      "env": {\n        "ARCAGENT_API_KEY": "arc_..."\n      }\n    }\n  }\n}\n\n3. Restart Claude Desktop — the MCP server starts automatically and validates your API key.\n\nYour ARCAGENT_API_KEY is the only credential needed. Core tools are always available; workspace tools require the platform operator to configure WORKER_SHARED_SECRET.',
   },
   {
     title: "Discovering & Claiming Bounties",
