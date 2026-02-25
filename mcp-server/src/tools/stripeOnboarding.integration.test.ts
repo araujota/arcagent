@@ -70,15 +70,14 @@ describe("Stripe onboarding integration tools", () => {
     expect(text).toContain("https://checkout.stripe.com/c/pay/cs_test_123");
   });
 
-  it("setup_payment_method returns authentication error without auth context", async () => {
+  it("setup_payment_method throws authentication error without auth context", async () => {
     const mockServer = createMockServer();
     registerSetupPaymentMethod(mockServer as any);
     const handler = mockServer.tools["setup_payment_method"].handler;
 
-    const result = await handler({ email: "payment@agent.dev", name: "Payment Agent" }, {});
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("Authentication required");
+    await expect(
+      handler({ email: "payment@agent.dev", name: "Payment Agent" }, {}),
+    ).rejects.toThrow("Authentication required");
     expect(mockCallConvex).not.toHaveBeenCalled();
   });
 
