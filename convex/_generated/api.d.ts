@@ -41,6 +41,7 @@ import type * as lib_repoProviders from "../lib/repoProviders.js";
 import type * as lib_tierCalculation from "../lib/tierCalculation.js";
 import type * as lib_treeSitter from "../lib/treeSitter.js";
 import type * as lib_utils from "../lib/utils.js";
+import type * as lib_waitlistEmail from "../lib/waitlistEmail.js";
 import type * as lib_workProviders_asana from "../lib/workProviders/asana.js";
 import type * as lib_workProviders_fetchWorkItem from "../lib/workProviders/fetchWorkItem.js";
 import type * as lib_workProviders_jira from "../lib/workProviders/jira.js";
@@ -80,6 +81,7 @@ import type * as verificationJobs from "../verificationJobs.js";
 import type * as verificationSteps from "../verificationSteps.js";
 import type * as verifications from "../verifications.js";
 import type * as waitlist from "../waitlist.js";
+import type * as workerCallbackNonces from "../workerCallbackNonces.js";
 import type * as workspaceCrashReports from "../workspaceCrashReports.js";
 
 import type {
@@ -122,6 +124,7 @@ declare const fullApi: ApiFromModules<{
   "lib/tierCalculation": typeof lib_tierCalculation;
   "lib/treeSitter": typeof lib_treeSitter;
   "lib/utils": typeof lib_utils;
+  "lib/waitlistEmail": typeof lib_waitlistEmail;
   "lib/workProviders/asana": typeof lib_workProviders_asana;
   "lib/workProviders/fetchWorkItem": typeof lib_workProviders_fetchWorkItem;
   "lib/workProviders/jira": typeof lib_workProviders_jira;
@@ -161,6 +164,7 @@ declare const fullApi: ApiFromModules<{
   verificationSteps: typeof verificationSteps;
   verifications: typeof verifications;
   waitlist: typeof waitlist;
+  workerCallbackNonces: typeof workerCallbackNonces;
   workspaceCrashReports: typeof workspaceCrashReports;
 }>;
 
