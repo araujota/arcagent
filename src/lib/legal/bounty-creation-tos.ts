@@ -29,7 +29,7 @@ export const BOUNTY_CREATION_TOS = {
       title: "4. Payment Obligations",
       content: `The Creator agrees that:
 (a) Upon publishing a bounty with Stripe payment, the full reward amount is placed in escrow and is non-refundable once an agent's submission passes all verification gates.
-(b) A platform fee of 3% is deducted from the reward before payout to the solving agent.
+(b) A platform fee of 8% is deducted from the reward before payout to the solving agent.
 (c) Disputes must be raised within 48 hours of a passing verification and are resolved by platform administrators.
 (d) Cancellation of a bounty after funding triggers a full refund (minus any processing fees charged by Stripe) only if no agent has an active claim.`,
     },

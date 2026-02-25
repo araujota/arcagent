@@ -7,8 +7,8 @@ import {
 } from "./fees";
 
 describe("fees constants", () => {
-  it("PLATFORM_FEE_RATE is 3%", () => {
-    expect(PLATFORM_FEE_RATE).toBe(0.03);
+  it("PLATFORM_FEE_RATE is 8%", () => {
+    expect(PLATFORM_FEE_RATE).toBe(0.08);
   });
 
   it("MIN_BOUNTY_REWARD is $50", () => {
@@ -23,20 +23,20 @@ describe("fees constants", () => {
 describe("calculatePlatformFee", () => {
   it("returns correct fee/solver split for $100 (10000 cents)", () => {
     const result = calculatePlatformFee(10000);
-    expect(result.feeCents).toBe(300);
-    expect(result.solverCents).toBe(9700);
+    expect(result.feeCents).toBe(800);
+    expect(result.solverCents).toBe(9200);
   });
 
   it("returns correct fee/solver split for $50 (5000 cents)", () => {
     const result = calculatePlatformFee(5000);
-    expect(result.feeCents).toBe(150);
-    expect(result.solverCents).toBe(4850);
+    expect(result.feeCents).toBe(400);
+    expect(result.solverCents).toBe(4600);
   });
 
   it("returns correct fee/solver split for $1000 (100000 cents)", () => {
     const result = calculatePlatformFee(100000);
-    expect(result.feeCents).toBe(3000);
-    expect(result.solverCents).toBe(97000);
+    expect(result.feeCents).toBe(8000);
+    expect(result.solverCents).toBe(92000);
   });
 
   it("handles 0 input", () => {
@@ -47,38 +47,38 @@ describe("calculatePlatformFee", () => {
 
   describe("rounding edge cases", () => {
     it("rounds correctly for 1 cent", () => {
-      // 1 * 0.03 = 0.03 -> rounds to 0
+      // 1 * 0.08 = 0.08 -> rounds to 0
       const result = calculatePlatformFee(1);
       expect(result.feeCents).toBe(0);
       expect(result.solverCents).toBe(1);
     });
 
     it("rounds correctly for 333 cents", () => {
-      // 333 * 0.03 = 9.99 -> Math.round = 10
+      // 333 * 0.08 = 26.64 -> Math.round = 27
       const result = calculatePlatformFee(333);
-      expect(result.feeCents).toBe(10);
-      expect(result.solverCents).toBe(323);
+      expect(result.feeCents).toBe(27);
+      expect(result.solverCents).toBe(306);
     });
 
     it("rounds correctly for 33 cents", () => {
-      // 33 * 0.03 = 0.99 -> rounds to 1
+      // 33 * 0.08 = 2.64 -> rounds to 3
       const result = calculatePlatformFee(33);
-      expect(result.feeCents).toBe(1);
-      expect(result.solverCents).toBe(32);
+      expect(result.feeCents).toBe(3);
+      expect(result.solverCents).toBe(30);
     });
 
     it("rounds correctly for 17 cents (half-cent boundary)", () => {
-      // 17 * 0.03 = 0.51 -> rounds to 1
+      // 17 * 0.08 = 1.36 -> rounds to 1
       const result = calculatePlatformFee(17);
       expect(result.feeCents).toBe(1);
       expect(result.solverCents).toBe(16);
     });
 
     it("rounds correctly for 50 cents", () => {
-      // 50 * 0.03 = 1.5 -> Math.round rounds to 2
+      // 50 * 0.08 = 4 -> Math.round rounds to 4
       const result = calculatePlatformFee(50);
-      expect(result.feeCents).toBe(2);
-      expect(result.solverCents).toBe(48);
+      expect(result.feeCents).toBe(4);
+      expect(result.solverCents).toBe(46);
     });
   });
 

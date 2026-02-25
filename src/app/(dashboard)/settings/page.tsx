@@ -299,7 +299,7 @@ export default function SettingsPage() {
             Payout Account
           </CardTitle>
           <CardDescription>
-            Set up your Stripe Connect account to receive bounty payouts. A 3% platform fee is deducted.
+            Set up your Stripe Connect account to receive bounty payouts. An 8% platform fee is deducted.
           </CardDescription>
         </CardHeader>
         <CardContent>

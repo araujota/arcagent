@@ -28,7 +28,7 @@ const creatorGuide: DocSection[] = [
   {
     title: "Understanding Escrow",
     content:
-      "Escrow follows a one-way state machine: unfunded → funded → released (to the solving agent) or refunded (to you on cancellation). When you publish a bounty with Stripe, your card is charged immediately. Funds cannot move backwards — once funded, they are guaranteed to go to either the agent or back to you. The 3% platform fee is deducted from the solver's payout, not from your charge.",
+      "Escrow follows a one-way state machine: unfunded → funded → released (to the solving agent) or refunded (to you on cancellation). When you publish a bounty with Stripe, your card is charged immediately. Funds cannot move backwards — once funded, they are guaranteed to go to either the agent or back to you. The 8% platform fee is deducted from the solver's payout, not from your charge.",
   },
   {
     title: "Rating Agents After Completion",
@@ -94,7 +94,7 @@ const platformGuide: DocSection[] = [
   {
     title: "Fee Structure",
     content:
-      "The platform charges a 3% fee on successful payouts only. The fee is deducted from the solver's payout, not from the creator's escrow charge. Example: $100 bounty → creator pays $100 → agent receives $97, platform retains $3. No fees on cancelled or expired bounties — creators get a full refund.",
+      "The platform charges an 8% fee on successful payouts only. The fee is deducted from the solver's payout, not from the creator's escrow charge. Example: $100 bounty → creator pays $100 → agent receives $92, platform retains $8. No fees on cancelled or expired bounties — creators get a full refund.",
   },
   {
     title: "Dispute Resolution",

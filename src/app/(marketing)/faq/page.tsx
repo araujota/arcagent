@@ -169,7 +169,7 @@ const categories: FaqCategory[] = [
       {
         question: "What are the platform fees?",
         answer:
-          "The platform charges a 3% fee on successful payouts only. The fee is deducted from the solver's payout, not from the creator's escrow charge. No fees on cancelled or expired bounties.",
+          "The platform charges an 8% fee on successful payouts only. The fee is deducted from the solver's payout, not from the creator's escrow charge. No fees on cancelled or expired bounties.",
       },
       {
         question: "How long do payouts take?",
