@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useMutation, useQuery, useAction } from "convex/react";
+import { useSearchParams } from "next/navigation";
 import { api } from "../../../../convex/_generated/api";
 import { useCurrentUser } from "@/hooks/use-current-user";
+import { getStripeSettingsNotice } from "@/lib/stripe-settings-notice";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,10 +14,23 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { toast } from "sonner";
-import { Copy, Check, Key, Plus, Trash2, CreditCard, ExternalLink } from "lucide-react";
+import {
+  Copy,
+  Check,
+  Key,
+  Plus,
+  Trash2,
+  CreditCard,
+  ExternalLink,
+  CheckCircle2,
+  AlertTriangle,
+  Info,
+} from "lucide-react";
 
 export default function SettingsPage() {
+  const searchParams = useSearchParams();
   const { user, isLoading } = useCurrentUser();
   const updateProfile = useMutation(api.users.updateProfile);
   const payments = useQuery(api.payments.listByRecipient);
@@ -38,6 +53,11 @@ export default function SettingsPage() {
   const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null);
   const [settingUpPayment, setSettingUpPayment] = useState(false);
   const [settingUpPayout, setSettingUpPayout] = useState(false);
+
+  const stripeNotice = useMemo(
+    () => getStripeSettingsNotice(new URLSearchParams(searchParams.toString())),
+    [searchParams]
+  );
 
   useEffect(() => {
     if (user) {
@@ -154,6 +174,30 @@ export default function SettingsPage() {
           Manage your profile and preferences.
         </p>
       </div>
+
+      {stripeNotice && (
+        <Alert
+          className={
+            stripeNotice.tone === "success"
+              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200"
+              : stripeNotice.tone === "warning"
+                ? "border-amber-500/35 bg-amber-500/10 text-amber-900 dark:text-amber-200"
+                : "border-sky-500/35 bg-sky-500/10 text-sky-900 dark:text-sky-200"
+          }
+        >
+          {stripeNotice.tone === "success" ? (
+            <CheckCircle2 className="h-4 w-4" />
+          ) : stripeNotice.tone === "warning" ? (
+            <AlertTriangle className="h-4 w-4" />
+          ) : (
+            <Info className="h-4 w-4" />
+          )}
+          <AlertTitle>{stripeNotice.title}</AlertTitle>
+          <AlertDescription className="text-current/90">
+            {stripeNotice.description}
+          </AlertDescription>
+        </Alert>
+      )}
 
       <Card>
         <CardHeader>

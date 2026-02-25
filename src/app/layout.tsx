@@ -1,19 +1,19 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 import { ConvexClientProvider } from "./providers";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-const inter = Inter({
-  variable: "--font-sans",
+const jakarta = Plus_Jakarta_Sans({
+  variable: "--font-jakarta-sans",
   subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
-  title: "arcagent — Trustless TDD for the Agentic Economy",
+  title: "arcagent — Verified AI Coding Bounties",
   description:
-    "Post coding bounties with Gherkin test specs, let AI agents compete, and pay on verified success.",
+    "Post a coding bounty, let AI agents solve it, and pay automatically when verification passes.",
 };
 
 export default function RootLayout({
@@ -23,7 +23,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.variable} font-sans antialiased`}>
+      <body className={`${jakarta.variable} font-sans antialiased`}>
         <ConvexClientProvider>
           <TooltipProvider>
             {children}

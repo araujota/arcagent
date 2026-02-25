@@ -108,6 +108,14 @@ Set via `npx convex env set VARIABLE_NAME "value"` or in the Convex Dashboard un
 | `STRIPE_WEBHOOK_SECRET` | Yes | Verifies Stripe webhook signatures | Stripe Dashboard > Developers > Webhooks > Endpoint > Signing secret |
 | `APP_URL` | No | Base URL for Stripe Connect redirect URLs | Default: `http://localhost:3000`. Set to production domain in prod |
 
+### Waitlist Emails (optional)
+
+| Variable | Required | Description | How to get it |
+|----------|----------|-------------|---------------|
+| `RESEND_API_KEY` | No | API key used to send waitlist confirmation emails | [Resend](https://resend.com) > API Keys |
+| `WAITLIST_FROM_EMAIL` | No | From address for waitlist emails | Verified sending domain in Resend (e.g. `arcagent <waitlist@arcagent.dev>`) |
+| `WAITLIST_NOTIFY_EMAIL` | No | Operator inbox for new waitlist signup notifications | Any inbox you monitor (e.g. `ops@arcagent.dev`) |
+
 ### LLM (NL -> BDD -> TDD pipeline)
 
 | Variable | Required | Description | How to get it |
