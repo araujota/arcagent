@@ -371,7 +371,7 @@ function parseLanguageSastOutput(language: string, output: string): ScanSummary 
     case "python": {
       const parsed = parseJsonSafe<BanditOutput>(output);
       if (!parsed?.results) return { totalFindings: 0, criticalCount: 0, highCount: 0, findings: [] };
-      let criticalCount = 0;
+      const criticalCount = 0;
       let highCount = 0;
       const findings: LanguageSastFinding[] = [];
       for (const r of parsed.results) {
