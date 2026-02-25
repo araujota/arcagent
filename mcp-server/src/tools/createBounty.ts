@@ -83,6 +83,9 @@ export function registerCreateBounty(server: McpServer): void {
         text += `**Reward:** ${args.reward} ${args.rewardCurrency}\n`;
         text += `**Payment:** ${args.paymentMethod}\n`;
         text += `**TOS:** Accepted (v1.0)\n`;
+        if (args.paymentMethod === "stripe") {
+          text += `**Status:** draft (fund escrow, then publish)\n`;
+        }
 
         if (args.pmIssueKey) {
           text += `**PM Issue:** ${args.pmProvider}/${args.pmIssueKey}\n`;

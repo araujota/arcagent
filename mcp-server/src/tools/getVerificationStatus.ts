@@ -61,6 +61,11 @@ export function registerGetVerificationStatus(server: McpServer): void {
               }
               text += `\n`;
             }
+            if (g.details) {
+              const detailsText = JSON.stringify(g.details, null, 2);
+              text += `**${g.gateType} details:**\n`;
+              text += `\`\`\`json\n${detailsText.slice(0, 4000)}\n\`\`\`\n\n`;
+            }
           }
         }
 

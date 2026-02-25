@@ -1,4 +1,5 @@
 import express from "express";
+import { execFileSync } from "node:child_process";
 import { createLogger, format, transports } from "winston";
 import { existsSync, readdirSync } from "node:fs";
 import { createVerificationQueue, closeQueue } from "./queue/jobQueue";
@@ -49,12 +50,27 @@ async function main(): Promise<void> {
 
   const port = parseInt(process.env.PORT ?? "3001", 10);
   const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
+  const executionBackend = (process.env.WORKER_EXECUTION_BACKEND ?? "firecracker").toLowerCase();
+
+  if (executionBackend === "process") {
+    const requiredTools: string[] = [];
+    if (process.env.SNYK_TOKEN) requiredTools.push("snyk");
+    if (process.env.SONARQUBE_URL && process.env.SONARQUBE_TOKEN) requiredTools.push("sonar-scanner");
+    for (const tool of requiredTools) {
+      if (!hasBinary(tool)) {
+        logger.error("Required scanner binary missing", { tool, executionBackend });
+        process.exit(1);
+      }
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Startup cleanup — remove orphaned resources from prior unclean shutdowns
   // -------------------------------------------------------------------------
-  await cleanupStaleCryptDevices();
-  await cleanupStaleResources();
+  if (executionBackend === "firecracker") {
+    await cleanupStaleCryptDevices();
+    await cleanupStaleResources();
+  }
 
   // Initialize crash recovery: generate instance ID, recover orphans, start heartbeat
   const instanceId = generateWorkerInstanceId();
@@ -90,25 +106,43 @@ async function main(): Promise<void> {
       healthy = false;
     }
 
-    // Firecracker binary
-    const fcBin = process.env.FIRECRACKER_BIN ?? "/usr/local/bin/firecracker";
-    checks.firecracker = existsSync(fcBin) ? "ok" : "missing";
-    if (checks.firecracker !== "ok") healthy = false;
+    checks.executionBackend = executionBackend;
+    checks.snykCli = hasBinary("snyk") ? "ok" : "missing";
+    checks.sonarScanner = hasBinary("sonar-scanner") ? "ok" : "missing";
 
-    // Kernel image
-    const kernel = process.env.FC_KERNEL_IMAGE ?? "/var/lib/firecracker/vmlinux";
-    checks.kernel = existsSync(kernel) ? "ok" : "missing";
-    if (checks.kernel !== "ok") healthy = false;
-
-    // Rootfs directory (check at least one .ext4 exists)
-    const rootfsDir = process.env.FC_ROOTFS_DIR ?? "/var/lib/firecracker/rootfs";
-    try {
-      const files = readdirSync(rootfsDir).filter(f => f.endsWith(".ext4"));
-      checks.rootfs = files.length > 0 ? "ok" : "empty";
-      if (checks.rootfs !== "ok") healthy = false;
-    } catch {
-      checks.rootfs = "missing";
+    if (executionBackend === "process" && process.env.SNYK_TOKEN && checks.snykCli !== "ok") {
       healthy = false;
+    }
+    if (
+      executionBackend === "process" &&
+      process.env.SONARQUBE_URL &&
+      process.env.SONARQUBE_TOKEN &&
+      checks.sonarScanner !== "ok"
+    ) {
+      healthy = false;
+    }
+
+    if (executionBackend === "firecracker") {
+      // Firecracker binary
+      const fcBin = process.env.FIRECRACKER_BIN ?? "/usr/local/bin/firecracker";
+      checks.firecracker = existsSync(fcBin) ? "ok" : "missing";
+      if (checks.firecracker !== "ok") healthy = false;
+
+      // Kernel image
+      const kernel = process.env.FC_KERNEL_IMAGE ?? "/var/lib/firecracker/vmlinux";
+      checks.kernel = existsSync(kernel) ? "ok" : "missing";
+      if (checks.kernel !== "ok") healthy = false;
+
+      // Rootfs directory (check at least one .ext4 exists)
+      const rootfsDir = process.env.FC_ROOTFS_DIR ?? "/var/lib/firecracker/rootfs";
+      try {
+        const files = readdirSync(rootfsDir).filter(f => f.endsWith(".ext4"));
+        checks.rootfs = files.length > 0 ? "ok" : "empty";
+        if (checks.rootfs !== "ok") healthy = false;
+      } catch {
+        checks.rootfs = "missing";
+        healthy = false;
+      }
     }
 
     const status = healthy ? 200 : 503;
@@ -134,9 +168,11 @@ async function main(): Promise<void> {
   startIdleChecker();
 
   // Initialize warm VM pool (background, non-blocking)
-  vmPool.initialize().catch((err) => {
-    logger.warn("Warm VM pool initialization failed", { error: String(err) });
-  });
+  if (executionBackend === "firecracker") {
+    vmPool.initialize().catch((err) => {
+      logger.warn("Warm VM pool initialization failed", { error: String(err) });
+    });
+  }
 
   const server = app.listen(port, () => {
     logger.info("Worker API server listening", { port });
@@ -215,3 +251,14 @@ main().catch((err) => {
   logger.error("Fatal startup error", err);
   process.exit(1);
 });
+
+function hasBinary(binary: string): boolean {
+  try {
+    execFileSync("bash", ["-lc", `command -v ${binary} >/dev/null 2>&1`], {
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}

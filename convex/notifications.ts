@@ -96,6 +96,21 @@ export const markRead = internalMutation({
   },
 });
 
+export const markReadForUser = internalMutation({
+  args: {
+    userId: v.id("users"),
+    notificationIds: v.array(v.id("notifications")),
+  },
+  handler: async (ctx, args) => {
+    for (const id of args.notificationIds) {
+      const notification = await ctx.db.get(id);
+      if (notification && notification.userId === args.userId) {
+        await ctx.db.patch(id, { read: true });
+      }
+    }
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Public queries / mutations (Clerk-authed)
 // ---------------------------------------------------------------------------

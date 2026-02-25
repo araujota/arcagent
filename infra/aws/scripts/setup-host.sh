@@ -31,7 +31,13 @@ WORKER_CONCURRENCY="${worker_concurrency}"
 WORKSPACE_IDLE_TIMEOUT_MS="${workspace_idle_timeout_ms}"
 ROOTFS_BUCKET="${rootfs_bucket}"
 ROOTFS_VERSION="${rootfs_version}"
+ROOTFS_UPLOAD_ON_BOOT="${rootfs_upload_on_boot}"
 AWS_REGION="${aws_region}"
+WORKER_ARTIFACT_S3_KEY="${worker_artifact_s3_key}"
+ENABLE_SONARQUBE="${enable_sonarqube}"
+SONARQUBE_URL="${sonarqube_url}"
+SONARQUBE_TOKEN="${sonarqube_token}"
+SNYK_TOKEN="${snyk_token}"
 
 # Auto-detect public IP via IMDSv2 (EIP isn't known at user-data render time)
 echo ">>> Detecting public IP via IMDSv2..."
@@ -74,7 +80,10 @@ apt-get install -y -qq \
   acl \
   unzip \
   awscli \
-  zstd
+  zstd \
+  debootstrap \
+  docker.io \
+  docker-compose-plugin
 
 # ---------------------------------------------------------------------------
 # 2. Enable KVM
@@ -110,14 +119,9 @@ iptables-save > /etc/iptables/rules.v4
 systemctl enable netfilter-persistent 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# 4. Install Firecracker + Jailer
+# 4. Firecracker install is executed after script sync in step 8
 # ---------------------------------------------------------------------------
-echo ">>> Installing Firecracker v$FIRECRACKER_VERSION..."
-if [ -f /opt/arcagent/scripts/install-firecracker.sh ]; then
-  bash /opt/arcagent/scripts/install-firecracker.sh "$FIRECRACKER_VERSION"
-else
-  echo "Skipping — install-firecracker.sh not yet deployed."
-fi
+echo ">>> Firecracker install deferred until provisioning scripts are synced."
 
 # ---------------------------------------------------------------------------
 # 5. Install Node.js
@@ -130,14 +134,95 @@ fi
 echo "Node.js: $(node --version)"
 
 # ---------------------------------------------------------------------------
-# 6. Configure Redis (local, no auth needed — only localhost access)
+# 6. Configure container runtime sidecars (Redis + optional SonarQube)
 # ---------------------------------------------------------------------------
-echo ">>> Configuring Redis..."
-systemctl enable redis-server
-systemctl start redis-server
+echo ">>> Configuring runtime sidecars..."
+systemctl enable docker
+systemctl start docker
 
-# Verify Redis is running
-redis-cli ping || { echo "ERROR: Redis not responding"; exit 1; }
+mkdir -p /opt/arcagent/runtime
+cat > /opt/arcagent/runtime/docker-compose.yml <<'COMPOSEEOF'
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  sonarqube-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: sonarqube
+      POSTGRES_PASSWORD: ${SONARQUBE_DB_PASSWORD:-local_dev_sonarqube_db}
+      POSTGRES_DB: sonarqube
+    volumes:
+      - sonarqube-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonarqube -d sonarqube"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  sonarqube:
+    image: sonarqube:community
+    ports:
+      - "9000:9000"
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonarqube-db:5432/sonarqube
+      SONAR_JDBC_USERNAME: sonarqube
+      SONAR_JDBC_PASSWORD: ${SONARQUBE_DB_PASSWORD:-local_dev_sonarqube_db}
+    depends_on:
+      sonarqube-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/api/system/status | grep -q UP"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  sonarqube-db-data:
+COMPOSEEOF
+
+cat > /etc/systemd/system/arcagent-runtime-stack.service <<'SERVICEEOF'
+[Unit]
+Description=ArcAgent runtime sidecars (Redis/SonarQube)
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/arcagent/runtime
+ExecStart=/usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml up -d
+ExecStop=/usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml down
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
+
+systemctl daemon-reload
+systemctl enable arcagent-runtime-stack
+systemctl start arcagent-runtime-stack
+
+/usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml up -d redis
+/usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml ps redis
+if [ "$ENABLE_SONARQUBE" = "true" ]; then
+  /usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml up -d sonarqube-db sonarqube
+fi
 
 # ---------------------------------------------------------------------------
 # 7. Create worker user and directories
@@ -164,16 +249,40 @@ chown -R arcagent:arcagent /opt/arcagent
 # ---------------------------------------------------------------------------
 echo ">>> Deploying provisioning scripts..."
 mkdir -p /opt/arcagent/scripts
+SCRIPT_NAMES=(setup-worker.sh install-firecracker.sh detect-host-url.sh build-rootfs.sh)
+for script in "$${SCRIPT_NAMES[@]}"; do
+  if aws s3 cp "s3://$ROOTFS_BUCKET/scripts/$${script}" "/opt/arcagent/scripts/$${script}" --region "$AWS_REGION" --quiet; then
+    chmod 755 "/opt/arcagent/scripts/$${script}"
+  else
+    echo "ERROR: Missing provisioning script s3://$ROOTFS_BUCKET/scripts/$${script}"
+    exit 1
+  fi
+done
+chown -R root:root /opt/arcagent/scripts
+echo "Provisioning scripts downloaded to /opt/arcagent/scripts."
 
-# If scripts aren't already on disk (e.g. custom AMI), download from release
-# For now, check if they exist from a prior run or AMI bake
-if [ ! -f /opt/arcagent/scripts/install-firecracker.sh ]; then
-  echo "WARNING: Provisioning scripts not found at /opt/arcagent/scripts/."
-  echo "You need to copy infra/aws/scripts/* to /opt/arcagent/scripts/ on the host."
-  echo "This is typically done via:"
-  echo "  1. Baking a custom AMI with packer"
-  echo "  2. Or: scp infra/aws/scripts/* ubuntu@<host>:/opt/arcagent/scripts/"
-  echo "  3. Then re-run this script: sudo bash /var/lib/cloud/instance/user-data.txt"
+# Install Firecracker + Jailer once install-firecracker.sh is available.
+echo ">>> Installing Firecracker v$FIRECRACKER_VERSION..."
+bash /opt/arcagent/scripts/install-firecracker.sh "$FIRECRACKER_VERSION"
+
+# Optional: deploy worker build artifact from S3
+if [ -n "$WORKER_ARTIFACT_S3_KEY" ]; then
+  echo ">>> Downloading worker artifact s3://$ROOTFS_BUCKET/$WORKER_ARTIFACT_S3_KEY..."
+  mkdir -p /opt/arcagent/worker
+  if aws s3 cp "s3://$ROOTFS_BUCKET/$WORKER_ARTIFACT_S3_KEY" /tmp/worker-build.tar.gz --region "$AWS_REGION"; then
+    tar -xzf /tmp/worker-build.tar.gz -C /opt/arcagent/worker
+    chown -R arcagent:arcagent /opt/arcagent/worker
+    rm -f /tmp/worker-build.tar.gz
+    if [ -f /opt/arcagent/worker/package-lock.json ]; then
+      echo "Installing worker runtime dependencies..."
+      cd /opt/arcagent/worker
+      npm ci --omit=dev
+    fi
+  else
+    echo "WARNING: Failed to download worker artifact from S3 key '$WORKER_ARTIFACT_S3_KEY'."
+  fi
+else
+  echo "No worker artifact key configured (worker_artifact_s3_key)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -182,6 +291,7 @@ fi
 echo ">>> Downloading pre-built rootfs images from s3://$ROOTFS_BUCKET/$ROOTFS_VERSION/..."
 ROOTFS_IMAGES=(base node-20 python-312 rust-stable go-122 java-21)
 ROOTFS_DOWNLOAD_FAILED=false
+BUILT_ROOTFS_IMAGES=()
 
 for img in "$${ROOTFS_IMAGES[@]}"; do
   dest="/var/lib/firecracker/rootfs/$${img}.ext4"
@@ -208,10 +318,36 @@ if [ "$ROOTFS_DOWNLOAD_FAILED" = "true" ]; then
   echo "Falling back to local build if build-rootfs.sh is available..."
   if [ -f /opt/arcagent/scripts/build-rootfs.sh ]; then
     bash /opt/arcagent/scripts/build-rootfs.sh
+    for img in "$${ROOTFS_IMAGES[@]}"; do
+      if [ -f "/var/lib/firecracker/rootfs/$${img}.ext4" ]; then
+        BUILT_ROOTFS_IMAGES+=("$${img}")
+      fi
+    done
   else
     echo "ERROR: No rootfs images available and no build script found."
     echo "Upload images to S3 first: bash infra/rootfs/build-and-upload.sh $ROOTFS_BUCKET $ROOTFS_VERSION"
   fi
+fi
+
+if [ "$ROOTFS_UPLOAD_ON_BOOT" = "true" ] && [ "$${#BUILT_ROOTFS_IMAGES[@]}" -gt 0 ]; then
+  echo ">>> Uploading locally-built rootfs images to s3://$ROOTFS_BUCKET/$ROOTFS_VERSION/ ..."
+  for img in "$${BUILT_ROOTFS_IMAGES[@]}"; do
+    ext4_path="/var/lib/firecracker/rootfs/$${img}.ext4"
+    s3_key="$ROOTFS_VERSION/$${img}.ext4.zst"
+
+    if aws s3api head-object --bucket "$ROOTFS_BUCKET" --key "$s3_key" --region "$AWS_REGION" >/dev/null 2>&1; then
+      echo "  $${img}.ext4.zst already exists in S3 - skipping upload"
+      continue
+    fi
+
+    tmp_zst="/tmp/$${img}.ext4.zst"
+    echo "  Compressing $ext4_path ..."
+    zstd -3 -f "$ext4_path" -o "$tmp_zst"
+
+    echo "  Uploading s3://$ROOTFS_BUCKET/$s3_key ..."
+    aws s3 cp "$tmp_zst" "s3://$ROOTFS_BUCKET/$s3_key" --region "$AWS_REGION"
+    rm -f "$tmp_zst"
+  done
 fi
 
 echo "Rootfs images in /var/lib/firecracker/rootfs/:"
@@ -310,6 +446,16 @@ NODE_ENV=production
 # SONARQUBE_TOKEN=
 # GITHUB_TOKEN=
 ENVEOF
+
+if [ -n "$SNYK_TOKEN" ]; then
+  echo "SNYK_TOKEN=$SNYK_TOKEN" >> /opt/arcagent/worker.env
+fi
+if [ -n "$SONARQUBE_URL" ]; then
+  echo "SONARQUBE_URL=$SONARQUBE_URL" >> /opt/arcagent/worker.env
+fi
+if [ -n "$SONARQUBE_TOKEN" ]; then
+  echo "SONARQUBE_TOKEN=$SONARQUBE_TOKEN" >> /opt/arcagent/worker.env
+fi
 
 chown arcagent:arcagent /opt/arcagent/worker.env
 chmod 600 /opt/arcagent/worker.env

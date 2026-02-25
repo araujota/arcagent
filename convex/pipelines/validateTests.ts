@@ -11,6 +11,12 @@ import { validateGherkin, extractScenarioNames } from "../lib/gherkinValidator";
 export interface StaticValidationResult {
   issues: string[];
   warnings: string[];
+  quality: {
+    hasPublicTagCoverage: boolean;
+    hasHiddenTagCoverage: boolean;
+    outlineCount: number;
+    hasOutlineExamplesWithMinRows: boolean;
+  };
   stats: {
     publicScenarios: number;
     hiddenScenarios: number;
@@ -24,6 +30,36 @@ export interface RunStaticValidationArgs {
   gherkinPublic: string;
   gherkinHidden: string;
   stepDefinitions: string;
+}
+
+const MIN_PUBLIC_SCENARIOS = 8;
+const MIN_HIDDEN_SCENARIOS = 8;
+const MIN_LLM_SCORE = 7;
+
+function countRegexMatches(content: string, pattern: RegExp): number {
+  return (content.match(pattern) ?? []).length;
+}
+
+function hasRequiredTags(content: string, required: string[]): boolean {
+  const normalized = content.toLowerCase();
+  return required.every((tag) => normalized.includes(tag));
+}
+
+function hasExamplesTableWithMinRows(content: string, minRows: number): boolean {
+  const lines = content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^\s*Examples:\s*$/i.test(lines[i])) continue;
+    let rows = 0;
+    let j = i + 1;
+    while (j < lines.length && lines[j].trim() === "") j++;
+    while (j < lines.length && /^\s*\|/.test(lines[j])) {
+      rows++;
+      j++;
+    }
+    // Includes header row; require header + min data rows.
+    if (rows >= minRows + 1) return true;
+  }
+  return false;
 }
 
 /**
@@ -83,9 +119,61 @@ export function runStaticValidation(
     }
   }
 
+  if (publicScenarios.length < MIN_PUBLIC_SCENARIOS) {
+    issues.push(
+      `Public Gherkin has ${publicScenarios.length} scenarios; minimum is ${MIN_PUBLIC_SCENARIOS}`
+    );
+  }
+  if (hiddenScenarios.length < MIN_HIDDEN_SCENARIOS) {
+    issues.push(
+      `Hidden Gherkin has ${hiddenScenarios.length} scenarios; minimum is ${MIN_HIDDEN_SCENARIOS}`
+    );
+  }
+
+  const outlineCount =
+    countRegexMatches(args.gherkinPublic, /^\s*Scenario Outline:\s+/gim) +
+    countRegexMatches(args.gherkinHidden, /^\s*Scenario Outline:\s+/gim);
+  if (outlineCount < 2) {
+    issues.push("At least 2 Scenario Outline cases are required across public+hidden tests");
+  }
+
+  const hasOutlineExamplesWithMinRows = hasExamplesTableWithMinRows(
+    `${args.gherkinPublic}\n${args.gherkinHidden}`,
+    4
+  );
+  if (!hasOutlineExamplesWithMinRows) {
+    issues.push("At least one Examples table must contain 4 or more data rows");
+  }
+
+  const hasPublicTagCoverage = hasRequiredTags(args.gherkinPublic, [
+    "@public",
+    "@happy-path",
+    "@validation",
+    "@error",
+  ]);
+  if (!hasPublicTagCoverage) {
+    issues.push("Public tests must include tags: @public, @happy-path, @validation, @error");
+  }
+
+  const hasHiddenTagCoverage = hasRequiredTags(args.gherkinHidden, [
+    "@hidden",
+    "@boundary",
+    "@security",
+    "@anti-gaming",
+  ]);
+  if (!hasHiddenTagCoverage) {
+    issues.push("Hidden tests must include tags: @hidden, @boundary, @security, @anti-gaming");
+  }
+
   return {
     issues,
     warnings,
+    quality: {
+      hasPublicTagCoverage,
+      hasHiddenTagCoverage,
+      outlineCount,
+      hasOutlineExamplesWithMinRows,
+    },
     stats: {
       publicScenarios: publicScenarios.length,
       hiddenScenarios: hiddenScenarios.length,
@@ -207,19 +295,24 @@ Respond with JSON:
     }
 
     // Determine if regeneration is needed
-    const score = parsedReview?.score ?? 0;
+    const score = parsedReview?.score ?? MIN_LLM_SCORE;
     const uncoveredCriteria =
       parsedReview?.criteriaCoverage?.filter((c) => !c.covered) ?? [];
+    const llmMissingScenarios = parsedReview?.missingScenarios?.length ?? 0;
+    const llmUnmatchedSteps = parsedReview?.unmatchedSteps?.length ?? 0;
     const needsRegeneration =
-      score < 6 ||
+      issues.length > 0 ||
+      score < MIN_LLM_SCORE ||
       uncoveredCriteria.length > 0 ||
-      stats.publicScenarios < 8;
+      llmMissingScenarios > 0 ||
+      llmUnmatchedSteps > 0;
 
     // Store validation results
     const validationResult = {
       valid: issues.length === 0,
       issues,
       warnings,
+      quality: staticResult.quality,
       stats,
       coverageReview,
       parsedReview,

@@ -135,7 +135,7 @@ export const recomputeForAgent = internalMutation({
     const eligibleRatings = allRatings.filter((r) => r.tierEligible);
 
     let avgCreatorRating = 0;
-    let totalRatings = allRatings.length;
+    const totalRatings = allRatings.length;
     const creatorCounts = new Map<string, number>();
 
     if (eligibleRatings.length > 0) {

@@ -17,7 +17,7 @@ export const dispatchVerification = internalAction({
   handler: async (ctx, args) => {
     try {
       const workerUrl = process.env.WORKER_API_URL;
-      const workerSecret = process.env.WORKER_SHARED_SECRET ?? process.env.WORKER_API_SECRET;
+      const workerSecret = process.env.WORKER_SHARED_SECRET;
 
       if (!workerUrl || !workerSecret) {
         throw new Error(
@@ -186,7 +186,7 @@ export const dispatchVerificationFromDiff = internalAction({
   handler: async (ctx, args) => {
     try {
       const workerUrl = process.env.WORKER_API_URL;
-      const workerSecret = process.env.WORKER_SHARED_SECRET ?? process.env.WORKER_API_SECRET;
+      const workerSecret = process.env.WORKER_SHARED_SECRET;
 
       if (!workerUrl || !workerSecret) {
         throw new Error(

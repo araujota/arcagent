@@ -97,6 +97,53 @@ export const createSetupIntent = internalAction({
   },
 });
 
+export const createHostedSetupCheckout = internalAction({
+  args: {
+    userId: v.id("users"),
+    email: v.string(),
+    name: v.string(),
+    successPath: v.optional(v.string()),
+    cancelPath: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const stripe = getStripe();
+    const customerId = await ctx.runAction(internal.stripe.ensureStripeCustomer, {
+      userId: args.userId,
+      email: args.email,
+      name: args.name,
+    });
+
+    const appUrl = process.env.APP_URL || "http://localhost:3000";
+    const successPath = args.successPath ?? "/settings?setup_complete=true";
+    const cancelPath = args.cancelPath ?? "/settings?setup_canceled=true";
+
+    const checkoutSession = await stripe.checkout.sessions.create({
+      mode: "setup",
+      customer: customerId,
+      payment_method_types: ["card"],
+      success_url: `${appUrl}${successPath}`,
+      cancel_url: `${appUrl}${cancelPath}`,
+      setup_intent_data: {
+        metadata: {
+          convexUserId: args.userId,
+        },
+      },
+      metadata: {
+        convexUserId: args.userId,
+      },
+    });
+
+    if (!checkoutSession.url) {
+      throw new Error("Stripe did not return a hosted setup URL");
+    }
+
+    return {
+      checkoutUrl: checkoutSession.url,
+      sessionId: checkoutSession.id,
+    };
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Escrow Charge (fund a bounty)
 // ---------------------------------------------------------------------------
@@ -627,8 +674,8 @@ export const getUserByClerkSubject = internalQuery({
 });
 
 /**
- * Public action: create a SetupIntent for the current user.
- * Returns a client secret for Stripe hosted setup page.
+ * Public action: create a hosted Stripe Checkout session (setup mode)
+ * for attaching a payment method to the current user.
  */
 export const setupPaymentMethod = action({
   args: {},
@@ -641,18 +688,13 @@ export const setupPaymentMethod = action({
     });
     if (!user) throw new Error("User not found");
 
-    const result = await ctx.runAction(internal.stripe.createSetupIntent, {
+    return await ctx.runAction(internal.stripe.createHostedSetupCheckout, {
       userId: user._id,
       email: user.email,
       name: user.name,
+      successPath: "/settings?setup_complete=true",
+      cancelPath: "/settings?setup_canceled=true",
     });
-
-    const appUrl = process.env.APP_URL || "http://localhost:3000";
-    return {
-      clientSecret: result.clientSecret,
-      setupIntentId: result.setupIntentId,
-      returnUrl: `${appUrl}/settings?setup_complete=true`,
-    };
   },
 });
 

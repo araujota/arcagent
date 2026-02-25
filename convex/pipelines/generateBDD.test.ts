@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildBDDSystemPrompt, parseBDDResponse } from "./generateBDD";
+import { assessBddQuality, buildBDDSystemPrompt, parseBDDResponse } from "./generateBDD";
 
 // ---------------------------------------------------------------------------
 // parseBDDResponse
@@ -168,5 +168,56 @@ describe("buildBDDSystemPrompt", () => {
     expect(prompt).toContain("Phase 3");
     expect(prompt).toContain("ANTI-GAMING");
     expect(prompt).toContain("BOUNDARY VALUES");
+  });
+});
+
+describe("assessBddQuality", () => {
+  it("flags invalid/undersized suites", () => {
+    const result = assessBddQuality(
+      "Feature: Short\n  Scenario: One\n    Given a\n    When b\n    Then c",
+      "Feature: Hidden\n  Scenario: One\n    Given a\n    When b\n    Then c",
+    );
+    expect(result.qualityIssues.length).toBeGreaterThan(0);
+    expect(result.publicScenarioCount).toBe(1);
+    expect(result.hiddenScenarioCount).toBe(1);
+  });
+
+  it("passes when both suites meet baseline counts and syntax", () => {
+    const publicGherkin = `Feature: Public
+  Scenario: One
+    Given a
+    When b
+    Then c
+  Scenario: Two
+    Given a
+    When b
+    Then c
+  Scenario: Three
+    Given a
+    When b
+    Then c
+  Scenario: Four
+    Given a
+    When b
+    Then c
+  Scenario: Five
+    Given a
+    When b
+    Then c
+  Scenario: Six
+    Given a
+    When b
+    Then c
+  Scenario: Seven
+    Given a
+    When b
+    Then c
+  Scenario: Eight
+    Given a
+    When b
+    Then c`;
+    const hiddenGherkin = publicGherkin.replace("Feature: Public", "Feature: Hidden");
+    const result = assessBddQuality(publicGherkin, hiddenGherkin);
+    expect(result.qualityIssues).toHaveLength(0);
   });
 });

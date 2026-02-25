@@ -80,6 +80,7 @@ resource "aws_iam_role_policy" "worker_s3_rootfs" {
         Effect = "Allow"
         Action = [
           "s3:GetObject",
+          "s3:PutObject",
           "s3:ListBucket"
         ]
         Resource = [

@@ -1,73 +1,78 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mockVM, expectGatePass, expectGateFail, expectGateSkipped } from "./__test-helpers__";
-
-vi.mock("../index", () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-}));
-
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runSnykGate } from "./snykGate";
 
-describe("runSnykGate", () => {
-  const originalEnv = process.env.SNYK_TOKEN;
+function makeVmExec(responses: Array<{ stdout?: string; stderr?: string; exitCode: number }>) {
+  const exec = vi.fn(async () => {
+    const next = responses.shift();
+    if (!next) throw new Error("No VM response queued");
+    return {
+      stdout: next.stdout ?? "",
+      stderr: next.stderr ?? "",
+      exitCode: next.exitCode,
+    };
+  });
+  return { exec } as any;
+}
 
+describe("runSnykGate", () => {
   afterEach(() => {
-    if (originalEnv !== undefined) {
-      process.env.SNYK_TOKEN = originalEnv;
-    } else {
-      delete process.env.SNYK_TOKEN;
-    }
+    delete process.env.SNYK_TOKEN;
   });
 
-  it("missing SNYK_TOKEN -> 'skipped'", async () => {
-    delete process.env.SNYK_TOKEN;
-    const vm = mockVM();
+  it("skips when SNYK_TOKEN is missing", async () => {
+    const vm = makeVmExec([]);
     const result = await runSnykGate(vm, "typescript", 60_000, null);
-    expectGateSkipped(result);
+    expect(result.status).toBe("skipped");
     expect(result.summary).toContain("SNYK_TOKEN missing");
   });
 
-  it("no vulnerabilities -> 'pass'", async () => {
-    process.env.SNYK_TOKEN = "test-token";
-    const vm = mockVM(async () => ({
-      stdout: JSON.stringify({ vulnerabilities: [] }),
-      stderr: "",
-      exitCode: 0,
-    }));
+  it("returns error when snyk CLI is unavailable", async () => {
+    process.env.SNYK_TOKEN = "token";
+    const vm = makeVmExec([{ exitCode: 1 }]);
     const result = await runSnykGate(vm, "typescript", 60_000, null);
-    expectGatePass(result);
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain("CLI not available");
   });
 
-  it("HIGH vulnerability -> 'fail'", async () => {
-    process.env.SNYK_TOKEN = "test-token";
-    const snykOutput = JSON.stringify({
-      vulnerabilities: [
-        { id: "SNYK-001", severity: "high", title: "Prototype Pollution", packageName: "lodash" },
-      ],
-    });
-    const vm = mockVM(async () => ({
-      stdout: snykOutput,
-      stderr: "",
-      exitCode: 1,
-    }));
-    const result = await runSnykGate(vm, "typescript", 60_000, null);
-    expectGateFail(result);
-    expect(result.summary).toContain("1 high");
+  it("skips unsupported languages", async () => {
+    process.env.SNYK_TOKEN = "token";
+    const vm = makeVmExec([]);
+    const result = await runSnykGate(vm, "python", 60_000, null);
+    expect(result.status).toBe("skipped");
+    expect(result.summary).toContain("not enabled for language");
   });
 
-  it("CRITICAL vulnerability -> 'fail' with critical count", async () => {
-    process.env.SNYK_TOKEN = "test-token";
-    const snykOutput = JSON.stringify({
-      vulnerabilities: [
-        { id: "SNYK-002", severity: "critical", title: "RCE", packageName: "unsafe-pkg" },
-      ],
-    });
-    const vm = mockVM(async () => ({
-      stdout: snykOutput,
-      stderr: "",
-      exitCode: 1,
-    }));
+  it("fails when high severity vulnerabilities are found", async () => {
+    process.env.SNYK_TOKEN = "token";
+    const vm = makeVmExec([
+      { exitCode: 0 },
+      {
+        exitCode: 1,
+        stdout: JSON.stringify({
+          vulnerabilities: [{ severity: "high", id: "x" }],
+        }),
+      },
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({ runs: [{ results: [] }] }),
+      },
+    ]);
+
     const result = await runSnykGate(vm, "typescript", 60_000, null);
-    expectGateFail(result);
-    expect(result.summary).toContain("1 critical");
+    expect(result.status).toBe("fail");
+    expect(result.summary).toContain("high severity");
+  });
+
+  it("returns error instead of false pass when scanner exits without JSON", async () => {
+    process.env.SNYK_TOKEN = "token";
+    const vm = makeVmExec([
+      { exitCode: 0 },
+      { exitCode: 2, stdout: "" },
+      { exitCode: 2, stdout: "" },
+    ]);
+
+    const result = await runSnykGate(vm, "typescript", 60_000, null);
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain("scanner execution error");
   });
 });

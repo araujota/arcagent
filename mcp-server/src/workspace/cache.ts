@@ -1,11 +1,12 @@
 /**
- * 30-second TTL cache for workspace lookups.
+ * 120-second TTL cache for workspace lookups.
  *
  * Avoids hitting Convex on every workspace command.
  * Invalidated automatically on TTL expiry.
  */
 
 import { callConvex } from "../convex/client";
+import { LruTtlCache } from "../lib/lruCache";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,7 +30,8 @@ interface CacheEntry {
 // ---------------------------------------------------------------------------
 
 const TTL_MS = 120_000; // 120 seconds — workspace status rarely changes during active use
-const cache = new Map<string, CacheEntry>();
+const MAX_ENTRIES = 10_000;
+const cache = new LruTtlCache<string, CacheEntry>(MAX_ENTRIES, TTL_MS);
 
 function cacheKey(agentId: string, bountyId: string): string {
   return `${agentId}:${bountyId}`;
@@ -78,4 +80,8 @@ export function invalidateAllForAgent(agentId: string): void {
       cache.delete(key);
     }
   }
+}
+
+export function getWorkspaceCacheSize(): number {
+  return cache.size();
 }

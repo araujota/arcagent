@@ -40,11 +40,17 @@ services:
     env_file:
       - path: ./worker/.env
         required: true
+      - path: ./worker/.env.generated
+        required: false
     environment:
       - REDIS_URL=redis://redis:6379
+      - SONARQUBE_URL=${SONARQUBE_URL:-http://sonarqube:9000}
     depends_on:
       redis:
         condition: service_healthy
+      sonarqube:
+        condition: service_healthy
+        required: false
     devices:
       - /dev/kvm:/dev/kvm
       - /dev/net/tun:/dev/net/tun
@@ -101,7 +107,14 @@ services:
       - sonarqube-data:/opt/sonarqube/data
       - sonarqube-extensions:/opt/sonarqube/extensions
     depends_on:
-      - sonarqube-db
+      sonarqube-db:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/api/system/status | grep -q UP"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
     networks:
       - arcagent
     profiles:

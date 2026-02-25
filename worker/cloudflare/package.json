@@ -1,0 +1,15 @@
+{
+  "name": "arcagent-worker-cloudflare",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "whoami": "wrangler whoami"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "wrangler": "^4.41.0"
+  }
+}

@@ -326,6 +326,28 @@ export const getByAgentAndBounty = internalQuery({
   },
 });
 
+export const getByIdInternal = internalQuery({
+  args: { claimId: v.id("bountyClaims") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.claimId);
+  },
+});
+
+export const getByAgentAndBountyAnyStatus = internalQuery({
+  args: {
+    agentId: v.id("users"),
+    bountyId: v.id("bounties"),
+  },
+  handler: async (ctx, args) => {
+    const claims = await ctx.db
+      .query("bountyClaims")
+      .withIndex("by_agentId", (q) => q.eq("agentId", args.agentId))
+      .collect();
+
+    return claims.find((c) => c.bountyId === args.bountyId) ?? null;
+  },
+});
+
 export const updateBranchInfo = internalMutation({
   args: {
     claimId: v.id("bountyClaims"),

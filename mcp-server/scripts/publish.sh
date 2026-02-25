@@ -22,15 +22,11 @@ cd "$(dirname "$0")/.."
 echo "==> Running tests..."
 npm test
 
-echo "==> Building..."
-npm run build
+echo "==> Building clean package..."
+npm run prepack
 
-# Verify the shebang line is present in the built entrypoint
-if ! head -1 dist/index.js | grep -q '#!/usr/bin/env node'; then
-  echo "==> Adding shebang to dist/index.js..."
-  echo '#!/usr/bin/env node' | cat - dist/index.js > dist/index.js.tmp
-  mv dist/index.js.tmp dist/index.js
-fi
+echo "==> Validating package contents..."
+npm run pack:check
 
 # Optional version bump
 if [ "${1:-}" != "" ]; then

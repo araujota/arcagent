@@ -7,6 +7,7 @@ import { createEncryptedOverlay, destroyEncryptedOverlay, EncryptedOverlayHandle
 import { startDnsResolver, stopDnsResolver, applyDnsRedirect, removeDnsRedirect, DnsResolverHandle } from "./dnsPolicy";
 import { startEgressProxy, stopEgressProxy, applyProxyRedirect, removeProxyRedirect, applyRateLimiting, removeRateLimiting, EgressProxyHandle } from "./egressProxy";
 import { getVMConfig } from "./vmConfig";
+import { createProcessVM, destroyProcessVM, isProcessHandle } from "./processBackend";
 
 const execFileAsync = promisify(execFile);
 
@@ -72,6 +73,7 @@ const USE_VSOCK = process.env.FC_USE_VSOCK !== "false";
 const SSH_KEY_PATH = process.env.FC_SSH_KEY_PATH ?? "/root/.ssh/id_ed25519";
 /** SSH port on guest (when vsock is disabled). */
 const GUEST_SSH_PORT = parseInt(process.env.FC_GUEST_SSH_PORT ?? "22", 10);
+const EXECUTION_BACKEND = (process.env.WORKER_EXECUTION_BACKEND ?? "firecracker").toLowerCase();
 
 // ---------------------------------------------------------------------------
 // VM lifecycle
@@ -90,6 +92,10 @@ const GUEST_SSH_PORT = parseInt(process.env.FC_GUEST_SSH_PORT ?? "22", 10);
 export async function createFirecrackerVM(
   opts: FirecrackerVMOptions,
 ): Promise<VMHandle> {
+  if (EXECUTION_BACKEND === "process") {
+    return createProcessVM(opts);
+  }
+
   const vmId = `vm-${uuidv4().slice(0, 8)}`;
   const tapDevice = `${TAP_PREFIX}${vmId.slice(3)}`;
   const guestIp = allocateGuestIp(vmId);
@@ -130,18 +136,19 @@ export async function createFirecrackerVM(
   let dnsResolver: DnsResolverHandle | null = null;
   let egressProxy: EgressProxyHandle | null = null;
   const vmConfig = getVMConfig(opts.rootfsImage.replace(/\.ext4$/, "").replace(/-\d+$/, ""));
+  const allowedDomains = buildAllowedDomains(vmConfig.allowedDomains);
   const hardenEgress = process.env.FC_HARDEN_EGRESS !== "false"
     && (process.env.FC_HARDEN_EGRESS === "true" || process.env.NODE_ENV === "production");
 
-  if (hardenEgress && vmConfig.allowedDomains.length > 0) {
+  if (hardenEgress && allowedDomains.length > 0) {
     const gatewayIp = "10.0.0.1";
     try {
-      dnsResolver = await startDnsResolver(vmId, gatewayIp, vmConfig.allowedDomains);
+      dnsResolver = await startDnsResolver(vmId, gatewayIp, allowedDomains);
       await applyDnsRedirect(tapDevice, gatewayIp);
-      egressProxy = await startEgressProxy(vmId, vmConfig.allowedDomains);
+      egressProxy = await startEgressProxy(vmId, allowedDomains);
       await applyProxyRedirect(tapDevice, egressProxy.port);
       await applyRateLimiting(tapDevice);
-      logger.info("Hardened egress applied", { vmId, domains: vmConfig.allowedDomains.length });
+      logger.info("Hardened egress applied", { vmId, domains: allowedDomains.length });
     } catch (err) {
       logger.warn("Hardened egress setup failed, using basic filtering", {
         vmId,
@@ -321,11 +328,38 @@ export async function createFirecrackerVM(
   }
 }
 
+function buildAllowedDomains(baseDomains: string[]): string[] {
+  const merged = new Set(baseDomains);
+
+  if (process.env.SNYK_TOKEN) {
+    merged.add("api.snyk.io");
+    merged.add("app.snyk.io");
+    merged.add("*.snyk.io");
+  }
+
+  const sonarUrl = process.env.SONARQUBE_URL;
+  if (sonarUrl) {
+    try {
+      const host = new URL(sonarUrl).hostname;
+      if (host) merged.add(host);
+    } catch {
+      // Invalid URL is handled by the SonarQube gate with a clear error.
+    }
+  }
+
+  return [...merged];
+}
+
 /**
  * Tear down a Firecracker microVM and clean up all resources.
  * SECURITY (P2-4): Hardened teardown — kill by PID, verify cleanup, log warnings.
  */
 export async function destroyFirecrackerVM(handle: VMHandle): Promise<void> {
+  if (isProcessHandle(handle)) {
+    await destroyProcessVM(handle);
+    return;
+  }
+
   const int = handle as VMHandleInternal;
   logger.info("Destroying microVM", { vmId: handle.vmId });
 

@@ -40,3 +40,22 @@ resource "aws_s3_bucket_public_access_block" "rootfs" {
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
+
+locals {
+  bootstrap_scripts = {
+    "setup-worker.sh"        = "${path.module}/scripts/setup-worker.sh"
+    "install-firecracker.sh" = "${path.module}/scripts/install-firecracker.sh"
+    "detect-host-url.sh"     = "${path.module}/scripts/detect-host-url.sh"
+    "build-rootfs.sh"        = "${path.module}/scripts/build-rootfs.sh"
+  }
+}
+
+resource "aws_s3_object" "bootstrap_scripts" {
+  for_each = local.bootstrap_scripts
+
+  bucket       = aws_s3_bucket.rootfs.id
+  key          = "scripts/${each.key}"
+  source       = each.value
+  etag         = filemd5(each.value)
+  content_type = "text/x-shellscript"
+}

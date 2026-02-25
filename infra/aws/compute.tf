@@ -5,6 +5,8 @@
 resource "aws_instance" "worker" {
   count = var.worker_count
 
+  depends_on = [aws_s3_object.bootstrap_scripts]
+
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.instance_type
   key_name               = var.ssh_key_name
@@ -45,7 +47,13 @@ resource "aws_instance" "worker" {
     workspace_idle_timeout_ms = var.workspace_idle_timeout_ms
     rootfs_bucket             = aws_s3_bucket.rootfs.id
     rootfs_version            = var.rootfs_version
+    rootfs_upload_on_boot     = var.rootfs_upload_on_boot
     aws_region                = var.aws_region
+    worker_artifact_s3_key    = var.worker_artifact_s3_key
+    enable_sonarqube          = var.enable_sonarqube
+    sonarqube_url             = var.sonarqube_url
+    sonarqube_token           = var.sonarqube_token
+    snyk_token                = var.snyk_token
   }))
 
   tags = {
@@ -60,7 +68,7 @@ resource "aws_instance" "worker" {
 
 # Elastic IPs for stable addressing
 resource "aws_eip" "worker" {
-  count = var.worker_count
+  count = var.allocate_eip ? var.worker_count : 0
 
   instance = aws_instance.worker[count.index].id
   domain   = "vpc"

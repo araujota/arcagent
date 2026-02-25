@@ -1,5 +1,13 @@
 import { constantTimeEqual } from "./constantTimeEqual";
 
+function getWorkerHmacSecret(): string {
+  const secret = process.env.WORKER_SHARED_SECRET ?? "";
+  if (!secret) {
+    throw new Error("WORKER_SHARED_SECRET must be configured");
+  }
+  return secret;
+}
+
 /**
  * SECURITY (H6): Generate a per-job HMAC token that must be presented
  * when posting verification results. This prevents a compromised worker
@@ -10,7 +18,7 @@ export async function generateJobHmac(
   submissionId: string,
   bountyId: string,
 ): Promise<string> {
-  const secret = process.env.WORKER_SHARED_SECRET || process.env.WORKER_API_SECRET || "";
+  const secret = getWorkerHmacSecret();
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
@@ -36,7 +44,12 @@ export async function verifyJobHmac(
   submissionId: string,
   bountyId: string,
 ): Promise<boolean> {
-  const secret = process.env.WORKER_SHARED_SECRET || "";
+  let secret: string;
+  try {
+    secret = getWorkerHmacSecret();
+  } catch {
+    return false;
+  }
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",

@@ -17,7 +17,7 @@ variable "environment" {
 variable "instance_type" {
   description = "EC2 instance type — must be .metal for KVM/Firecracker support"
   type        = string
-  default     = "m5.metal"
+  default     = "c6i.metal"
 
   validation {
     condition     = can(regex("\\.metal$", var.instance_type))
@@ -29,6 +29,12 @@ variable "worker_count" {
   description = "Number of worker instances to deploy"
   type        = number
   default     = 1
+}
+
+variable "allocate_eip" {
+  description = "Allocate and attach Elastic IPs to workers. Disable when EIP quota is exhausted."
+  type        = bool
+  default     = true
 }
 
 variable "ssh_key_name" {
@@ -111,4 +117,42 @@ variable "rootfs_version" {
   description = "Version tag for pre-built rootfs images in S3 (e.g. v1, v2)"
   type        = string
   default     = "v1"
+}
+
+variable "rootfs_upload_on_boot" {
+  description = "When true, upload locally-built rootfs images to S3 cache if missing."
+  type        = bool
+  default     = true
+}
+
+variable "worker_artifact_s3_key" {
+  description = "Optional S3 key for a worker build tarball (dist + package files) in the rootfs bucket."
+  type        = string
+  default     = ""
+}
+
+variable "enable_sonarqube" {
+  description = "Deploy SonarQube + Postgres containers on the worker host."
+  type        = bool
+  default     = false
+}
+
+variable "sonarqube_url" {
+  description = "Optional SonarQube URL for worker gate execution. Use an HTTPS URL reachable from execution environments."
+  type        = string
+  default     = ""
+}
+
+variable "sonarqube_token" {
+  description = "SonarQube authentication token for gate execution."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "snyk_token" {
+  description = "Snyk API token used by the Snyk gate."
+  type        = string
+  default     = ""
+  sensitive   = true
 }

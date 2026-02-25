@@ -138,9 +138,13 @@ install_language() {
     python-312)
       echo "  Installing Python 3.12..."
       chroot "$MOUNT_DIR" apt-get install -y -qq software-properties-common
+      # pip lives in "universe" on Ubuntu; enable it before installing Python tooling.
+      chroot "$MOUNT_DIR" add-apt-repository -y universe
       chroot "$MOUNT_DIR" add-apt-repository -y ppa:deadsnakes/ppa
       chroot "$MOUNT_DIR" apt-get update -qq
-      chroot "$MOUNT_DIR" apt-get install -y -qq python3.12 python3.12-venv python3-pip
+      chroot "$MOUNT_DIR" apt-get install -y -qq python3.12 python3.12-venv python3-pip || \
+        chroot "$MOUNT_DIR" apt-get install -y -qq python3.12 python3.12-venv
+      chroot "$MOUNT_DIR" bash -lc 'python3.12 -m ensurepip --upgrade || true'
       ;;
     rust-stable)
       echo "  Installing Rust stable..."
@@ -153,7 +157,18 @@ install_language() {
       ;;
     java-21)
       echo "  Installing Java 21..."
-      chroot "$MOUNT_DIR" apt-get install -y -qq openjdk-21-jdk maven gradle
+      chroot "$MOUNT_DIR" apt-get update -qq
+      chroot "$MOUNT_DIR" add-apt-repository -y universe
+      chroot "$MOUNT_DIR" apt-get update -qq
+      chroot "$MOUNT_DIR" apt-get install -y -qq curl ca-certificates tar maven gradle
+      chroot "$MOUNT_DIR" bash -lc '
+        set -e
+        mkdir -p /opt/java-21
+        curl -fsSL "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" \
+          | tar -xzf - --strip-components=1 -C /opt/java-21
+        ln -sf /opt/java-21/bin/java /usr/local/bin/java
+        ln -sf /opt/java-21/bin/javac /usr/local/bin/javac
+      '
       ;;
     base)
       echo "  Base image — no additional language runtime."

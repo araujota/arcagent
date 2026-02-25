@@ -2,6 +2,7 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
+import { Webhook as SvixWebhook } from "svix";
 import { constantTimeEqual } from "./lib/constantTimeEqual";
 import { verifyJobHmac } from "./lib/hmac";
 
@@ -33,8 +34,7 @@ http.route({
     }
 
     // Verify the webhook signature
-    const { Webhook } = await import("svix");
-    const wh = new Webhook(webhookSecret);
+    const wh = new SvixWebhook(webhookSecret);
 
     let event: {
       type: string;
@@ -314,6 +314,15 @@ function mcpJson(data: unknown, status = 200): Response {
   });
 }
 
+async function isBountyCreator(
+  ctx: { runQuery: Function },
+  userId: string,
+  bountyId: Id<"bounties">,
+): Promise<boolean> {
+  const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, { bountyId });
+  return !!bounty && bounty.creatorId === userId;
+}
+
 // --- Auth: Validate API key ---
 // Supports two paths:
 // 1. Shared secret + keyHash in body (existing self-hosted mode)
@@ -401,21 +410,67 @@ http.route({
     if (!verifyMcpSecret(request)) return mcpUnauthorized();
 
     const body = await request.json();
-    const { name, email, clerkId, keyHash, keyPrefix, githubUsername } =
+    const { name, email, clerkId, githubUsername } =
       body as {
         name: string;
         email: string;
         clerkId: string;
-        keyHash: string;
-        keyPrefix: string;
         githubUsername?: string;
       };
 
-    if (!name || !email || !clerkId || !keyHash || !keyPrefix) {
+    if (!name || !email || !clerkId) {
       return mcpError("Missing required fields");
     }
 
     try {
+      // Convex-side registration throttling (IP + email + clerkId windows).
+      const ip =
+        request.headers.get("cf-connecting-ip") ||
+        request.headers.get("x-real-ip") ||
+        request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+        "unknown";
+
+      const limitsApi = internal as unknown as {
+        mcpRegistrationLimits: { consume: unknown };
+      };
+
+      const ipLimit = await ctx.runMutation(limitsApi.mcpRegistrationLimits.consume as never, {
+        key: `ip:${ip}`,
+        maxRequests: 20,
+        windowMs: 60_000,
+      });
+      if (!ipLimit.allowed) {
+        return mcpJson(
+          { error: "Registration rate limit exceeded", retryAfterMs: ipLimit.retryAfterMs },
+          429,
+        );
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      const emailLimit = await ctx.runMutation(limitsApi.mcpRegistrationLimits.consume as never, {
+        key: `email:${normalizedEmail}`,
+        maxRequests: 5,
+        windowMs: 60_000,
+      });
+      if (!emailLimit.allowed) {
+        return mcpJson(
+          { error: "Registration rate limit exceeded", retryAfterMs: emailLimit.retryAfterMs },
+          429,
+        );
+      }
+
+      const clerkLimit = await ctx.runMutation(limitsApi.mcpRegistrationLimits.consume as never, {
+        key: `clerk:${clerkId}`,
+        maxRequests: 5,
+        windowMs: 60_000,
+      });
+      if (!clerkLimit.allowed) {
+        return mcpJson(
+          { error: "Registration rate limit exceeded", retryAfterMs: clerkLimit.retryAfterMs },
+          429,
+        );
+      }
+
       // Upsert user via the same path as Clerk webhooks — unified accounts
       const userId = await ctx.runMutation(internal.users.upsertFromClerk, {
         clerkId,
@@ -423,6 +478,18 @@ http.route({
         email,
         githubUsername,
       });
+
+      // Generate and hash API key in Convex so issuance is centrally indexed.
+      const randomPart = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+      const rawKey = `arc_${randomPart}`;
+      const keyPrefix = rawKey.slice(0, 8);
+      const encoder = new TextEncoder();
+      const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(rawKey));
+      const keyHash = Array.from(new Uint8Array(hashBuffer))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
 
       await ctx.runMutation(internal.apiKeys.create, {
         userId,
@@ -432,7 +499,7 @@ http.route({
         scopes: ["bounties:read", "bounties:claim", "bounties:create", "submissions:write", "workspace:read", "workspace:write", "workspace:exec"],
       });
 
-      return mcpJson({ userId });
+      return mcpJson({ userId, apiKey: rawKey, keyPrefix });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create agent";
       return mcpError(message);
@@ -553,7 +620,7 @@ http.route({
         paymentMethod,
         deadline,
         tags,
-        status: "active",
+        status: "draft",
         tosAccepted,
         tosAcceptedAt,
         tosVersion,
@@ -589,7 +656,15 @@ http.route({
         );
       }
 
-      return mcpJson({ bountyId, repoConnectionId, conversationId });
+      return mcpJson({
+        bountyId,
+        repoConnectionId,
+        conversationId,
+        status: "draft",
+        nextStep: paymentMethod === "stripe"
+          ? "Fund escrow, then publish bounty."
+          : "Publish bounty when ready.",
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create bounty";
       return mcpError(message);
@@ -867,11 +942,12 @@ http.route({
     if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { claimId, featureBranchName, featureBranchRepo } =
+    const { claimId, featureBranchName, featureBranchRepo, agentId: bodyAgentId } =
       body as {
         claimId: string;
         featureBranchName: string;
         featureBranchRepo: string;
+        agentId?: string;
       };
 
     if (!claimId || !featureBranchName || !featureBranchRepo) {
@@ -879,6 +955,20 @@ http.route({
     }
 
     try {
+      if (auth.authMethod === "api_key") {
+        const claim = await ctx.runQuery(internal.bountyClaims.getByIdInternal, {
+          claimId: claimId as Id<"bountyClaims">,
+        });
+        if (!claim) return mcpError("Claim not found", 404);
+        if (claim.agentId !== auth.userId) return mcpError("Forbidden", 403);
+      } else if (bodyAgentId) {
+        const claim = await ctx.runQuery(internal.bountyClaims.getByIdInternal, {
+          claimId: claimId as Id<"bountyClaims">,
+        });
+        if (!claim) return mcpError("Claim not found", 404);
+        if (claim.agentId !== (bodyAgentId as Id<"users">)) return mcpError("Forbidden", 403);
+      }
+
       await ctx.runMutation(internal.bountyClaims.updateBranchInfo, {
         claimId: claimId as Id<"bountyClaims">,
         featureBranchName,
@@ -1006,9 +1096,15 @@ http.route({
     }
 
     let vId: Id<"verifications"> | undefined;
+    let resolvedSubmissionId: Id<"submissions"> | undefined;
 
     if (verificationId) {
       vId = verificationId as Id<"verifications">;
+      const verification = await ctx.runQuery(internal.verifications.getByIdInternal, {
+        verificationId: vId,
+      });
+      if (!verification) return mcpError("Verification not found", 404);
+      resolvedSubmissionId = verification.submissionId;
     } else if (submissionId) {
       const verification = await ctx.runQuery(
         internal.verifications.getBySubmissionInternal,
@@ -1016,9 +1112,27 @@ http.route({
       );
       if (!verification) return mcpError("Verification not found", 404);
       vId = verification._id;
+      resolvedSubmissionId = verification.submissionId;
     }
 
     if (!vId) return mcpError("Verification not found", 404);
+    if (!resolvedSubmissionId) return mcpError("Verification not found", 404);
+
+    if (auth.authMethod === "api_key") {
+      const submission = await ctx.runQuery(internal.submissions.getByIdInternal, {
+        submissionId: resolvedSubmissionId,
+      });
+      if (!submission) return mcpError("Verification not found", 404);
+
+      const userId = auth.userId as string;
+      const allowedAsAgent = submission.agentId === userId;
+      const allowedAsCreator = await isBountyCreator(
+        ctx,
+        userId,
+        submission.bountyId,
+      );
+      if (!allowedAsAgent && !allowedAsCreator) return mcpError("Forbidden", 403);
+    }
 
     // Use getAgentStatus to filter hidden test details for agent-facing consumers
     const result = await ctx.runQuery(internal.verifications.getAgentStatus, {
@@ -1043,6 +1157,19 @@ http.route({
     if (!bountyId) return mcpError("Missing bountyId");
 
     const typedBountyId = bountyId as Id<"bounties">;
+    if (auth.authMethod === "api_key") {
+      const userId = auth.userId as string;
+      const creatorAccess = await isBountyCreator(ctx, userId, typedBountyId);
+      let solverAccess = false;
+      if (!creatorAccess) {
+        const submissions = await ctx.runQuery(internal.submissions.listByAgentId, {
+          agentId: userId as Id<"users">,
+          bountyId: typedBountyId,
+        });
+        solverAccess = submissions.length > 0;
+      }
+      if (!creatorAccess && !solverAccess) return mcpError("Forbidden", 403);
+    }
 
     // Get the latest verification for this bounty (most recent first)
     const latestVerification = await ctx.runQuery(
@@ -1230,13 +1357,25 @@ http.route({
     }
 
     try {
-      const result = await ctx.runAction(internal.stripe.createSetupIntent, {
+      const hosted = await ctx.runAction(internal.stripe.createHostedSetupCheckout, {
+        userId: userId as Id<"users">,
+        email,
+        name,
+        successPath: "/settings?setup_complete=true",
+        cancelPath: "/settings?setup_canceled=true",
+      });
+
+      const setupIntent = await ctx.runAction(internal.stripe.createSetupIntent, {
         userId: userId as Id<"users">,
         email,
         name,
       });
 
-      return mcpJson(result);
+      return mcpJson({
+        ...setupIntent,
+        checkoutUrl: hosted.checkoutUrl,
+        sessionId: hosted.sessionId,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create setup intent";
       return mcpError(message);
@@ -1430,6 +1569,12 @@ http.route({
         workspaceId,
       });
       if (!ws) return mcpError("Workspace not found", 404);
+      if (ws.agentId !== (agentId as Id<"users">)) {
+        return mcpError("Forbidden: workspace does not belong to agent", 403);
+      }
+      if (ws.bountyId !== (bountyId as Id<"bounties">)) {
+        return mcpError("Forbidden: workspace bounty mismatch", 403);
+      }
 
       // Create submission with workspace metadata
       const submissionId = await ctx.runMutation(
@@ -1506,12 +1651,16 @@ http.route({
     if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { notificationIds } = body as { notificationIds: string[] };
+    const { notificationIds, userId: bodyUserId } = body as { notificationIds: string[]; userId?: string };
     if (!notificationIds || !Array.isArray(notificationIds)) {
       return mcpError("Missing notificationIds array");
     }
 
-    await ctx.runMutation(internal.notifications.markRead, {
+    const userId = auth.authMethod === "api_key" ? auth.userId! : bodyUserId;
+    if (!userId) return mcpError("Missing userId");
+
+    await ctx.runMutation(internal.notifications.markReadForUser, {
+      userId: userId as Id<"users">,
       notificationIds: notificationIds as Id<"notifications">[],
     });
 
@@ -1729,10 +1878,33 @@ http.route({
     const { bountyId } = body as { bountyId: string };
     if (!bountyId) return mcpError("Missing bountyId");
 
-    const reports = await ctx.runQuery(
-      internal.workspaceCrashReports.getCrashReports,
-      { bountyId: bountyId as Id<"bounties"> }
-    );
+    const typedBountyId = bountyId as Id<"bounties">;
+    let reports;
+    if (auth.authMethod === "api_key") {
+      const userId = auth.userId as string;
+      const creatorAccess = await isBountyCreator(ctx, userId, typedBountyId);
+      if (creatorAccess) {
+        reports = await ctx.runQuery(
+          internal.workspaceCrashReports.getCrashReports,
+          { bountyId: typedBountyId }
+        );
+      } else {
+        const claim = await ctx.runQuery(internal.bountyClaims.getByAgentAndBountyAnyStatus, {
+          agentId: userId as Id<"users">,
+          bountyId: typedBountyId,
+        });
+        if (!claim) return mcpError("Forbidden", 403);
+        reports = await ctx.runQuery(
+          internal.workspaceCrashReports.getCrashReportsForBountyAndAgent,
+          { bountyId: typedBountyId, agentId: userId as Id<"users"> }
+        );
+      }
+    } else {
+      reports = await ctx.runQuery(
+        internal.workspaceCrashReports.getCrashReports,
+        { bountyId: typedBountyId }
+      );
+    }
 
     return mcpJson({ reports });
   }),
@@ -1786,6 +1958,7 @@ http.route({
         details?: Record<string, unknown>;
       }>;
       totalDurationMs: number;
+      feedbackJson?: string;
       steps?: Array<{
         scenarioName: string;
         featureName: string;
@@ -1854,12 +2027,14 @@ http.route({
         if (gateType && gateStatus) {
           const issues: string[] = [];
           if (gate.summary) issues.push(gate.summary);
+          const detailsJson = gate.details ? JSON.stringify(gate.details) : undefined;
           await ctx.runMutation(internal.sanityGates.record, {
             verificationId,
             gateType: gateType as "build" | "lint" | "typecheck" | "security" | "sonarqube" | "snyk" | "memory",
             tool: gate.summary || gate.gate,
             status: gateStatus as "passed" | "failed" | "warning",
             issues: issues.length > 0 ? issues : undefined,
+            detailsJson,
           });
         }
       }
@@ -1886,6 +2061,7 @@ http.route({
         verificationId,
         status: verificationStatus as "passed" | "failed",
         completedAt: Date.now(),
+        feedbackJson: body.feedbackJson,
       });
 
       // 4. Update submission status
@@ -1961,7 +2137,7 @@ http.route({
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const Stripe = require("stripe");
       const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-      event = stripe.webhooks.constructEvent(
+      event = await stripe.webhooks.constructEventAsync(
         payload,
         signature,
         webhookSecret
@@ -2002,6 +2178,15 @@ http.route({
               paymentIntentId: pi.id,
             });
           }
+        }
+        break;
+      }
+      case "setup_intent.succeeded": {
+        const si = event.data.object as { metadata?: { convexUserId?: string } };
+        if (si.metadata?.convexUserId) {
+          await ctx.runMutation(internal.users.markHasPaymentMethod, {
+            userId: si.metadata.convexUserId as Id<"users">,
+          });
         }
         break;
       }

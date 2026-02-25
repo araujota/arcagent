@@ -1,0 +1,48 @@
+# Cloudflare Containers runtime for arcagent-worker.
+# Uses process execution backend (no KVM/Firecracker available in Cloudflare Containers).
+
+FROM node:20-bookworm-slim AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+FROM node:20-bookworm-slim AS runtime
+WORKDIR /app
+
+# Tooling needed by the verification gates in process backend mode.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    git \
+    python3 \
+    make \
+    g++ \
+    unzip \
+  && rm -rf /var/lib/apt/lists/*
+
+# SonarQube scanner CLI
+ENV SONAR_SCANNER_VERSION=5.0.1.3006
+RUN curl -fsSL "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux.zip" \
+      -o /tmp/sonar-scanner.zip \
+  && unzip -q /tmp/sonar-scanner.zip -d /opt \
+  && ln -s "/opt/sonar-scanner-${SONAR_SCANNER_VERSION}-linux/bin/sonar-scanner" /usr/local/bin/sonar-scanner \
+  && rm -f /tmp/sonar-scanner.zip
+
+# Snyk CLI
+RUN npm install -g snyk@latest \
+  && npm cache clean --force
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY --from=build /app/dist ./dist
+
+ENV NODE_ENV=production
+ENV PORT=3001
+ENV WORKER_EXECUTION_BACKEND=process
+
+EXPOSE 3001
+CMD ["node", "dist/index.js"]

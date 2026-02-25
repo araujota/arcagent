@@ -165,6 +165,7 @@ export const getFullStatus = internalQuery({
         tool: g.tool,
         status: g.status,
         issues: g.issues,
+        details: g.detailsJson ? safeParseJson(g.detailsJson) : undefined,
       })),
       steps: steps.map((s) => ({
         scenarioName: s.scenarioName,
@@ -188,9 +189,8 @@ export const getFullStatus = internalQuery({
 });
 
 /**
- * Agent-facing query that returns verbose test runner output for ALL scenarios
- * (both public and hidden). Agents see full stdout/stderr, error messages, and
- * stack traces. The only thing never exposed is step definition source code.
+ * Agent-facing query that redacts hidden test internals.
+ * Public scenario execution remains verbose while hidden output is summarized.
  */
 export const getAgentStatus = internalQuery({
   args: { verificationId: v.id("verifications") },
@@ -219,16 +219,18 @@ export const getAgentStatus = internalQuery({
         .first(),
     ]);
 
-    // Return verbose output for ALL steps (public + hidden)
-    const allSteps = steps.map((s) => ({
-      scenarioName: s.scenarioName,
-      featureName: s.featureName,
-      status: s.status,
-      executionTimeMs: s.executionTimeMs,
-      output: s.output,
-      stepNumber: s.stepNumber,
-      visibility: s.visibility ?? "public",
-    }));
+    const publicSteps = steps
+      .filter((s) => (s.visibility ?? "public") === "public")
+      .map((s) => ({
+        scenarioName: s.scenarioName,
+        featureName: s.featureName,
+        status: s.status,
+        executionTimeMs: s.executionTimeMs,
+        output: s.output,
+        stepNumber: s.stepNumber,
+        visibility: "public" as const,
+      }));
+    const hiddenSteps = steps.filter((s) => (s.visibility ?? "public") === "hidden");
 
     return {
       ...verification,
@@ -237,8 +239,15 @@ export const getAgentStatus = internalQuery({
         tool: g.tool,
         status: g.status,
         issues: g.issues,
+        details: g.detailsJson ? safeParseJson(g.detailsJson) : undefined,
       })),
-      steps: allSteps,
+      steps: publicSteps,
+      hiddenSummary: {
+        total: hiddenSteps.length,
+        passed: hiddenSteps.filter((s) => s.status === "pass").length,
+        failed: hiddenSteps.filter((s) => s.status === "fail" || s.status === "error").length,
+        skipped: hiddenSteps.filter((s) => s.status === "skip").length,
+      },
       feedbackJson: verification.feedbackJson,
       job: job
         ? {
@@ -252,6 +261,37 @@ export const getAgentStatus = internalQuery({
     };
   },
 });
+
+function safeParseJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+async function failVerificationDispatch(
+  ctx: {
+    runMutation: (fn: unknown, args: Record<string, unknown>) => Promise<unknown>;
+  },
+  args: {
+    verificationId: string;
+    submissionId: string;
+  },
+  reason: string,
+) {
+  await ctx.runMutation(internal.verifications.updateResult, {
+    verificationId: args.verificationId,
+    status: "failed",
+    errorLog: reason,
+    completedAt: Date.now(),
+  });
+
+  await ctx.runMutation(internal.submissions.updateStatus, {
+    submissionId: args.submissionId,
+    status: "failed",
+  });
+}
 
 export const getByIdInternal = internalQuery({
   args: { verificationId: v.id("verifications") },
@@ -338,60 +378,30 @@ export const runVerificationFromDiff = internalAction({
   handler: async (ctx, args) => {
     const workerUrl = process.env.WORKER_API_URL;
 
-    if (workerUrl) {
-      await ctx.runAction(
-        internal.pipelines.dispatchVerification.dispatchVerificationFromDiff,
+    if (!workerUrl) {
+      await failVerificationDispatch(
+        ctx,
         {
           verificationId: args.verificationId,
           submissionId: args.submissionId,
-          bountyId: args.bountyId,
-          baseRepoUrl: args.baseRepoUrl,
-          baseCommitSha: args.baseCommitSha,
-          diffPatch: args.diffPatch,
-          sourceWorkspaceId: args.sourceWorkspaceId,
         },
+        "Verification worker is not configured (WORKER_API_URL missing).",
       );
-    } else {
-      // Fallback: run stub verification (for development)
-      console.warn(
-        "[DEV MODE] WORKER_API_URL not configured. Running stub diff verification.",
-      );
-
-      await ctx.runMutation(internal.verifications.updateResult, {
-        verificationId: args.verificationId,
-        status: "running",
-        startedAt: Date.now(),
-      });
-
-      await ctx.runMutation(internal.submissions.updateStatus, {
-        submissionId: args.submissionId,
-        status: "running",
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      await ctx.runMutation(internal.verifications.updateResult, {
-        verificationId: args.verificationId,
-        status: "passed",
-        result: "Stub diff verification passed (worker not configured)",
-        completedAt: Date.now(),
-      });
-
-      await ctx.runMutation(internal.submissions.updateStatus, {
-        submissionId: args.submissionId,
-        status: "passed",
-      });
-
-      await ctx.scheduler.runAfter(
-        0,
-        internal.verifications.triggerPayoutOnVerificationPass,
-        {
-          verificationId: args.verificationId,
-          bountyId: args.bountyId,
-          submissionId: args.submissionId,
-        },
-      );
+      return;
     }
+
+    await ctx.runAction(
+      internal.pipelines.dispatchVerification.dispatchVerificationFromDiff,
+      {
+        verificationId: args.verificationId,
+        submissionId: args.submissionId,
+        bountyId: args.bountyId,
+        baseRepoUrl: args.baseRepoUrl,
+        baseCommitSha: args.baseCommitSha,
+        diffPatch: args.diffPatch,
+        sourceWorkspaceId: args.sourceWorkspaceId,
+      },
+    );
   },
 });
 
@@ -579,7 +589,6 @@ export const triggerPayoutOnVerificationPass = internalAction({
 /**
  * Main verification entry point.
  * Dispatches the verification job to the external worker service.
- * If the worker is not configured, falls back to a stub.
  */
 export const runVerification = internalAction({
   args: {
@@ -590,88 +599,25 @@ export const runVerification = internalAction({
   handler: async (ctx, args) => {
     const workerUrl = process.env.WORKER_API_URL;
 
-    if (workerUrl) {
-      // Dispatch to external worker service
-      await ctx.runAction(
-        internal.pipelines.dispatchVerification.dispatchVerification,
+    if (!workerUrl) {
+      await failVerificationDispatch(
+        ctx,
         {
           verificationId: args.verificationId,
           submissionId: args.submissionId,
-          bountyId: args.bountyId,
-        }
+        },
+        "Verification worker is not configured (WORKER_API_URL missing).",
       );
-    } else {
-      // Fallback: run stub verification (for development)
-      console.warn(
-        "[DEV MODE] WORKER_API_URL not configured. Running stub verification."
-      );
-
-      await ctx.runMutation(internal.verifications.updateResult, {
-        verificationId: args.verificationId,
-        status: "running",
-        startedAt: Date.now(),
-      });
-
-      await ctx.runMutation(internal.submissions.updateStatus, {
-        submissionId: args.submissionId,
-        status: "running",
-      });
-
-      // Simulate a brief delay
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      // Record stub sanity gates
-      await ctx.runMutation(internal.sanityGates.record, {
-        verificationId: args.verificationId,
-        gateType: "build",
-        tool: "npm ci",
-        status: "passed",
-      });
-
-      await ctx.runMutation(internal.sanityGates.record, {
-        verificationId: args.verificationId,
-        gateType: "lint",
-        tool: "eslint",
-        status: "passed",
-      });
-
-      await ctx.runMutation(internal.sanityGates.record, {
-        verificationId: args.verificationId,
-        gateType: "typecheck",
-        tool: "tsc",
-        status: "passed",
-      });
-
-      await ctx.runMutation(internal.sanityGates.record, {
-        verificationId: args.verificationId,
-        gateType: "security",
-        tool: "trivy + semgrep",
-        status: "passed",
-      });
-
-      // Mark as completed
-      await ctx.runMutation(internal.verifications.updateResult, {
-        verificationId: args.verificationId,
-        status: "passed",
-        result: "Stub verification passed (worker not configured)",
-        completedAt: Date.now(),
-      });
-
-      await ctx.runMutation(internal.submissions.updateStatus, {
-        submissionId: args.submissionId,
-        status: "passed",
-      });
-
-      // Trigger payout
-      await ctx.scheduler.runAfter(
-        0,
-        internal.verifications.triggerPayoutOnVerificationPass,
-        {
-          verificationId: args.verificationId,
-          bountyId: args.bountyId,
-          submissionId: args.submissionId,
-        }
-      );
+      return;
     }
+
+    await ctx.runAction(
+      internal.pipelines.dispatchVerification.dispatchVerification,
+      {
+        verificationId: args.verificationId,
+        submissionId: args.submissionId,
+        bountyId: args.bountyId,
+      }
+    );
   },
 });

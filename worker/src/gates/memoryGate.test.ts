@@ -16,7 +16,7 @@ describe("runMemoryGate", () => {
   });
 
   it("C: Valgrind available, exit 0 -> 'pass'", async () => {
-    let callIdx = 0;
+    const callIdx = 0;
     const vm = mockVM(async (cmd: string) => {
       if (cmd.includes("command -v valgrind")) {
         return { stdout: "/usr/bin/valgrind", stderr: "", exitCode: 0 };

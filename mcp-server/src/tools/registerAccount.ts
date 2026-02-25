@@ -1,7 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { callConvex } from "../convex/client";
-import { generateApiKey } from "../lib/crypto";
 import { registerTool } from "../lib/toolHelper";
 import { findOrCreateClerkUser } from "../lib/clerk";
 
@@ -48,16 +47,12 @@ export function registerRegisterAccount(server: McpServer): void {
         clerkId = clerkResult.clerkId;
         const isExisting = clerkResult.isExisting;
 
-        const { plaintext, hash, prefix } = generateApiKey();
-
-        const result = await callConvex<{ userId: string }>(
+        const result = await callConvex<{ userId: string; apiKey: string; keyPrefix: string }>(
           "/api/mcp/agents/create",
           {
             name: args.name,
             email: args.email,
             clerkId,
-            keyHash: hash,
-            keyPrefix: prefix,
             githubUsername: args.githubUsername,
           },
         );
@@ -69,7 +64,7 @@ export function registerRegisterAccount(server: McpServer): void {
                 command: "npx",
                 args: ["-y", "arcagent-mcp"],
                 env: {
-                  ARCAGENT_API_KEY: plaintext,
+                  ARCAGENT_API_KEY: result.apiKey,
                 },
               },
             },
@@ -90,7 +85,7 @@ export function registerRegisterAccount(server: McpServer): void {
                 "Account created successfully!",
                 "",
                 `**User ID:** ${result.userId}`,
-                `**API Key:** \`${plaintext}\``,
+                `**API Key:** \`${result.apiKey}\``,
                 "",
                 accountNote,
                 "",
@@ -103,7 +98,7 @@ export function registerRegisterAccount(server: McpServer): void {
                 "```",
                 "",
                 "For HTTP transport, set the Authorization header:",
-                `\`Authorization: Bearer ${plaintext}\``,
+                `\`Authorization: Bearer ${result.apiKey}\``,
               ].join("\n"),
             },
           ],

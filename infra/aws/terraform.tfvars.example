@@ -9,7 +9,7 @@ aws_region   = "us-east-1"
 environment  = "production"
 
 # EC2 — must be .metal for KVM/Firecracker support
-instance_type = "m5.metal"
+instance_type = "c6i.metal"
 worker_count  = 1
 ssh_key_name  = "your-key-pair-name"
 
@@ -39,6 +39,12 @@ harden_egress       = true
 
 # Node.js version for the worker runtime
 node_version = "20"
+
+# Runtime sidecars
+enable_sonarqube        = false
+sonarqube_url           = ""   # Example: https://sonar.your-domain.com
+sonarqube_token         = ""   # Optional SonarQube token
+snyk_token              = ""   # Optional Snyk token
 
 # Root volume size (needs space for rootfs images, overlays, etc.)
 root_volume_size_gb = 200

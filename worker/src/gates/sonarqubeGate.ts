@@ -20,6 +20,7 @@ export async function runSonarQubeGate(
   diff: DiffContext | null,
 ): Promise<GateResult> {
   const start = Date.now();
+  const normalizedLanguage = language.toLowerCase();
 
   const sonarUrl = process.env.SONARQUBE_URL;
   const sonarToken = process.env.SONARQUBE_TOKEN;
@@ -30,6 +31,37 @@ export async function runSonarQubeGate(
       status: "skipped",
       durationMs: Date.now() - start,
       summary: "SonarQube not configured (SONARQUBE_URL / SONARQUBE_TOKEN missing)",
+    };
+  }
+
+  const supportedLanguages = new Set(["typescript", "javascript"]);
+  if (!supportedLanguages.has(normalizedLanguage)) {
+    return {
+      gate: "sonarqube",
+      status: "skipped",
+      durationMs: Date.now() - start,
+      summary: `SonarQube gate is not enabled for language "${language}" in this execution image set`,
+    };
+  }
+
+  const hardenEgress = process.env.FC_HARDEN_EGRESS !== "false"
+    && (process.env.FC_HARDEN_EGRESS === "true" || process.env.NODE_ENV === "production");
+  if (hardenEgress && !sonarUrl.startsWith("https://")) {
+    return {
+      gate: "sonarqube",
+      status: "error",
+      durationMs: Date.now() - start,
+      summary: "SonarQube URL must use https:// when hardened egress is enabled",
+    };
+  }
+
+  const cliCheck = await vm.exec("command -v sonar-scanner >/dev/null 2>&1", 10_000);
+  if (cliCheck.exitCode !== 0) {
+    return {
+      gate: "sonarqube",
+      status: "error",
+      durationMs: Date.now() - start,
+      summary: `sonar-scanner not available in execution environment for language "${language}"`,
     };
   }
 

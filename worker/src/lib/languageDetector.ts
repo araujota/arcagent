@@ -209,6 +209,7 @@ async function fetchGithubRootFiles(repoUrl: string): Promise<string[]> {
 
   const [, owner, repo] = match;
   const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents`;
+  const githubToken = process.env.GITHUB_API_TOKEN ?? process.env.GITHUB_TOKEN;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
@@ -218,8 +219,8 @@ async function fetchGithubRootFiles(repoUrl: string): Promise<string[]> {
       headers: {
         Accept: "application/vnd.github.v3+json",
         "User-Agent": "arcagent-worker",
-        ...(process.env.GITHUB_TOKEN
-          ? { Authorization: `token ${process.env.GITHUB_TOKEN}` }
+        ...(githubToken
+          ? { Authorization: `token ${githubToken}` }
           : {}),
       },
       signal: controller.signal,

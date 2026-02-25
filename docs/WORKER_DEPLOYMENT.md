@@ -2,6 +2,9 @@
 
 This guide covers deploying the ArcAgent verification worker — from local development through production on AWS.
 
+> Cloudflare production deployment now has a dedicated guide:
+> `docs/CLOUDFLARE_WORKER_DEPLOYMENT.md`.
+
 ## Architecture Overview
 
 ```
@@ -56,7 +59,7 @@ Starts all services: `redis`, `web` (Next.js on port 3000), `worker` (port 3001)
 docker compose --profile sonarqube up
 ```
 
-This adds `sonarqube` (port 9000) and its `sonarqube-db` (Postgres) service. SonarQube is an optional verification gate — it only runs if enabled per-bounty by the creator.
+This adds `sonarqube` (port 9000) and its `sonarqube-db` (Postgres) service in the same compose environment as worker+redis. SonarQube is an optional verification gate — it only runs if enabled per-bounty by the creator.
 
 ### Environment variables
 
@@ -65,7 +68,6 @@ Create a `.env` file at the repo root (loaded by all services via `env_file`). R
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `CONVEX_URL` | Yes | Your Convex deployment URL (e.g. `https://your-app.convex.cloud`) |
-| `CONVEX_DEPLOY_KEY` | Yes | Convex deploy key for server-to-server calls |
 | `WORKER_SHARED_SECRET` | Yes | Must match the value set in Convex env |
 | `REDIS_URL` | No | Overridden to `redis://redis:6379` by Docker Compose |
 | `PORT` | No | Default: `3001` |
@@ -82,6 +84,16 @@ cd worker && npm run dev
 
 This starts the Express server with BullMQ but VM operations will fail unless KVM is available.
 
+### Pulling worker envs from Vercel before local deploy
+
+From repo root:
+
+```bash
+npm run env:sync:worker
+```
+
+This generates `worker/.env.generated` (gitignored, mode `0600`) and overlays it on top of `worker/.env` in both root and worker `docker compose` configurations.
+
 ## Production Deployment to AWS (Terraform)
 
 The `infra/aws/` directory contains complete Terraform configuration for deploying worker instances on bare-metal EC2.
@@ -97,7 +109,7 @@ The `infra/aws/` directory contains complete Terraform configuration for deployi
 
 Terraform provisions:
 - **VPC** (`10.1.0.0/16`) with public subnets — uses `10.1.x.x` to avoid collision with Firecracker's internal `10.0.0.0/24` TAP subnet
-- **Bare-metal EC2 instances** (`m5.metal` by default) with KVM support
+- **Bare-metal EC2 instances** (`c6i.metal` by default) with KVM support
 - **Elastic IPs** for stable worker addressing
 - **Security group** — port 3001 open for Convex/MCP inbound, SSH restricted to specified CIDRs
 - **IAM role** with CloudWatch Logs, SSM, and ECR read access
@@ -118,7 +130,7 @@ aws_region   = "us-east-1"
 environment  = "production"
 
 # Must be .metal for KVM/Firecracker support
-instance_type = "m5.metal"
+instance_type = "c6i.metal"
 worker_count  = 1
 ssh_key_name  = "your-key-pair-name"
 
@@ -246,7 +258,7 @@ Each language has a fixed resource profile defined in `worker/src/vm/vmConfig.ts
 | Swift | 4 | 2048 | 3 min | `swift-6.ext4` |
 | Kotlin | 4 | 2048 | 3 min | `kotlin-jvm21.ext4` |
 
-An `m5.metal` instance has 96 vCPUs and 384 GiB RAM — plan your `worker_concurrency` and `max_dev_vms` accordingly.
+A `c6i.metal` instance has 128 vCPUs and 256 GiB RAM — plan your `worker_concurrency` and `max_dev_vms` accordingly.
 
 ## Updating / Redeploying
 
@@ -358,7 +370,6 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `CONVEX_URL` | Yes | — | Convex deployment URL |
-| `CONVEX_DEPLOY_KEY` | Yes | — | Convex deploy key for server-to-server calls |
 | `WORKER_SHARED_SECRET` | Yes | — | Shared secret (must match Convex env) |
 | `REDIS_URL` | Yes | `redis://localhost:6379` | Redis connection URL |
 | `PORT` | No | `3001` | Server port |
@@ -376,8 +387,9 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 | `WORKSPACE_IDLE_TIMEOUT_MS` | No | `1800000` | Idle workspace timeout (30 min) |
 | `SONARQUBE_URL` | No | — | SonarQube server URL (enables gate) |
 | `SONARQUBE_TOKEN` | No | — | SonarQube auth token |
-| `SNYK_TOKEN` | No | — | Snyk API token (enables gate) |
-| `GITHUB_API_TOKEN` | No | — | GitHub token for repo access |
+| `SNYK_TOKEN` | No | — | Snyk CLI token (SaaS-backed gate) |
+| `GITHUB_API_TOKEN` | No | — | Primary GitHub token for repo access and language detection |
+| `GITHUB_TOKEN` | Deprecated fallback | — | Backward-compatible fallback token. Prefer `GITHUB_API_TOKEN` |
 
 ### Terraform variables (`infra/aws/terraform.tfvars.example`)
 
@@ -385,7 +397,7 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 |----------|----------|---------|-------------|
 | `aws_region` | No | `us-east-1` | AWS region |
 | `environment` | No | `production` | Environment name |
-| `instance_type` | No | `m5.metal` | EC2 instance type (must be `.metal`) |
+| `instance_type` | No | `c6i.metal` | EC2 instance type (must be `.metal`) |
 | `worker_count` | No | `1` | Number of worker instances |
 | `ssh_key_name` | Yes | — | EC2 key pair name |
 | `ssh_allowed_cidrs` | No | `[]` | CIDRs allowed to SSH (empty = no SSH) |
@@ -400,6 +412,10 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 | `firecracker_version` | No | `1.7.0` | Firecracker release version |
 | `node_version` | No | `20` | Node.js major version |
 | `harden_egress` | No | `true` | Enable egress filtering |
+| `enable_sonarqube` | No | `false` | Deploy SonarQube + Postgres sidecars on worker hosts |
+| `sonarqube_url` | No | `""` | SonarQube endpoint passed to worker env (`https://...` recommended for hardened/prod) |
+| `sonarqube_token` | No | `""` | SonarQube auth token passed to worker env |
+| `snyk_token` | No | `""` | Snyk token passed to worker env |
 
 ### Convex environment variables
 

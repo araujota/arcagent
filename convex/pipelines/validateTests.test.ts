@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { runStaticValidation } from "./validateTests";
 
-const VALID_PUBLIC = `Feature: Login
+const VALID_PUBLIC = `@public @happy-path @validation @error
+Feature: Login
   Scenario: Successful login
     Given a registered user
     When they enter valid credentials
@@ -10,9 +11,52 @@ const VALID_PUBLIC = `Feature: Login
   Scenario: Failed login
     Given a registered user
     When they enter wrong credentials
-    Then they see an error message`;
+    Then they see an error message
 
-const VALID_HIDDEN = `Feature: Login Edge Cases
+  @public @happy-path
+  Scenario: Login with remember me
+    Given a registered user
+    When they sign in with remember me enabled
+    Then they remain signed in
+
+  @public @validation
+  Scenario: Missing password
+    Given a registered user
+    When they submit without a password
+    Then a validation error is shown
+
+  @public @error
+  Scenario: Rate limit exceeded
+    Given repeated failed login attempts
+    When another login is attempted
+    Then the request is rejected
+
+  @public @validation
+  Scenario Outline: Username format validation
+    Given a login form
+    When username "<username>" is submitted
+    Then validation "<result>" is returned
+    Examples:
+      | username | result |
+      | a        | invalid |
+      | abc      | valid |
+      | abc-123  | valid |
+      | !!!      | invalid |
+
+  @public @error
+  Scenario: Backend unavailable
+    Given the auth backend is down
+    When the user attempts to log in
+    Then a retryable error is shown
+
+  @public @happy-path
+  Scenario: Case-insensitive email login
+    Given a registered user with mixed-case email
+    When they log in with lowercase email
+    Then authentication succeeds`;
+
+const VALID_HIDDEN = `@hidden @boundary @security @anti-gaming
+Feature: Login Edge Cases
   Scenario: SQL injection attempt
     Given a login form
     When the user enters "' OR 1=1 --" as username
@@ -21,7 +65,55 @@ const VALID_HIDDEN = `Feature: Login Edge Cases
   Scenario: Empty credentials
     Given a login form
     When the user submits empty fields
-    Then a validation error is shown`;
+    Then a validation error is shown
+
+  @hidden @boundary
+  Scenario: Maximum password length
+    Given a login form
+    When a 256 character password is submitted
+    Then input is rejected
+
+  @hidden @security
+  Scenario: Credential stuffing signature
+    Given repeated sign-in attempts from rotating IPs
+    When threshold is exceeded
+    Then suspicious activity is blocked
+
+  @hidden @anti-gaming
+  Scenario Outline: Diverse credential matrix
+    Given a login form
+    When username "<username>" and password "<password>" are submitted
+    Then result is "<result>"
+    Examples:
+      | username         | password            | result  |
+      | admin            | admin               | fail    |
+      | user@example.com | P@ssw0rd!           | pass    |
+      | test@example.com | wrong               | fail    |
+      | unicode@example.com | pässW0rd!        | pass    |
+
+  @hidden @anti-gaming
+  Scenario Outline: Metamorphic input normalization
+    Given user identifier "<identifier>"
+    When normalization is applied
+    Then normalized identifier "<normalized>" is used
+    Examples:
+      | identifier              | normalized            |
+      | USER@EXAMPLE.COM        | user@example.com      |
+      | user+tag@example.com    | user@example.com      |
+      |  user@example.com       | user@example.com      |
+      | user@example.com        | user@example.com      |
+
+  @hidden @security
+  Scenario: Timing attack resistance
+    Given two invalid passwords with different prefixes
+    When auth checks are compared
+    Then response timing variance is bounded
+
+  @hidden @boundary
+  Scenario: Null-byte payload rejected
+    Given a login form
+    When credentials contain a null byte
+    Then the request is rejected`;
 
 const VALID_STEP_DEFS = JSON.stringify([
   { path: "tests/steps/login_steps.ts", content: "import { Given } from '@cucumber/cucumber';\nGiven('a registered user', () => {});" },
@@ -40,8 +132,8 @@ describe("runStaticValidation", () => {
       stepDefinitions: VALID_STEP_DEFS,
     });
     expect(result.issues).toHaveLength(0);
-    expect(result.stats.publicScenarios).toBe(2);
-    expect(result.stats.hiddenScenarios).toBe(2);
+    expect(result.stats.publicScenarios).toBe(8);
+    expect(result.stats.hiddenScenarios).toBe(8);
   });
 
   it("reports errors for invalid public gherkin", () => {
@@ -130,8 +222,8 @@ Feature: Test
       gherkinHidden: VALID_HIDDEN,
       stepDefinitions: VALID_STEP_DEFS,
     });
-    expect(result.stats.publicScenarios).toBe(2);
-    expect(result.stats.hiddenScenarios).toBe(2);
+    expect(result.stats.publicScenarios).toBe(8);
+    expect(result.stats.hiddenScenarios).toBe(8);
     expect(result.stats.stepDefFiles).toBe(2);
   });
 
@@ -180,15 +272,15 @@ describe("validateTests score default (P2-3)", () => {
     expect(score).toBe(0);
   });
 
-  it("score < 6 triggers regeneration", () => {
+  it("score < 7 triggers regeneration", () => {
     const score = 0;
-    const needsRegeneration = score < 6;
+    const needsRegeneration = score < 7;
     expect(needsRegeneration).toBe(true);
   });
 
-  it("score >= 6 does not trigger regeneration from score alone", () => {
+  it("score >= 7 does not trigger regeneration from score alone", () => {
     const score = 7;
-    const needsRegeneration = score < 6;
+    const needsRegeneration = score < 7;
     expect(needsRegeneration).toBe(false);
   });
 });

@@ -1,14 +1,14 @@
 import { hashApiKey } from "../lib/crypto";
 import { callConvex } from "../convex/client";
 import { AuthenticatedUser } from "../lib/types";
-
-interface CacheEntry {
-  user: AuthenticatedUser;
-  expiresAt: number;
-}
+import { LruTtlCache } from "../lib/lruCache";
 
 const CACHE_TTL_MS = 60_000; // 60 seconds
-const cache = new Map<string, CacheEntry>();
+const CACHE_MAX_ENTRIES = 10_000;
+const cache = new LruTtlCache<string, AuthenticatedUser>(
+  CACHE_MAX_ENTRIES,
+  CACHE_TTL_MS,
+);
 
 /**
  * Validate an API key and return the authenticated user.
@@ -38,9 +38,7 @@ export async function validateApiKey(
 
   // Check cache
   const cached = cache.get(keyHash);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.user;
-  }
+  if (cached) return cached;
 
   // Validate against Convex
   const result = await callConvex<{
@@ -65,12 +63,13 @@ export async function validateApiKey(
   };
 
   // Cache the result
-  cache.set(keyHash, {
-    user,
-    expiresAt: Date.now() + CACHE_TTL_MS,
-  });
+  cache.set(keyHash, user);
 
   return user;
+}
+
+export function getApiKeyAuthCacheSize(): number {
+  return cache.size();
 }
 
 /**
