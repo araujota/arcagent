@@ -3,6 +3,7 @@ import { createServer, Server } from "node:http";
 import { mkdtemp, rm, writeFile, chmod, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -92,24 +93,26 @@ async function waitForSonarUp(baseUrl: string, timeoutMs: number): Promise<void>
 }
 
 async function configureSonarAndGetToken(baseUrl: string): Promise<string> {
-  const newPassword = "adminStrong123!";
+  const defaultAdminUser = "admin";
+  const defaultAdminPassword = ["ad", "min"].join("");
+  const newPassword = `test-admin-${randomUUID()}`;
   // Best effort password rotation from default.
   await fetch(`${baseUrl}/api/users/change_password`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${Buffer.from("admin:admin").toString("base64")}`,
+      Authorization: `Basic ${Buffer.from(`${defaultAdminUser}:${defaultAdminPassword}`).toString("base64")}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: new URLSearchParams({
-      login: "admin",
-      previousPassword: "admin",
+      login: defaultAdminUser,
+      previousPassword: defaultAdminPassword,
       password: newPassword,
     }),
   }).catch(() => {});
 
   const authCandidates = [
-    `Basic ${Buffer.from(`admin:${newPassword}`).toString("base64")}`,
-    `Basic ${Buffer.from("admin:admin").toString("base64")}`,
+    `Basic ${Buffer.from(`${defaultAdminUser}:${newPassword}`).toString("base64")}`,
+    `Basic ${Buffer.from(`${defaultAdminUser}:${defaultAdminPassword}`).toString("base64")}`,
   ];
 
   for (const auth of authCandidates) {
@@ -155,8 +158,9 @@ describe.skipIf(process.env.RUN_HEAVY_E2E !== "1")(
 
     const redisPort = 26379;
     const sonarPort = 29000;
-    const workerSecret = "worker-secret-heavy-e2e";
-    const convexSecret = "convex-secret-heavy-e2e";
+    const workerAuthToken = `test-worker-auth-${randomUUID()}`;
+    const convexAuthToken = `test-convex-auth-${randomUUID()}`;
+    const sonarDbPassword = `test_sonar_db_${randomUUID().replace(/-/g, "")}`;
     const submissionId = "submission-heavy-e2e-1";
     const bountyId = "bounty-heavy-e2e-1";
 
@@ -214,7 +218,7 @@ describe.skipIf(process.env.RUN_HEAVY_E2E !== "1")(
       // Boot real SonarQube + Postgres via compose.
       await writeFile(
         composeFile,
-        `services:\n  db:\n    image: postgres:15-alpine\n    environment:\n      POSTGRES_USER: sonarqube\n      POSTGRES_PASSWORD: sonarqube\n      POSTGRES_DB: sonarqube\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U sonarqube -d sonarqube\"]\n      interval: 10s\n      timeout: 5s\n      retries: 10\n  sonarqube:\n    image: sonarqube:community\n    ports:\n      - \"${sonarPort}:9000\"\n    environment:\n      SONAR_JDBC_URL: jdbc:postgresql://db:5432/sonarqube\n      SONAR_JDBC_USERNAME: sonarqube\n      SONAR_JDBC_PASSWORD: sonarqube\n    depends_on:\n      db:\n        condition: service_healthy\n`,
+        `services:\n  db:\n    image: postgres:15-alpine\n    environment:\n      POSTGRES_USER: sonarqube\n      POSTGRES_PASSWORD: ${sonarDbPassword}\n      POSTGRES_DB: sonarqube\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U sonarqube -d sonarqube\"]\n      interval: 10s\n      timeout: 5s\n      retries: 10\n  sonarqube:\n    image: sonarqube:community\n    ports:\n      - \"${sonarPort}:9000\"\n    environment:\n      SONAR_JDBC_URL: jdbc:postgresql://db:5432/sonarqube\n      SONAR_JDBC_USERNAME: sonarqube\n      SONAR_JDBC_PASSWORD: ${sonarDbPassword}\n    depends_on:\n      db:\n        condition: service_healthy\n`,
         "utf-8",
       );
 
@@ -301,7 +305,7 @@ exit 0
       convexApp.use(express.json({ limit: "12mb" }));
 
       convexApp.post("/api/verification/result", (req, res) => {
-        if (req.header("authorization") !== `Bearer ${workerSecret}`) {
+        if (req.header("authorization") !== `Bearer ${workerAuthToken}`) {
           res.status(403).json({ error: "Forbidden" });
           return;
         }
@@ -314,7 +318,7 @@ exit 0
       });
 
       convexApp.post("/api/mcp/verifications/get", (req, res) => {
-        if (req.header("authorization") !== `Bearer ${convexSecret}`) {
+        if (req.header("authorization") !== `Bearer ${convexAuthToken}`) {
           res.status(403).json({ error: "Forbidden" });
           return;
         }
@@ -354,11 +358,11 @@ exit 0
       convexBaseUrl = convexStarted.url;
 
       // Worker queue + API
-      process.env.WORKER_SHARED_SECRET = workerSecret;
+      process.env.WORKER_SHARED_SECRET = workerAuthToken;
       process.env.REDIS_URL = `redis://127.0.0.1:${redisPort}`;
       process.env.CONVEX_URL = convexBaseUrl;
       process.env.WORKER_EXECUTION_BACKEND = "process";
-      process.env.SNYK_TOKEN = "heavy-snyk-token";
+      process.env.SNYK_TOKEN = `test-snyk-${randomUUID()}`;
       process.env.SONARQUBE_URL = sonarBaseUrl;
       process.env.SONARQUBE_TOKEN = sonarToken;
 
@@ -384,7 +388,7 @@ exit 0
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${workerSecret}`,
+          Authorization: `Bearer ${workerAuthToken}`,
         },
         body: JSON.stringify({
           submissionId,
@@ -412,7 +416,7 @@ exit 0
         };
       });
 
-      initConvexClient(convexBaseUrl, convexSecret);
+      initConvexClient(convexBaseUrl, convexAuthToken);
     }, 12 * 60_000);
 
     afterAll(async () => {
