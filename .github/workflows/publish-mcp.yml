@@ -24,7 +24,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
           cache: npm
           cache-dependency-path: |
             mcp-server/package-lock.json
@@ -53,3 +52,5 @@ jobs:
 
       - name: Publish to npm (Trusted Publishing)
         run: npm publish --access public --tag "${{ steps.tag.outputs.npm_tag }}"
+        env:
+          NODE_AUTH_TOKEN: ""
