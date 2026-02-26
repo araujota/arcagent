@@ -24,6 +24,7 @@ interface HttpRuntime {
 
 async function authenticateRequest(req: Request): Promise<{
   ok: true;
+  apiKey: string;
   userId: string;
   user: Awaited<ReturnType<typeof validateApiKey>>;
 } | {
@@ -52,7 +53,7 @@ async function authenticateRequest(req: Request): Promise<{
         message: "Invalid API key",
       };
     }
-    return { ok: true, userId: user.userId, user };
+    return { ok: true, apiKey, userId: user.userId, user };
   } catch (error) {
     return {
       ok: false,
@@ -198,7 +199,7 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
       return;
     }
 
-    await runWithAuth(auth.user!, async () => {
+    await runWithAuth(auth.user!, auth.apiKey, async () => {
       const sessionId = req.headers["mcp-session-id"] as string | undefined;
       if (sessionId) {
         const record = sessions.get(sessionId);
@@ -322,11 +323,11 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
 }
 
 async function startStdio(config: ServerConfig): Promise<void> {
-  if (config.arcagentApiKey && !config.mcpSharedSecret) {
+  if (config.arcagentApiKey) {
     try {
       const user = await validateApiKey(config.arcagentApiKey);
       if (!user) throw new Error("Invalid ARCAGENT_API_KEY");
-      setStdioAuthUser(user);
+      setStdioAuthUser(user, config.arcagentApiKey);
       console.error(`[MCP] Authenticated as ${user.name} (${user.email})`);
     } catch (err) {
       console.error(
@@ -375,8 +376,7 @@ export async function main(config = loadServerConfig()): Promise<void> {
     console.warn("[MCP] WORKER_SHARED_SECRET not set — workspace tools will be unavailable");
   }
 
-  const bearerToken = config.mcpSharedSecret || config.arcagentApiKey;
-  initConvexClient(config.convexUrl, bearerToken);
+  initConvexClient(config.convexUrl);
   if (config.workerSharedSecret) {
     initWorkerClient(config.workerSharedSecret);
   }

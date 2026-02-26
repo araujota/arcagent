@@ -3,7 +3,6 @@ export type StartupMode = "full" | "registration-only";
 
 export interface ServerConfig {
   convexUrl: string;
-  mcpSharedSecret?: string;
   arcagentApiKey?: string;
   workerSharedSecret?: string;
   clerkSecretKey?: string;
@@ -60,7 +59,6 @@ export function loadServerConfig(
 
   return {
     convexUrl: normalizeConvexHttpActionsUrl(convexBaseUrl),
-    mcpSharedSecret: env.MCP_SHARED_SECRET,
     arcagentApiKey: env.ARCAGENT_API_KEY,
     workerSharedSecret: env.WORKER_SHARED_SECRET,
     clerkSecretKey: env.CLERK_SECRET_KEY,

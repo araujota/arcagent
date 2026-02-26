@@ -61,7 +61,6 @@ vi.mock("@modelcontextprotocol/sdk/server/streamableHttp.js", () => ({
 function baseConfig(overrides?: Partial<ServerConfig>): ServerConfig {
   return {
     convexUrl: "https://example.convex.cloud",
-    mcpSharedSecret: "secret",
     arcagentApiKey: undefined,
     workerSharedSecret: undefined,
     clerkSecretKey: undefined,

@@ -31,7 +31,6 @@ npx -y arcagent-mcp
 ```bash
 MCP_TRANSPORT=http \
 MCP_PORT=3002 \
-MCP_SHARED_SECRET=... \
 WORKER_SHARED_SECRET=... \
 CONVEX_HTTP_ACTIONS_URL=... \
 node dist/index.js
@@ -40,7 +39,6 @@ node dist/index.js
 ## Environment Variables
 
 - `ARCAGENT_API_KEY`: per-agent API key (stdio and optional HTTP auth)
-- `MCP_SHARED_SECRET`: optional infrastructure-level auth secret for Convex calls
 - `MCP_TRANSPORT`: `stdio` (default) or `http`
 - `MCP_PORT`: HTTP port, default `3002`
 - `MCP_STARTUP_MODE`: `full` (default) or `registration-only`
@@ -94,7 +92,6 @@ For first-time agent onboarding, run in HTTP registration-only mode:
 ```bash
 MCP_TRANSPORT=http \
 MCP_STARTUP_MODE=registration-only \
-MCP_SHARED_SECRET=... \
 CLERK_SECRET_KEY=... \
 CONVEX_HTTP_ACTIONS_URL=... \
 node dist/index.js

@@ -10,6 +10,7 @@ import { AuthenticatedUser } from "./types";
 
 export interface AuthContext {
   user: AuthenticatedUser;
+  apiKey?: string;
 }
 
 const authStore = new AsyncLocalStorage<AuthContext>();
@@ -20,21 +21,33 @@ const authStore = new AsyncLocalStorage<AuthContext>();
  * in long-lived stdio connections, so we store the user here.
  */
 let stdioUser: AuthenticatedUser | undefined;
+let stdioApiKey: string | undefined;
 
 /**
  * Set the authenticated user for stdio transport mode.
  * Called once at startup after validating the ARCAGENT_API_KEY.
  */
-export function setStdioAuthUser(user: AuthenticatedUser): void {
+export function setStdioAuthUser(user: AuthenticatedUser, apiKey?: string): void {
   stdioUser = user;
+  stdioApiKey = apiKey;
 }
 
 /**
  * Run a callback within an authenticated context.
  * Used by the HTTP transport handler after validating the API key.
  */
-export function runWithAuth<T>(user: AuthenticatedUser, fn: () => T): T {
-  return authStore.run({ user }, fn);
+export function runWithAuth<T>(
+  user: AuthenticatedUser,
+  apiKeyOrFn: string | (() => T),
+  maybeFn?: () => T,
+): T {
+  if (typeof apiKeyOrFn === "function") {
+    return authStore.run({ user }, apiKeyOrFn);
+  }
+  if (!maybeFn) {
+    throw new Error("runWithAuth requires a callback function");
+  }
+  return authStore.run({ user, apiKey: apiKeyOrFn }, maybeFn);
 }
 
 /**
@@ -43,6 +56,13 @@ export function runWithAuth<T>(user: AuthenticatedUser, fn: () => T): T {
  */
 export function getAuthUser(): AuthenticatedUser | undefined {
   return authStore.getStore()?.user ?? stdioUser;
+}
+
+/**
+ * Get the API key from auth context (HTTP) or stdio fallback.
+ */
+export function getAuthApiKey(): string | undefined {
+  return authStore.getStore()?.apiKey ?? stdioApiKey;
 }
 
 /**
@@ -58,6 +78,19 @@ export function requireAuthUser(): AuthenticatedUser {
     );
   }
   return user;
+}
+
+/**
+ * Get the authenticated API key or throw if not available.
+ */
+export function requireAuthApiKey(): string {
+  const apiKey = getAuthApiKey();
+  if (!apiKey) {
+    throw new Error(
+      "Authentication required. No API key available in auth context."
+    );
+  }
+  return apiKey;
 }
 
 /**

@@ -1,5 +1,13 @@
 import type { AuthenticatedUser } from "./types";
-import { runWithAuth, getAuthUser, requireAuthUser, requireScope, setStdioAuthUser } from "./context";
+import {
+  runWithAuth,
+  getAuthUser,
+  getAuthApiKey,
+  requireAuthUser,
+  requireAuthApiKey,
+  requireScope,
+  setStdioAuthUser,
+} from "./context";
 
 const mockUser: AuthenticatedUser = {
   userId: "user_abc",
@@ -22,6 +30,13 @@ describe("runWithAuth / getAuthUser", () => {
     runWithAuth(mockUser, () => {
       const user = getAuthUser();
       expect(user).toEqual(mockUser);
+    });
+  });
+
+  it("threads API key context when provided", () => {
+    runWithAuth(mockUser, "arc_test_key", () => {
+      expect(getAuthApiKey()).toBe("arc_test_key");
+      expect(requireAuthApiKey()).toBe("arc_test_key");
     });
   });
 });
