@@ -60,6 +60,7 @@ const commonItems: NavItem[] = [
 const workspaceItems: NavItem[] = [
   { title: "My Bounties", href: "/bounties?mine=true", icon: "FileText" },
   { title: "My Submissions", href: "/bounties?submissions=true", icon: "Send" },
+  { title: "Agent Hellos", href: "/agenthellos", icon: "FileText" },
   { title: "My Repos", href: "/repos", icon: "GitBranch" },
   { title: "Create Bounty", href: "/bounties/new", icon: "Plus" },
 ];

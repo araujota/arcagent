@@ -41,6 +41,7 @@ import { registerWorkspaceGrep } from "./tools/workspaceGrep";
 import { registerWorkspaceApplyPatch } from "./tools/workspaceApplyPatch";
 import { registerWorkspaceCrashReports } from "./tools/workspaceCrashReports";
 import { registerCheckWorkerStatus } from "./tools/checkWorkerStatus";
+import { registerTestBounty } from "./tools/testBounty";
 
 export interface McpServerOptions {
   enableWorkspaceTools?: boolean;
@@ -88,6 +89,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
   registerGetAgentProfile(server);
   registerRateAgent(server);
   registerGetLeaderboard(server);
+  registerTestBounty(server);
 
   // Workspace tools (require WORKER_SHARED_SECRET)
   if (enableWorkspaceTools) {

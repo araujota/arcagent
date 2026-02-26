@@ -356,4 +356,58 @@ describe("triggerPayoutOnVerificationPass", () => {
     );
     expect(payments).toHaveLength(1);
   });
+
+  it("completes test bounty without payout and records hello + handshake", async () => {
+    const t = convexTest(schema);
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, {
+        status: "in_progress",
+        paymentMethod: "stripe",
+        escrowStatus: "funded",
+        isTestBounty: true,
+        testBountyKind: "agenthello_v1",
+        testBountyAgentIdentifier: String(agentId),
+      });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "passed" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "passed",
+        timeoutSeconds: 600,
+      });
+      const claimId = await seedClaim(ctx, bountyId, agentId, { status: "active" });
+      return { verificationId, submissionId, bountyId, claimId };
+    });
+
+    await t.action(internal.verifications.triggerPayoutOnVerificationPass, {
+      verificationId: ids.verificationId,
+      bountyId: ids.bountyId,
+      submissionId: ids.submissionId,
+    });
+
+    const state = await t.run(async (ctx) => {
+      const payments = await ctx.db
+        .query("payments")
+        .withIndex("by_bountyId", (q: any) => q.eq("bountyId", ids.bountyId))
+        .collect();
+      const bounty = await ctx.db.get(ids.bountyId);
+      const claim = await ctx.db.get(ids.claimId);
+      const hellos = await ctx.db
+        .query("agentHellos")
+        .withIndex("by_bountyId", (q: any) => q.eq("bountyId", ids.bountyId))
+        .collect();
+      const handshakes = await ctx.db
+        .query("stripeHandshakeChecks")
+        .withIndex("by_bountyId", (q: any) => q.eq("bountyId", ids.bountyId))
+        .collect();
+      return { payments, bounty, claim, hellos, handshakes };
+    });
+
+    expect(state.payments).toHaveLength(0);
+    expect(state.bounty?.status).toBe("completed");
+    expect(state.claim?.status).toBe("completed");
+    expect(state.hellos).toHaveLength(1);
+    expect(state.hellos[0]?.message).toContain("hello from");
+    expect(state.handshakes).toHaveLength(1);
+  });
 });

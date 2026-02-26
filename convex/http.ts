@@ -688,6 +688,35 @@ http.route({
   }),
 });
 
+// --- Test Bounty: Create + Claim (MCP) ---
+http.route({
+  path: "/api/mcp/testbounty/create",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
+
+    const body = await request.json();
+    const { agentId: bodyAgentId } = body as { agentId?: string };
+    const agentId = auth.authMethod === "api_key" ? auth.userId! : bodyAgentId;
+
+    if (!agentId) {
+      return mcpError("Missing required field: agentId");
+    }
+
+    try {
+      const result = await ctx.runAction(internal.testBounties.createAndClaim, {
+        agentId: agentId as Id<"users">,
+      });
+
+      return mcpJson(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to create test bounty";
+      return mcpError(message);
+    }
+  }),
+});
+
 // --- Bounties: Cancel ---
 http.route({
   path: "/api/mcp/bounties/cancel",

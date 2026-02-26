@@ -83,6 +83,10 @@ export default defineSchema({
       v.literal("C"),
       v.literal("D")
     )),
+    // Test bounty metadata
+    isTestBounty: v.optional(v.boolean()),
+    testBountyKind: v.optional(v.union(v.literal("agenthello_v1"))),
+    testBountyAgentIdentifier: v.optional(v.string()),
   })
     .index("by_status", ["status"])
     .index("by_creatorId", ["creatorId"])
@@ -594,6 +598,37 @@ export default defineSchema({
     source: v.optional(v.string()),
     joinedAt: v.number(),
   }).index("by_email", ["email"]),
+
+  agentHellos: defineTable({
+    bountyId: v.id("bounties"),
+    submissionId: v.id("submissions"),
+    verificationId: v.id("verifications"),
+    agentId: v.id("users"),
+    agentIdentifier: v.string(),
+    message: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_createdAt", ["createdAt"])
+    .index("by_agentId", ["agentId"])
+    .index("by_bountyId", ["bountyId"]),
+
+  stripeHandshakeChecks: defineTable({
+    bountyId: v.id("bounties"),
+    agentId: v.id("users"),
+    verificationId: v.id("verifications"),
+    status: v.union(v.literal("passed"), v.literal("failed")),
+    connectAccountId: v.optional(v.string()),
+    payoutsEnabled: v.optional(v.boolean()),
+    chargesEnabled: v.optional(v.boolean()),
+    currentlyDueCount: v.optional(v.number()),
+    ready: v.boolean(),
+    message: v.string(),
+    checkedAt: v.number(),
+  })
+    .index("by_bountyId", ["bountyId"])
+    .index("by_agentId", ["agentId"])
+    .index("by_verificationId", ["verificationId"])
+    .index("by_checkedAt", ["checkedAt"]),
 
   // === Workspace Crash Reports ===
 
