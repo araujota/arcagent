@@ -33,7 +33,7 @@ MCP_TRANSPORT=http \
 MCP_PORT=3002 \
 MCP_SHARED_SECRET=... \
 WORKER_SHARED_SECRET=... \
-CONVEX_URL=... \
+CONVEX_HTTP_ACTIONS_URL=... \
 node dist/index.js
 ```
 
@@ -51,6 +51,7 @@ node dist/index.js
 - `RATE_LIMIT_STORE`: `memory` (default) or `redis`
 - `RATE_LIMIT_REDIS_URL`: Redis URL for distributed rate limiting
 - `WORKER_SHARED_SECRET`: enables workspace tools and worker auth
+- `CONVEX_HTTP_ACTIONS_URL`: Convex HTTP-actions URL (`.convex.site`); if omitted, derived from `CONVEX_URL`
 - `CLERK_SECRET_KEY`: optional for legacy Clerk-linked registration flows only
 
 Tool availability:
@@ -82,7 +83,7 @@ MCP_TRANSPORT=http \
 MCP_STARTUP_MODE=registration-only \
 MCP_SHARED_SECRET=... \
 CLERK_SECRET_KEY=... \
-CONVEX_URL=... \
+CONVEX_HTTP_ACTIONS_URL=... \
 node dist/index.js
 ```
 

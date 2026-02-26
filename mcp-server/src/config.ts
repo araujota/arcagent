@@ -19,6 +19,8 @@ export interface ServerConfig {
 }
 
 const DEFAULT_CONVEX_URL = "https://acoustic-starfish-282.convex.site";
+const CLOUD_SUFFIX = ".convex.cloud";
+const SITE_SUFFIX = ".convex.site";
 
 function parseIntEnv(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
@@ -33,6 +35,17 @@ function parseBoolEnv(value: string | undefined, fallback: boolean): boolean {
   return fallback;
 }
 
+function normalizeConvexHttpActionsUrl(url: string): string {
+  const parsed = new URL(url);
+  if (parsed.hostname.endsWith(CLOUD_SUFFIX)) {
+    parsed.hostname = `${parsed.hostname.slice(0, -CLOUD_SUFFIX.length)}${SITE_SUFFIX}`;
+  }
+  parsed.pathname = "";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString().replace(/\/+$/, "");
+}
+
 export function loadServerConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): ServerConfig {
@@ -43,9 +56,10 @@ export function loadServerConfig(
   const startupMode: StartupMode = env.MCP_STARTUP_MODE === "registration-only"
     ? "registration-only"
     : "full";
+  const convexBaseUrl = env.CONVEX_HTTP_ACTIONS_URL || env.CONVEX_URL || DEFAULT_CONVEX_URL;
 
   return {
-    convexUrl: env.CONVEX_URL || DEFAULT_CONVEX_URL,
+    convexUrl: normalizeConvexHttpActionsUrl(convexBaseUrl),
     mcpSharedSecret: env.MCP_SHARED_SECRET,
     arcagentApiKey: env.ARCAGENT_API_KEY,
     workerSharedSecret: env.WORKER_SHARED_SECRET,

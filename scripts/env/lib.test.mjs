@@ -41,7 +41,7 @@ test("parseConvexEnvList handles values containing equals", () => {
 test("buildWorkerGeneratedEnv enforces required keys and defaults", () => {
   const contract = {
     worker: {
-      required_local: ["CONVEX_URL", "WORKER_SHARED_SECRET"],
+      required_local: ["CONVEX_URL", "CONVEX_HTTP_ACTIONS_URL", "WORKER_SHARED_SECRET"],
       local_defaults: {
         REDIS_URL: "redis://localhost:6379",
         PORT: "3001",
@@ -49,6 +49,7 @@ test("buildWorkerGeneratedEnv enforces required keys and defaults", () => {
     },
     vercel_pull_keys_for_worker: [
       "CONVEX_URL",
+      "CONVEX_HTTP_ACTIONS_URL",
       "WORKER_SHARED_SECRET",
       "WORKER_API_URL",
     ],
@@ -61,9 +62,11 @@ test("buildWorkerGeneratedEnv enforces required keys and defaults", () => {
 
   assert.deepEqual(missingRequired, []);
   assert.equal(env.CONVEX_URL, "https://example.convex.cloud");
+  assert.equal(env.CONVEX_HTTP_ACTIONS_URL, "https://example.convex.site");
   assert.equal(env.WORKER_SHARED_SECRET, "secret");
   assert.equal(env.REDIS_URL, "redis://localhost:6379");
   assert.equal(sourceByKey.REDIS_URL, "default");
+  assert.equal(sourceByKey.CONVEX_HTTP_ACTIONS_URL, "derived");
 });
 
 test("parseGhNameTable extracts uppercase names only", () => {

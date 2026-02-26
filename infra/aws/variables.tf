@@ -59,6 +59,12 @@ variable "convex_url" {
   type        = string
 }
 
+variable "convex_http_actions_url" {
+  description = "Convex HTTP actions URL (e.g. https://your-app.convex.site). If empty, derived from convex_url."
+  type        = string
+  default     = ""
+}
+
 variable "root_volume_size_gb" {
   description = "Root EBS volume size in GB (stores rootfs images, overlays, etc.)"
   type        = number

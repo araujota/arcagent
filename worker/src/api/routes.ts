@@ -3,6 +3,7 @@ import { Queue } from "bullmq";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "../index";
 import { VerificationJobData } from "../queue/jobQueue";
+import { resolveConfiguredConvexHttpActionsUrl } from "../convex/url";
 
 /**
  * Request body for POST /api/verify
@@ -24,6 +25,8 @@ interface VerifyRequestBody {
   timeoutSeconds?: number;
   /** Convex deployment URL to post results back to */
   convexUrl?: string;
+  /** Convex HTTP-actions URL to post results back to (ignored; server-configured only) */
+  convexHttpActionsUrl?: string;
   /** Test suites with visibility metadata from Convex */
   testSuites?: Array<{
     id: string;
@@ -84,10 +87,11 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
 
       const jobId = uuidv4();
 
-      // SECURITY (C4): Always use server-configured CONVEX_URL — never trust
-      // client-provided convexUrl, which could point to an attacker's server.
+      // SECURITY (C4): Always use server-configured Convex HTTP-actions URL — never trust
+      // client-provided convexUrl/convexHttpActionsUrl, which could point to an attacker.
       // SECURITY (M5): Only accept gateSettings from internal Convex data,
       // not from the request body.
+      const configuredConvexHttpActionsUrl = resolveConfiguredConvexHttpActionsUrl();
       const jobData: VerificationJobData = {
         jobId,
         submissionId: body.submissionId,
@@ -97,7 +101,8 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
         baseCommitSha: body.baseCommitSha,
         language: body.language,
         timeoutSeconds: Math.max(60, Math.min(body.timeoutSeconds ?? 300, 3600)),
-        convexUrl: process.env.CONVEX_URL,
+        convexHttpActionsUrl: configuredConvexHttpActionsUrl,
+        convexUrl: configuredConvexHttpActionsUrl,
         testSuites: body.testSuites,
         gateSettings: body.gateSettings,
         diffPatch: body.diffPatch,

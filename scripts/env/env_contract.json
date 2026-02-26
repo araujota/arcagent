@@ -2,6 +2,7 @@
   "worker": {
     "required_local": [
       "CONVEX_URL",
+      "CONVEX_HTTP_ACTIONS_URL",
       "WORKER_SHARED_SECRET"
     ],
     "local_defaults": {
@@ -13,6 +14,7 @@
   },
   "vercel_pull_keys_for_worker": [
     "CONVEX_URL",
+    "CONVEX_HTTP_ACTIONS_URL",
     "WORKER_SHARED_SECRET",
     "WORKER_API_URL",
     "SONARQUBE_URL",

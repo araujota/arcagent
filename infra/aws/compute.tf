@@ -37,6 +37,7 @@ resource "aws_instance" "worker" {
     environment               = var.environment
     worker_shared_secret      = var.worker_shared_secret
     convex_url                = var.convex_url
+    convex_http_actions_url   = var.convex_http_actions_url
     max_dev_vms               = var.max_dev_vms
     warm_pool_size            = var.warm_pool_size
     max_warm_vms              = var.max_warm_vms

@@ -21,6 +21,7 @@ echo "=== ArcAgent worker setup started at $(date -u) ==="
 ENVIRONMENT="${environment}"
 WORKER_SHARED_SECRET="${worker_shared_secret}"
 CONVEX_URL="${convex_url}"
+CONVEX_HTTP_ACTIONS_URL="${convex_http_actions_url}"
 MAX_DEV_VMS="${max_dev_vms}"
 WARM_POOL_SIZE="${warm_pool_size}"
 MAX_WARM_VMS="${max_warm_vms}"
@@ -39,6 +40,10 @@ ENABLE_SONARQUBE="${enable_sonarqube}"
 SONARQUBE_URL="${sonarqube_url}"
 SONARQUBE_TOKEN="${sonarqube_token}"
 SNYK_TOKEN="${snyk_token}"
+
+if [ -z "$CONVEX_HTTP_ACTIONS_URL" ]; then
+  CONVEX_HTTP_ACTIONS_URL="${CONVEX_URL/.convex.cloud/.convex.site}"
+fi
 
 WORKER_HOST_URL_LOCKED="false"
 if [ -n "$WORKER_PUBLIC_URL" ]; then
@@ -440,6 +445,7 @@ PORT=3001
 REDIS_URL=redis://127.0.0.1:6379
 WORKER_SHARED_SECRET=$WORKER_SHARED_SECRET
 CONVEX_URL=$CONVEX_URL
+CONVEX_HTTP_ACTIONS_URL=$CONVEX_HTTP_ACTIONS_URL
 
 # WORKER_HOST_URL can be fixed to a DNS URL (recommended for MCP), or
 # auto-detected from instance public IP via ExecStartPre.

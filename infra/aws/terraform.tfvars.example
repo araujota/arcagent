@@ -19,8 +19,11 @@ ssh_allowed_cidrs = ["YOUR_IP/32"]
 # Secrets — from your Convex deployment
 # WORKER_SHARED_SECRET must match the value set in Convex env
 worker_shared_secret = "your-worker-shared-secret"
-# CONVEX_URL is used by the worker to post verification results back to Convex
+# CONVEX_URL is the Convex deployment URL (.cloud)
 convex_url           = "https://your-app.convex.cloud"
+# CONVEX_HTTP_ACTIONS_URL is used by the worker for Convex HTTP actions (.site)
+# Leave empty to auto-derive from convex_url.
+convex_http_actions_url = "https://your-app.convex.site"
 
 # VM capacity
 max_dev_vms    = 10

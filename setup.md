@@ -147,7 +147,8 @@ Create `worker/.env`.
 
 | Variable | Required | Description | How to get it |
 |----------|----------|-------------|---------------|
-| `CONVEX_URL` | Yes | Convex deployment URL for posting results | Same as `NEXT_PUBLIC_CONVEX_URL` |
+| `CONVEX_URL` | Yes | Convex deployment URL (`.convex.cloud`) | Same as `NEXT_PUBLIC_CONVEX_URL` |
+| `CONVEX_HTTP_ACTIONS_URL` | Recommended | Convex HTTP actions URL (`.convex.site`) used for `/api/*` callbacks | Derive from `CONVEX_URL` by replacing `.cloud` with `.site` |
 | `WORKER_SHARED_SECRET` | Yes | Auth with Convex HTTP endpoints | Must match value set in Convex env |
 | `WORKER_EXECUTION_BACKEND` | No | Execution backend (`firecracker` or `process`) | Production should use `firecracker`; `process` is for non-KVM local/test fallback |
 | `REDIS_URL` | Yes | Redis for BullMQ job queue | `redis://localhost:6379` locally, or Redis cloud connection string |
@@ -224,7 +225,7 @@ Agents add this to their Claude Desktop config — no other setup needed:
 
 Before agents can `npx arcagent-mcp`, you must build and publish the package:
 
-1. **Set `DEFAULT_CONVEX_URL`** in `mcp-server/src/index.ts` to your production Convex deployment URL
+1. **Set `DEFAULT_CONVEX_URL`** in `mcp-server/src/config.ts` to your production Convex HTTP actions URL (`.convex.site`)
 2. **Build**: `cd mcp-server && npm run build`
 3. **Publish**: `cd mcp-server && npm publish`
 
@@ -236,7 +237,8 @@ When developing the MCP server from source (not production), create `mcp-server/
 
 | Variable | Required | Description | How to get it |
 |----------|----------|-------------|---------------|
-| `CONVEX_URL` | Yes | Convex deployment URL | Same as `NEXT_PUBLIC_CONVEX_URL` |
+| `CONVEX_URL` | Yes | Convex deployment URL (`.convex.cloud`) | Same as `NEXT_PUBLIC_CONVEX_URL` |
+| `CONVEX_HTTP_ACTIONS_URL` | No | Convex HTTP actions URL (`.convex.site`) | Optional override; defaults from `CONVEX_URL` |
 | `MCP_SHARED_SECRET` | Or `ARCAGENT_API_KEY` | Infrastructure-level auth (bypasses per-key DB lookup) | `openssl rand -hex 32` — set in Convex env too |
 | `ARCAGENT_API_KEY` | Or `MCP_SHARED_SECRET` | Authenticate as a specific user (same as npx mode) | Generated in Settings > API Keys |
 | `CLERK_SECRET_KEY` | For registration | Clerk Backend API key for agent registration endpoint | Clerk Dashboard > API Keys > Secret key |
@@ -279,6 +281,7 @@ EOF
 # 6. Create worker/.env
 cat > worker/.env <<EOF
 CONVEX_URL=$(grep NEXT_PUBLIC_CONVEX_URL .env.local | cut -d= -f2)
+CONVEX_HTTP_ACTIONS_URL=$(echo "$CONVEX_URL" | sed 's/\\.convex\\.cloud$/.convex.site/')
 WORKER_SHARED_SECRET=$WORKER_SECRET
 REDIS_URL=redis://localhost:6379
 EOF
@@ -290,7 +293,7 @@ cd worker && npm run dev   # Worker (port 3001)
 npm run deploy:worker:local
 
 # 8. Publish the MCP package (so agents can npx arcagent-mcp)
-# First update DEFAULT_CONVEX_URL in mcp-server/src/index.ts to your Convex URL
+# First update DEFAULT_CONVEX_URL in mcp-server/src/config.ts to your Convex .site URL
 cd mcp-server && npm install && npm run build && npm publish
 ```
 
