@@ -26,6 +26,9 @@ export interface VerificationJobData {
   baseCommitSha?: string;
   language?: string;
   timeoutSeconds: number;
+  /** Convex HTTP-actions base URL (.convex.site) for callbacks. */
+  convexHttpActionsUrl?: string;
+  /** @deprecated use convexHttpActionsUrl */
   convexUrl?: string;
   /** Test suites with visibility, sent from Convex dispatchVerification. */
   testSuites?: TestSuiteInput[];

@@ -13,6 +13,7 @@
 import os from "node:os";
 import { logger } from "../index";
 import { sessionStore } from "./sessionStore";
+import { resolveConfiguredConvexHttpActionsUrl } from "../convex/url";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,7 +72,7 @@ const RETRY_DELAY_MS = 1_000;
  * logger.error if the HTTP request fails.
  */
 export async function reportCrash(params: CrashReportParams): Promise<void> {
-  const convexUrl = process.env.CONVEX_URL;
+  const convexUrl = resolveConfiguredConvexHttpActionsUrl();
   const workerSecret = process.env.WORKER_SHARED_SECRET;
 
   // Collect host metrics
@@ -115,11 +116,11 @@ export async function reportCrash(params: CrashReportParams): Promise<void> {
 
   // POST to Convex if configured
   if (!convexUrl || !workerSecret) {
-    logger.warn("Cannot submit crash report: CONVEX_URL or WORKER_SHARED_SECRET not configured");
+    logger.warn("Cannot submit crash report: CONVEX_HTTP_ACTIONS_URL/CONVEX_URL or WORKER_SHARED_SECRET not configured");
     return;
   }
 
-  const url = `${convexUrl.replace(/\/+$/, "")}/api/workspace/crash-report`;
+  const url = `${convexUrl}/api/workspace/crash-report`;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {

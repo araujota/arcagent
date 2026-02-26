@@ -40,6 +40,7 @@ import { registerWorkspaceGlob } from "./tools/workspaceGlob";
 import { registerWorkspaceGrep } from "./tools/workspaceGrep";
 import { registerWorkspaceApplyPatch } from "./tools/workspaceApplyPatch";
 import { registerWorkspaceCrashReports } from "./tools/workspaceCrashReports";
+import { registerCheckWorkerStatus } from "./tools/checkWorkerStatus";
 
 export interface McpServerOptions {
   enableWorkspaceTools?: boolean;
@@ -57,7 +58,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
     version: "0.1.0",
   });
 
-  // Registration tool (requires Clerk)
+  // Registration tool (available without pre-existing credentials)
   if (enableRegistration) {
     registerRegisterAccount(server);
   }
@@ -105,6 +106,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
     registerWorkspaceGrep(server);
     registerWorkspaceApplyPatch(server);
     registerWorkspaceCrashReports(server);
+    registerCheckWorkerStatus(server);
   }
 
   return server;

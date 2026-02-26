@@ -25,7 +25,7 @@ function main() {
     process.exit(1);
   }
 
-  const routingKeys = ["CONVEX_URL", "WORKER_API_URL"].filter((key) => key in prodEnv);
+  const routingKeys = ["CONVEX_URL", "CONVEX_HTTP_ACTIONS_URL", "WORKER_API_URL"].filter((key) => key in prodEnv);
   if (routingKeys.length > 0) {
     console.log("[convex-parity] Cross-environment routing keys detected:");
     for (const key of routingKeys) {

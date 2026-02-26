@@ -144,6 +144,11 @@ export function buildWorkerGeneratedEnv(contract, pulledEnv) {
     }
   }
 
+  if (!env.CONVEX_HTTP_ACTIONS_URL && env.CONVEX_URL) {
+    env.CONVEX_HTTP_ACTIONS_URL = env.CONVEX_URL.replace(/\.convex\.cloud(?=\/?$)/, ".convex.site");
+    sourceByKey.CONVEX_HTTP_ACTIONS_URL = "derived";
+  }
+
   for (const [key, value] of Object.entries(contract.worker.local_defaults)) {
     if (!env[key]) {
       env[key] = value;

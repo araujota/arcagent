@@ -19,8 +19,11 @@ ssh_allowed_cidrs = ["YOUR_IP/32"]
 # Secrets — from your Convex deployment
 # WORKER_SHARED_SECRET must match the value set in Convex env
 worker_shared_secret = "your-worker-shared-secret"
-# CONVEX_URL is used by the worker to post verification results back to Convex
+# CONVEX_URL is the Convex deployment URL (.cloud)
 convex_url           = "https://your-app.convex.cloud"
+# CONVEX_HTTP_ACTIONS_URL is used by the worker for Convex HTTP actions (.site)
+# Leave empty to auto-derive from convex_url.
+convex_http_actions_url = "https://your-app.convex.site"
 
 # VM capacity
 max_dev_vms    = 10
@@ -48,6 +51,14 @@ snyk_token              = ""   # Optional Snyk token
 
 # Root volume size (needs space for rootfs images, overlays, etc.)
 root_volume_size_gb = 200
+
+# Stable addressing
+allocate_eip = true
+
+# Optional stable DNS for MCP -> worker calls
+route53_zone_name = "speedlesvc.com"
+worker_dns_name   = "arcagent.speedlesvc.com"
+worker_public_url = "http://arcagent.speedlesvc.com:3001"
 
 # Pre-built rootfs images — version tag in S3 (bucket is auto-created)
 # Build and upload images first: bash infra/rootfs/build-and-upload.sh <bucket> v1

@@ -59,6 +59,12 @@ variable "convex_url" {
   type        = string
 }
 
+variable "convex_http_actions_url" {
+  description = "Convex HTTP actions URL (e.g. https://your-app.convex.site). If empty, derived from convex_url."
+  type        = string
+  default     = ""
+}
+
 variable "root_volume_size_gb" {
   description = "Root EBS volume size in GB (stores rootfs images, overlays, etc.)"
   type        = number
@@ -155,4 +161,22 @@ variable "snyk_token" {
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "route53_zone_name" {
+  description = "Public Route53 hosted zone name for worker DNS (for example speedlesvc.com)."
+  type        = string
+  default     = ""
+}
+
+variable "worker_dns_name" {
+  description = "FQDN to point at the primary worker public IP (for example arcagent.speedlesvc.com)."
+  type        = string
+  default     = ""
+}
+
+variable "worker_public_url" {
+  description = "Optional fixed public worker base URL (for example http://arcagent.speedlesvc.com:3001). When set, host auto-detection is disabled."
+  type        = string
+  default     = ""
 }

@@ -1,6 +1,10 @@
 import { logger } from "../index";
 import { VerificationResult } from "../queue/jobQueue";
 import { buildWorkerCallbackEnvelope } from "../lib/callbackAuth";
+import {
+  resolveConfiguredConvexHttpActionsUrl,
+  toConvexHttpActionsBaseUrl,
+} from "./url";
 
 /**
  * HTTP client for posting verification results back to the Convex deployment.
@@ -64,19 +68,23 @@ const REQUEST_TIMEOUT_MS = 15_000;
  * Rejects attacker-controlled URLs that could exfiltrate verification results.
  */
 function validateConvexUrl(url: string): void {
-  const configuredUrl = process.env.CONVEX_URL;
+  const configuredUrl = resolveConfiguredConvexHttpActionsUrl();
   if (configuredUrl && url === configuredUrl) return;
 
   try {
     const parsed = new URL(url);
-    if (parsed.hostname.endsWith(".convex.cloud") || parsed.hostname === "localhost") {
+    if (
+      parsed.hostname.endsWith(".convex.cloud") ||
+      parsed.hostname.endsWith(".convex.site") ||
+      parsed.hostname === "localhost"
+    ) {
       return;
     }
   } catch {
     throw new Error(`Invalid Convex URL: ${url}`);
   }
   throw new Error(
-    `Untrusted Convex URL: ${url}. Must match CONVEX_URL env var or end with .convex.cloud`
+    `Untrusted Convex URL: ${url}. Must match CONVEX_HTTP_ACTIONS_URL/CONVEX_URL env var or use .convex.site/.convex.cloud`
   );
 }
 
@@ -213,10 +221,6 @@ export async function postVerificationResult(
  * Normalise the Convex URL and append the result endpoint path.
  */
 function buildResultUrl(convexUrl: string): string {
-  // Strip trailing slash
-  const base = convexUrl.replace(/\/+$/, "");
-
-  // If the URL is a Convex deployment URL (e.g. https://foo-bar-123.convex.cloud)
-  // the HTTP action endpoint is under the same origin.
+  const base = toConvexHttpActionsBaseUrl(convexUrl);
   return `${base}/api/verification/result`;
 }

@@ -93,6 +93,7 @@ export const dispatchVerification = internalAction({
       );
 
       // Dispatch to worker
+      const convexHttpActionsUrl = process.env.CONVEX_HTTP_ACTIONS_URL ?? process.env.CONVEX_URL;
       const response = await fetch(`${workerUrl}/api/verify`, {
         method: "POST",
         headers: {
@@ -115,7 +116,8 @@ export const dispatchVerification = internalAction({
           })),
           dockerfileContent: repoConnection?.dockerfileContent,
           dockerfilePath: repoConnection?.dockerfilePath,
-          convexUrl: process.env.CONVEX_URL,
+          convexHttpActionsUrl,
+          convexUrl: convexHttpActionsUrl,
           jobHmac,
           gateSettings: {
             snykEnabled: creator?.gateSettings?.snykEnabled ?? true,
@@ -253,6 +255,7 @@ export const dispatchVerificationFromDiff = internalAction({
       );
 
       // Dispatch to worker with diff payload
+      const convexHttpActionsUrl = process.env.CONVEX_HTTP_ACTIONS_URL ?? process.env.CONVEX_URL;
       const response = await fetch(`${workerUrl}/api/verify`, {
         method: "POST",
         headers: {
@@ -279,7 +282,8 @@ export const dispatchVerificationFromDiff = internalAction({
           })),
           dockerfileContent: repoConnection?.dockerfileContent,
           dockerfilePath: repoConnection?.dockerfilePath,
-          convexUrl: process.env.CONVEX_URL,
+          convexHttpActionsUrl,
+          convexUrl: convexHttpActionsUrl,
           jobHmac,
           gateSettings: {
             snykEnabled: creator?.gateSettings?.snykEnabled ?? true,

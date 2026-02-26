@@ -34,6 +34,7 @@ export async function processVerificationJob(
 ): Promise<VerificationResult> {
   const startTime = Date.now();
   const data = job.data;
+  const convexCallbackUrl = data.convexHttpActionsUrl ?? data.convexUrl;
   let vm: VMHandle | null = null;
 
   try {
@@ -131,8 +132,8 @@ export async function processVerificationJob(
     };
 
     // 8. Report back to Convex
-    if (data.convexUrl) {
-      await postVerificationResult(data.convexUrl, result).catch((err) => {
+    if (convexCallbackUrl) {
+      await postVerificationResult(convexCallbackUrl, result).catch((err) => {
         logger.error("Failed to post result to Convex", {
           jobId: data.jobId,
           error: err,
@@ -162,8 +163,8 @@ export async function processVerificationJob(
     };
 
     // Best-effort reporting
-    if (data.convexUrl) {
-      await postVerificationResult(data.convexUrl, errorResult).catch(() => {});
+    if (convexCallbackUrl) {
+      await postVerificationResult(convexCallbackUrl, errorResult).catch(() => {});
     }
 
     throw error;
@@ -196,6 +197,7 @@ export async function processVerificationFromDiff(
 ): Promise<VerificationResult> {
   const startTime = Date.now();
   const data = job.data;
+  const convexCallbackUrl = data.convexHttpActionsUrl ?? data.convexUrl;
   let vm: VMHandle | null = null;
 
   try {
@@ -271,8 +273,8 @@ export async function processVerificationFromDiff(
         jobHmac: data.jobHmac,
       };
 
-      if (data.convexUrl) {
-        await postVerificationResult(data.convexUrl, result).catch((err) => {
+      if (convexCallbackUrl) {
+        await postVerificationResult(convexCallbackUrl, result).catch((err) => {
           logger.error("Failed to post patch-apply failure to Convex", { jobId: data.jobId, error: err });
         });
       }
@@ -332,8 +334,8 @@ export async function processVerificationFromDiff(
     };
 
     // 8. Report back to Convex
-    if (data.convexUrl) {
-      await postVerificationResult(data.convexUrl, result).catch((err) => {
+    if (convexCallbackUrl) {
+      await postVerificationResult(convexCallbackUrl, result).catch((err) => {
         logger.error("Failed to post diff verification result to Convex", {
           jobId: data.jobId,
           error: err,
@@ -361,8 +363,8 @@ export async function processVerificationFromDiff(
       jobHmac: data.jobHmac,
     };
 
-    if (data.convexUrl) {
-      await postVerificationResult(data.convexUrl, errorResult).catch(() => {});
+    if (convexCallbackUrl) {
+      await postVerificationResult(convexCallbackUrl, errorResult).catch(() => {});
     }
 
     throw error;

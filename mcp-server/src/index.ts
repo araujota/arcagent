@@ -24,6 +24,7 @@ interface HttpRuntime {
 
 async function authenticateRequest(req: Request): Promise<{
   ok: true;
+  apiKey: string;
   userId: string;
   user: Awaited<ReturnType<typeof validateApiKey>>;
 } | {
@@ -52,7 +53,7 @@ async function authenticateRequest(req: Request): Promise<{
         message: "Invalid API key",
       };
     }
-    return { ok: true, userId: user.userId, user };
+    return { ok: true, apiKey, userId: user.userId, user };
   } catch (error) {
     return {
       ok: false,
@@ -92,7 +93,7 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
 
   const serverOptions = {
     enableWorkspaceTools: Boolean(config.workerSharedSecret),
-    enableRegistration: Boolean(config.clerkSecretKey),
+    enableRegistration: true,
   };
 
   app.get("/health", (_req, res) => {
@@ -111,76 +112,66 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
     });
   });
 
-  if (config.clerkSecretKey) {
-    app.post("/api/mcp/register", async (req, res) => {
-      const ip = req.ip || req.socket.remoteAddress || "unknown";
-      const emailKey = typeof req.body?.email === "string"
-        ? req.body.email.trim().toLowerCase()
-        : "unknown";
+  app.post("/api/mcp/register", async (req, res) => {
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    const emailKey = typeof req.body?.email === "string"
+      ? req.body.email.trim().toLowerCase()
+      : "unknown";
 
-      const ipAllowed = await registerLimiter.check(`register:ip:${ip}`, 20, 60_000);
-      if (!ipAllowed) {
-        telemetry.recordRateLimited();
-        sendError(res, 429, "register_rate_limited", "Too many registration attempts", true);
+    const ipAllowed = await registerLimiter.check(`register:ip:${ip}`, 20, 60_000);
+    if (!ipAllowed) {
+      telemetry.recordRateLimited();
+      sendError(res, 429, "register_rate_limited", "Too many registration attempts", true);
+      return;
+    }
+
+    const emailAllowed = await registerLimiter.check(
+      `register:email:${emailKey}`,
+      5,
+      60_000,
+    );
+    if (!emailAllowed) {
+      telemetry.recordRateLimited();
+      sendError(res, 429, "register_rate_limited", "Too many registration attempts", true);
+      return;
+    }
+
+    try {
+      const { name, email, githubUsername } = req.body as {
+        name?: string;
+        email?: string;
+        githubUsername?: string;
+      };
+
+      if (!name || !email) {
+        sendError(res, 400, "bad_request", "name and email are required");
         return;
       }
 
-      const emailAllowed = await registerLimiter.check(
-        `register:email:${emailKey}`,
-        5,
-        60_000,
-      );
-      if (!emailAllowed) {
-        telemetry.recordRateLimited();
-        sendError(res, 429, "register_rate_limited", "Too many registration attempts", true);
-        return;
-      }
-
-      try {
-        const { findOrCreateClerkUser } = await import("./lib/clerk");
-        const { name, email, githubUsername } = req.body as {
-          name?: string;
-          email?: string;
-          githubUsername?: string;
-        };
-
-        if (!name || !email) {
-          sendError(res, 400, "bad_request", "name and email are required");
-          return;
-        }
-
-        const { clerkId, isExisting } = await findOrCreateClerkUser(
+      const result = await callConvex<{ userId: string; apiKey: string; keyPrefix: string }>(
+        "/api/mcp/agents/create",
+        {
           name,
           email,
           githubUsername,
-        );
-        const result = await callConvex<{ userId: string; apiKey: string; keyPrefix: string }>(
-          "/api/mcp/agents/create",
-          {
-            name,
-            email,
-            clerkId,
-            githubUsername,
-          },
-        );
+        },
+      );
 
-        res.json({
-          userId: result.userId,
-          apiKey: result.apiKey,
-          keyPrefix: result.keyPrefix,
-          isExistingAccount: isExisting,
-          message: "Store this API key securely. It will not be shown again.",
-        });
-      } catch (error) {
-        sendError(
-          res,
-          400,
-          "registration_failed",
-          error instanceof Error ? error.message : "Registration failed",
-        );
-      }
-    });
-  }
+      res.json({
+        userId: result.userId,
+        apiKey: result.apiKey,
+        keyPrefix: result.keyPrefix,
+        message: "Store this API key securely. It will not be shown again.",
+      });
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        "registration_failed",
+        error instanceof Error ? error.message : "Registration failed",
+      );
+    }
+  });
 
   app.post("/mcp", async (req, res) => {
     if (config.startupMode === "registration-only") {
@@ -208,7 +199,7 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
       return;
     }
 
-    await runWithAuth(auth.user!, async () => {
+    await runWithAuth(auth.user!, auth.apiKey, async () => {
       const sessionId = req.headers["mcp-session-id"] as string | undefined;
       if (sessionId) {
         const record = sessions.get(sessionId);
@@ -332,11 +323,11 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
 }
 
 async function startStdio(config: ServerConfig): Promise<void> {
-  if (config.arcagentApiKey && !config.mcpSharedSecret) {
+  if (config.arcagentApiKey) {
     try {
       const user = await validateApiKey(config.arcagentApiKey);
       if (!user) throw new Error("Invalid ARCAGENT_API_KEY");
-      setStdioAuthUser(user);
+      setStdioAuthUser(user, config.arcagentApiKey);
       console.error(`[MCP] Authenticated as ${user.name} (${user.email})`);
     } catch (err) {
       console.error(
@@ -348,7 +339,7 @@ async function startStdio(config: ServerConfig): Promise<void> {
 
   const server = createMcpServer({
     enableWorkspaceTools: Boolean(config.workerSharedSecret),
-    enableRegistration: Boolean(config.clerkSecretKey),
+    enableRegistration: true,
   });
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -373,9 +364,7 @@ async function startHttp(config: ServerConfig): Promise<HttpServer> {
   process.once("SIGTERM", () => void closeServer());
 
   console.log(`[MCP] HTTP server listening on port ${config.mcpPort}`);
-  if (config.clerkSecretKey) {
-    console.log(`[MCP] Register: POST http://localhost:${config.mcpPort}/api/mcp/register`);
-  }
+  console.log(`[MCP] Register: POST http://localhost:${config.mcpPort}/api/mcp/register`);
   console.log(`[MCP] MCP endpoint: POST http://localhost:${config.mcpPort}/mcp`);
   return server;
 }
@@ -386,12 +375,8 @@ export async function main(config = loadServerConfig()): Promise<void> {
   if (!config.workerSharedSecret) {
     console.warn("[MCP] WORKER_SHARED_SECRET not set — workspace tools will be unavailable");
   }
-  if (!config.clerkSecretKey) {
-    console.warn("[MCP] CLERK_SECRET_KEY not set — agent registration will be unavailable");
-  }
 
-  const bearerToken = config.mcpSharedSecret || config.arcagentApiKey!;
-  initConvexClient(config.convexUrl, bearerToken);
+  initConvexClient(config.convexUrl);
   if (config.workerSharedSecret) {
     initWorkerClient(config.workerSharedSecret);
   }

@@ -46,7 +46,7 @@ export async function validateApiKey(
     userId?: string;
     user?: { _id: string; name: string; email: string; role: string };
     scopes?: string[];
-  }>("/api/mcp/auth/validate", { keyHash });
+  }>("/api/mcp/auth/validate", { keyHash }, { authToken: apiKey });
 
   if (!result.valid || !result.user || !result.userId || !result.scopes) {
     throw new ApiKeyFormatError(

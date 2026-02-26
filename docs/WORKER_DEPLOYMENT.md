@@ -64,7 +64,8 @@ Create a `.env` file at the repo root (loaded by all services via `env_file`). R
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `CONVEX_URL` | Yes | Your Convex deployment URL (e.g. `https://your-app.convex.cloud`) |
+| `CONVEX_URL` | Yes | Convex deployment URL (e.g. `https://your-app.convex.cloud`) |
+| `CONVEX_HTTP_ACTIONS_URL` | Recommended | Convex HTTP actions URL (e.g. `https://your-app.convex.site`) |
 | `WORKER_SHARED_SECRET` | Yes | Must match the value set in Convex env |
 | `REDIS_URL` | No | Overridden to `redis://redis:6379` by Docker Compose |
 | `PORT` | No | Default: `3001` |
@@ -137,6 +138,7 @@ ssh_allowed_cidrs = ["YOUR_IP/32"]
 # Must match the WORKER_SHARED_SECRET set in Convex env
 worker_shared_secret = "your-worker-shared-secret"
 convex_url           = "https://your-app.convex.cloud"
+convex_http_actions_url = "https://your-app.convex.site"
 ```
 
 See [Terraform Variable Reference](#terraform-variable-reference) for all options.
@@ -367,6 +369,7 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `CONVEX_URL` | Yes | — | Convex deployment URL |
+| `CONVEX_HTTP_ACTIONS_URL` | No | derived from `CONVEX_URL` | Convex HTTP actions URL for `/api/*` callbacks |
 | `WORKER_SHARED_SECRET` | Yes | — | Shared secret (must match Convex env) |
 | `REDIS_URL` | Yes | `redis://localhost:6379` | Redis connection URL |
 | `PORT` | No | `3001` | Server port |

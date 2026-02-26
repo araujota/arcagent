@@ -1,0 +1,61 @@
+name: Publish MCP Package
+
+on:
+  push:
+    tags:
+      - "mcp-server-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcp-server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            mcp-server/package-lock.json
+            worker/package-lock.json
+
+      - name: Install Worker Dependencies
+        run: npm --prefix ../worker ci
+
+      - name: Install MCP Dependencies
+        run: npm ci
+
+      - name: Upgrade npm for Trusted Publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - name: Validate Package
+        run: |
+          npm test
+          npm run prepack
+          npm run pack:check
+
+      - name: Resolve npm dist-tag
+        id: tag
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == *"-next" ]]; then
+            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm (Trusted Publishing)
+        run: npm publish --access public --tag "${{ steps.tag.outputs.npm_tag }}"
+        env:
+          NODE_AUTH_TOKEN: ""

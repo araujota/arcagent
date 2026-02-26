@@ -2,19 +2,35 @@
 
 ## Release Stages
 
-1. Publish canary:
+1. Push canary tag (trusted publishing workflow):
 ```bash
-npm publish --tag next --access public
+VERSION=$(node -p "require('./mcp-server/package.json').version")
+git tag "mcp-server-v${VERSION}-next"
+git push origin "mcp-server-v${VERSION}-next"
 ```
 2. Validate canary for 24h:
 - auth failure rate
 - rate-limit denials
 - session error rate
 - p95 request latency
-3. Promote to latest:
+3. Publish stable:
+```bash
+git tag "mcp-server-v<version>"
+git push origin "mcp-server-v<version>"
+```
+4. Promote/demote dist-tags if needed:
 ```bash
 npm dist-tag add arcagent-mcp@<version> latest
 ```
+
+## Trusted Publishing Setup (One-Time in npm)
+
+1. npm package settings -> `arcagent-mcp` -> Trusted publishers.
+2. Add GitHub Actions publisher:
+- owner/repo: `araujota/arcagent`
+- workflow file: `.github/workflows/publish-mcp.yml`
+- environment: leave empty unless you enforce one in GitHub.
+3. Keep package 2FA policy enabled; no long-lived publish token is required.
 
 ## Key Rotation
 

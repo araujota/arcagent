@@ -22,6 +22,7 @@ vi.mock("../index", () => ({
 beforeAll(() => {
   process.env.WORKER_SHARED_SECRET = "test-secret";
   process.env.CONVEX_URL = "https://test.convex.cloud";
+  process.env.CONVEX_HTTP_ACTIONS_URL = "https://test.convex.site";
 });
 
 // ---------------------------------------------------------------------------
@@ -131,7 +132,7 @@ describe("POST /api/verify", () => {
     expect(jobData.jobHmac).toBe("hmac_token_123");
   });
 
-  it("uses server CONVEX_URL, ignores client convexUrl (C4)", async () => {
+  it("uses server CONVEX_HTTP_ACTIONS_URL, ignores client convexUrl (C4)", async () => {
     await supertest(app)
       .post("/api/verify")
       .set("Authorization", AUTH_HEADER)
@@ -146,7 +147,8 @@ describe("POST /api/verify", () => {
 
     expect(mockQueueAdd).toHaveBeenCalledOnce();
     const [, jobData] = mockQueueAdd.mock.calls[0];
-    expect(jobData.convexUrl).toBe("https://test.convex.cloud");
+    expect(jobData.convexHttpActionsUrl).toBe("https://test.convex.site");
+    expect(jobData.convexUrl).toBe("https://test.convex.site");
   });
 
   it("clamps timeoutSeconds to [60, 3600]", async () => {

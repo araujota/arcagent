@@ -87,6 +87,12 @@ describe("postVerificationResult", () => {
     expect(mockFetch).toHaveBeenCalled();
   });
 
+  it("posts HTTP actions to .convex.site when given a .convex.cloud deployment URL", async () => {
+    await postVerificationResult("https://foo-bar-123.convex.cloud", makeResult());
+    const [calledUrl] = mockFetch.mock.calls[0];
+    expect(calledUrl).toBe("https://foo-bar-123.convex.site/api/verification/result");
+  });
+
   it("allows localhost URLs", async () => {
     await postVerificationResult("http://localhost:3210", makeResult());
     expect(mockFetch).toHaveBeenCalled();

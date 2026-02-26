@@ -1,21 +1,23 @@
 /**
  * HTTP client for calling Convex internal endpoints.
- * All calls are authenticated with MCP_SHARED_SECRET.
+ * Calls prefer the authenticated ARCAGENT_API_KEY from request context.
  */
+import { getAuthApiKey } from "../lib/context";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
 let convexUrl: string;
-let sharedSecret: string;
+let defaultAuthToken: string | undefined;
 
-export function initConvexClient(url: string, secret: string): void {
+export function initConvexClient(url: string, authToken?: string): void {
   convexUrl = url.replace(/\/+$/, "");
-  sharedSecret = secret;
+  defaultAuthToken = authToken;
 }
 
 export async function callConvex<T = unknown>(
   path: string,
   body: Record<string, unknown>,
+  options?: { authToken?: string },
 ): Promise<T> {
   const url = `${convexUrl}${path}`;
 
@@ -23,12 +25,17 @@ export async function callConvex<T = unknown>(
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
+    const authToken = options?.authToken ?? getAuthApiKey() ?? defaultAuthToken;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (authToken) {
+      headers.Authorization = `Bearer ${authToken}`;
+    }
+
     const response = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${sharedSecret}`,
-      },
+      headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     });

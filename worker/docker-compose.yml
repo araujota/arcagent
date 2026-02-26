@@ -6,7 +6,8 @@
 # produced by `npm --prefix .. run env:sync:worker`) before running:
 #
 #   Required in .env:
-#     CONVEX_URL           — Convex deployment URL
+#     CONVEX_URL           — Convex deployment URL (.convex.cloud)
+#     CONVEX_HTTP_ACTIONS_URL — Convex HTTP-actions URL (.convex.site), optional if derivable from CONVEX_URL
 #     WORKER_SHARED_SECRET — must match the value set in Convex env
 #
 #   Optional in .env:

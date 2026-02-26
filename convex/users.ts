@@ -89,6 +89,32 @@ export const upsertFromClerk = internalMutation({
       return existing._id;
     }
 
+    // If a user already exists with this email (for example created via MCP
+    // self-registration using a synthetic clerkId), link that record instead
+    // of creating a duplicate user.
+    const existingByEmail = await ctx.db
+      .query("users")
+      .withIndex("by_email", (q) => q.eq("email", args.email))
+      .first();
+
+    if (existingByEmail) {
+      const updates: Record<string, unknown> = {
+        clerkId: args.clerkId,
+        name: args.name,
+        email: args.email,
+        avatarUrl: args.avatarUrl,
+      };
+      if (args.githubUsername !== undefined) {
+        updates.githubUsername = args.githubUsername;
+      }
+      if (existingByEmail.onboardingComplete === undefined) {
+        updates.onboardingComplete = true;
+        updates.isTechnical = false;
+      }
+      await ctx.db.patch(existingByEmail._id, updates);
+      return existingByEmail._id;
+    }
+
     return await ctx.db.insert("users", {
       clerkId: args.clerkId,
       name: args.name,
