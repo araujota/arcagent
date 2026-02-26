@@ -21,6 +21,11 @@ output "worker_host_urls" {
   value       = [for ip in local.worker_public_ips : "http://${ip}:3001"]
 }
 
+output "worker_dns_url" {
+  description = "Stable DNS URL for MCP -> worker communication (if configured)"
+  value       = trimspace(var.worker_dns_name) != "" ? "http://${trimspace(var.worker_dns_name)}:3001" : ""
+}
+
 output "vpc_id" {
   description = "VPC ID"
   value       = aws_vpc.worker.id

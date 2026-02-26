@@ -156,3 +156,21 @@ variable "snyk_token" {
   default     = ""
   sensitive   = true
 }
+
+variable "route53_zone_name" {
+  description = "Public Route53 hosted zone name for worker DNS (for example speedlesvc.com)."
+  type        = string
+  default     = ""
+}
+
+variable "worker_dns_name" {
+  description = "FQDN to point at the primary worker public IP (for example arcagent.speedlesvc.com)."
+  type        = string
+  default     = ""
+}
+
+variable "worker_public_url" {
+  description = "Optional fixed public worker base URL (for example http://arcagent.speedlesvc.com:3001). When set, host auto-detection is disabled."
+  type        = string
+  default     = ""
+}

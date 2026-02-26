@@ -49,6 +49,14 @@ snyk_token              = ""   # Optional Snyk token
 # Root volume size (needs space for rootfs images, overlays, etc.)
 root_volume_size_gb = 200
 
+# Stable addressing
+allocate_eip = true
+
+# Optional stable DNS for MCP -> worker calls
+route53_zone_name = "speedlesvc.com"
+worker_dns_name   = "arcagent.speedlesvc.com"
+worker_public_url = "http://arcagent.speedlesvc.com:3001"
+
 # Pre-built rootfs images — version tag in S3 (bucket is auto-created)
 # Build and upload images first: bash infra/rootfs/build-and-upload.sh <bucket> v1
 rootfs_version = "v1"

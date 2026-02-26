@@ -10,6 +10,12 @@ set -euo pipefail
 
 ENV_FILE="/opt/arcagent/worker.env"
 PORT=$(grep -oP '^PORT=\K.*' "$ENV_FILE" 2>/dev/null || echo "3001")
+LOCKED=$(grep -oP '^WORKER_HOST_URL_LOCKED=\K.*' "$ENV_FILE" 2>/dev/null || echo "false")
+
+if [ "$LOCKED" = "true" ]; then
+  echo "[detect-host-url] WORKER_HOST_URL_LOCKED=true — skipping auto-detection"
+  exit 0
+fi
 
 # Get IMDSv2 token
 TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" \

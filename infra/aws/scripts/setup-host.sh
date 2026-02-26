@@ -34,25 +34,33 @@ ROOTFS_VERSION="${rootfs_version}"
 ROOTFS_UPLOAD_ON_BOOT="${rootfs_upload_on_boot}"
 AWS_REGION="${aws_region}"
 WORKER_ARTIFACT_S3_KEY="${worker_artifact_s3_key}"
+WORKER_PUBLIC_URL="${worker_public_url}"
 ENABLE_SONARQUBE="${enable_sonarqube}"
 SONARQUBE_URL="${sonarqube_url}"
 SONARQUBE_TOKEN="${sonarqube_token}"
 SNYK_TOKEN="${snyk_token}"
 
-# Auto-detect public IP via IMDSv2 (EIP isn't known at user-data render time)
-echo ">>> Detecting public IP via IMDSv2..."
-IMDS_TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
-  -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
-PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
-  "http://169.254.169.254/latest/meta-data/public-ipv4" || echo "")
-
-if [ -z "$PUBLIC_IP" ]; then
-  echo "WARNING: Could not detect public IP. WORKER_HOST_URL will use localhost."
-  echo "You must set WORKER_HOST_URL manually in /opt/arcagent/worker.env after EIP assignment."
-  WORKER_HOST_URL="http://localhost:3001"
+WORKER_HOST_URL_LOCKED="false"
+if [ -n "$WORKER_PUBLIC_URL" ]; then
+  WORKER_HOST_URL="$WORKER_PUBLIC_URL"
+  WORKER_HOST_URL_LOCKED="true"
+  echo "Using fixed worker URL from Terraform: $WORKER_HOST_URL"
 else
-  WORKER_HOST_URL="http://$PUBLIC_IP:3001"
-  echo "Detected public IP: $PUBLIC_IP"
+  # Auto-detect public IP via IMDSv2 (EIP isn't known at user-data render time)
+  echo ">>> Detecting public IP via IMDSv2..."
+  IMDS_TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+  PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
+    "http://169.254.169.254/latest/meta-data/public-ipv4" || echo "")
+
+  if [ -z "$PUBLIC_IP" ]; then
+    echo "WARNING: Could not detect public IP. WORKER_HOST_URL will use localhost."
+    echo "You must set WORKER_HOST_URL manually in /opt/arcagent/worker.env after EIP assignment."
+    WORKER_HOST_URL="http://localhost:3001"
+  else
+    WORKER_HOST_URL="http://$PUBLIC_IP:3001"
+    echo "Detected public IP: $PUBLIC_IP"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -82,8 +90,13 @@ apt-get install -y -qq \
   awscli \
   zstd \
   debootstrap \
-  docker.io \
-  docker-compose-plugin
+  docker.io
+
+# Ubuntu package naming for Compose varies by repository/version.
+# Prefer Docker Compose v2 plugin, fall back to docker-compose v1.
+if ! apt-get install -y -qq docker-compose-plugin; then
+  apt-get install -y -qq docker-compose
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Enable KVM
@@ -140,6 +153,28 @@ echo ">>> Configuring runtime sidecars..."
 systemctl enable docker
 systemctl start docker
 
+# Use containerized Redis sidecar; disable host redis-server to avoid :6379 conflicts.
+systemctl stop redis-server 2>/dev/null || true
+systemctl disable redis-server 2>/dev/null || true
+
+# Unified compose wrapper (supports both "docker compose" and "docker-compose").
+cat > /usr/local/bin/arcagent-compose <<'COMPOSEWRAP'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if /usr/bin/docker compose version >/dev/null 2>&1; then
+  exec /usr/bin/docker compose "$@"
+fi
+
+if command -v docker-compose >/dev/null 2>&1; then
+  exec "$(command -v docker-compose)" "$@"
+fi
+
+echo "ERROR: Neither 'docker compose' nor 'docker-compose' is installed." >&2
+exit 1
+COMPOSEWRAP
+chmod 755 /usr/local/bin/arcagent-compose
+
 mkdir -p /opt/arcagent/runtime
 cat > /opt/arcagent/runtime/docker-compose.yml <<'COMPOSEEOF'
 services:
@@ -160,7 +195,7 @@ services:
     image: postgres:15-alpine
     environment:
       POSTGRES_USER: sonarqube
-      POSTGRES_PASSWORD: ${SONARQUBE_DB_PASSWORD:-local_dev_sonarqube_db}
+      POSTGRES_PASSWORD: $${SONARQUBE_DB_PASSWORD:-local_dev_sonarqube_db}
       POSTGRES_DB: sonarqube
     volumes:
       - sonarqube-db-data:/var/lib/postgresql/data
@@ -178,7 +213,7 @@ services:
     environment:
       SONAR_JDBC_URL: jdbc:postgresql://sonarqube-db:5432/sonarqube
       SONAR_JDBC_USERNAME: sonarqube
-      SONAR_JDBC_PASSWORD: ${SONARQUBE_DB_PASSWORD:-local_dev_sonarqube_db}
+      SONAR_JDBC_PASSWORD: $${SONARQUBE_DB_PASSWORD:-local_dev_sonarqube_db}
     depends_on:
       sonarqube-db:
         condition: service_healthy
@@ -205,8 +240,8 @@ Wants=network-online.target docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/arcagent/runtime
-ExecStart=/usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml up -d
-ExecStop=/usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml down
+ExecStart=/usr/local/bin/arcagent-compose -f /opt/arcagent/runtime/docker-compose.yml up -d
+ExecStop=/usr/local/bin/arcagent-compose -f /opt/arcagent/runtime/docker-compose.yml down
 TimeoutStartSec=300
 TimeoutStopSec=120
 
@@ -218,10 +253,10 @@ systemctl daemon-reload
 systemctl enable arcagent-runtime-stack
 systemctl start arcagent-runtime-stack
 
-/usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml up -d redis
-/usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml ps redis
+/usr/local/bin/arcagent-compose -f /opt/arcagent/runtime/docker-compose.yml up -d redis
+/usr/local/bin/arcagent-compose -f /opt/arcagent/runtime/docker-compose.yml ps redis
 if [ "$ENABLE_SONARQUBE" = "true" ]; then
-  /usr/bin/docker compose -f /opt/arcagent/runtime/docker-compose.yml up -d sonarqube-db sonarqube
+  /usr/local/bin/arcagent-compose -f /opt/arcagent/runtime/docker-compose.yml up -d sonarqube-db sonarqube
 fi
 
 # ---------------------------------------------------------------------------
@@ -406,10 +441,10 @@ REDIS_URL=redis://127.0.0.1:6379
 WORKER_SHARED_SECRET=$WORKER_SHARED_SECRET
 CONVEX_URL=$CONVEX_URL
 
-# WORKER_HOST_URL is auto-detected on each service start via ExecStartPre.
-# The EIP may not be attached during initial user-data run, so the pre-start
-# script re-detects the public IP from IMDSv2 before every worker launch.
+# WORKER_HOST_URL can be fixed to a DNS URL (recommended for MCP), or
+# auto-detected from instance public IP via ExecStartPre.
 WORKER_HOST_URL=$WORKER_HOST_URL
+WORKER_HOST_URL_LOCKED=$WORKER_HOST_URL_LOCKED
 
 # -------------------------------------------------------
 # VM capacity
