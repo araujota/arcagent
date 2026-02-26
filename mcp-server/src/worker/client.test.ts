@@ -1,5 +1,6 @@
 import { vi } from "vitest";
 import { initWorkerClient, callWorker } from "./client";
+import { initConvexClient } from "../convex/client";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -8,6 +9,7 @@ describe("callWorker", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     initWorkerClient("test-worker-secret");
+    initConvexClient("https://convex.example.com");
   });
 
   it("sends Bearer auth header", async () => {
@@ -73,5 +75,29 @@ describe("callWorker", () => {
     await expect(
       callWorker("https://worker.example.com", "/api/exec", { cmd: "ls" }),
     ).rejects.toThrow(`Worker error (502). ${"x".repeat(200)}`);
+  });
+
+  it("mints scoped worker token via Convex when shared secret is not configured", async () => {
+    initWorkerClient("");
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ token: "scoped-token", expiresAt: Date.now() + 60_000 }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ stdout: "ok", stderr: "", exitCode: 0 }),
+      });
+
+    await callWorker("https://worker.example.com", "/api/workspace/exec", {
+      workspaceId: "ws_123",
+      command: "echo ok",
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const [convexUrl] = mockFetch.mock.calls[0];
+    expect(convexUrl).toMatch(/\/api\/mcp\/workspace\/token$/);
+    const [, workerOptions] = mockFetch.mock.calls[1];
+    expect(workerOptions.headers.Authorization).toBe("Bearer scoped-token");
   });
 });

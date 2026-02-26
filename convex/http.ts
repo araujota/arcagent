@@ -242,6 +242,62 @@ interface McpAuthResult {
   authMethod: "shared_secret" | "api_key" | "none";
 }
 
+const WORKSPACE_AGENT_TOKEN_AUDIENCE = "arcagent-worker-workspace";
+const WORKSPACE_AGENT_TOKEN_ISSUER = "arcagent-convex";
+const WORKSPACE_AGENT_TOKEN_TTL_SECONDS = 60;
+
+const ALLOWED_WORKSPACE_ROUTE_PATHS = new Set<string>([
+  "/api/workspace/exec",
+  "/api/workspace/read-file",
+  "/api/workspace/write-file",
+  "/api/workspace/diff",
+  "/api/workspace/status",
+  "/api/workspace/extend-ttl",
+  "/api/workspace/batch-read",
+  "/api/workspace/batch-write",
+  "/api/workspace/search",
+  "/api/workspace/list-files",
+  "/api/workspace/exec-stream",
+  "/api/workspace/exec-output",
+  "/api/workspace/edit-file",
+  "/api/workspace/glob",
+  "/api/workspace/grep",
+  "/api/workspace/session-exec",
+]);
+
+function toBase64Url(bytes: Uint8Array): string {
+  const base64 = btoa(String.fromCharCode(...bytes));
+  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function textToBase64Url(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  return toBase64Url(bytes);
+}
+
+async function signWorkspaceAgentToken(
+  payload: Record<string, unknown>,
+  secret: string,
+): Promise<string> {
+  const header = { alg: "HS256", typ: "JWT" };
+  const encodedHeader = textToBase64Url(JSON.stringify(header));
+  const encodedPayload = textToBase64Url(JSON.stringify(payload));
+  const signingInput = `${encodedHeader}.${encodedPayload}`;
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput)),
+  );
+  const encodedSignature = toBase64Url(signature);
+  return `${signingInput}.${encodedSignature}`;
+}
+
 async function verifyMcpAuth(
   ctx: { runQuery: Function; runMutation: Function },
   request: Request
@@ -1579,6 +1635,78 @@ http.route({
       workerHost: ws.workerHost,
       status: ws.status,
       expiresAt: ws.expiresAt,
+    });
+  }),
+});
+
+// --- Workspace: Mint short-lived scoped worker token ---
+http.route({
+  path: "/api/mcp/workspace/token",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
+    if (auth.authMethod !== "api_key" || !auth.userId) {
+      return mcpError("Scoped workspace tokens require API key authentication", 403);
+    }
+
+    const body = await request.json();
+    const { workspaceId, routePath } = body as {
+      workspaceId?: string;
+      routePath?: string;
+    };
+
+    if (!workspaceId || !routePath) {
+      return mcpError("Missing workspaceId or routePath");
+    }
+    if (!ALLOWED_WORKSPACE_ROUTE_PATHS.has(routePath)) {
+      return mcpError("Route not eligible for scoped worker token", 403);
+    }
+
+    const ws = await ctx.runQuery(internal.devWorkspaces.getByWorkspaceId, {
+      workspaceId,
+    });
+    if (!ws) {
+      return mcpError("Workspace not found", 404);
+    }
+    if (ws.agentId !== (auth.userId as Id<"users">)) {
+      return mcpError("Forbidden: workspace does not belong to agent", 403);
+    }
+    if (ws.status === "destroyed") {
+      return mcpError("Workspace is destroyed", 409);
+    }
+    if (ws.expiresAt <= Date.now()) {
+      return mcpError("Workspace is expired", 409);
+    }
+
+    const signingSecret =
+      process.env.WORKER_TOKEN_SIGNING_SECRET || process.env.WORKER_SHARED_SECRET;
+    if (!signingSecret) {
+      return mcpError("Worker token signing secret not configured", 503);
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const exp = nowSeconds + WORKSPACE_AGENT_TOKEN_TTL_SECONDS;
+    const randomBytes = crypto.getRandomValues(new Uint8Array(8));
+    const jti = Array.from(randomBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+    const payload = {
+      iss: WORKSPACE_AGENT_TOKEN_ISSUER,
+      aud: WORKSPACE_AGENT_TOKEN_AUDIENCE,
+      sub: auth.userId,
+      workspaceId,
+      bountyId: ws.bountyId,
+      routePath,
+      iat: nowSeconds,
+      nbf: nowSeconds - 2,
+      exp,
+      jti,
+    };
+
+    const token = await signWorkspaceAgentToken(payload, signingSecret);
+    return mcpJson({
+      token,
+      expiresAt: exp * 1000,
     });
   }),
 });

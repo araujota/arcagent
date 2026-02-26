@@ -91,7 +91,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
   registerGetLeaderboard(server);
   registerTestBounty(server);
 
-  // Workspace tools (require WORKER_SHARED_SECRET)
+  // Workspace tools (scoped worker tokens; legacy direct secret still supported)
   if (enableWorkspaceTools) {
     registerWorkspaceExec(server);
     registerWorkspaceReadFile(server);

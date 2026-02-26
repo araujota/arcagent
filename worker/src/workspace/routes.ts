@@ -1,7 +1,9 @@
 /**
  * Express routes for workspace operations.
  *
- * All routes require WORKER_SHARED_SECRET bearer auth (reuse existing authMiddleware).
+ * Routes are authenticated via authMiddleware:
+ * - Service bearer secret (WORKER_SHARED_SECRET), or
+ * - Scoped short-lived workspace tokens minted by Convex.
  * These endpoints are called directly by the MCP server for low-latency interactive work.
  */
 

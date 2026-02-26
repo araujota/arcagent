@@ -92,7 +92,7 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
   cleanupTimer.unref();
 
   const serverOptions = {
-    enableWorkspaceTools: Boolean(config.workerSharedSecret),
+    enableWorkspaceTools: true,
     enableRegistration: true,
   };
 
@@ -338,7 +338,7 @@ async function startStdio(config: ServerConfig): Promise<void> {
   }
 
   const server = createMcpServer({
-    enableWorkspaceTools: Boolean(config.workerSharedSecret),
+    enableWorkspaceTools: true,
     enableRegistration: true,
   });
   const transport = new StdioServerTransport();
@@ -373,7 +373,7 @@ export async function main(config = loadServerConfig()): Promise<void> {
   assertConfig(config);
 
   if (!config.workerSharedSecret) {
-    console.warn("[MCP] WORKER_SHARED_SECRET not set — workspace tools will be unavailable");
+    console.warn("[MCP] WORKER_SHARED_SECRET not set — using scoped workspace tokens via Convex");
   }
 
   initConvexClient(config.convexUrl);
