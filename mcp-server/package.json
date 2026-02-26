@@ -18,7 +18,7 @@
     "provenance": true
   },
   "bin": {
-    "arcagent-mcp": "./dist/index.js"
+    "arcagent-mcp": "dist/index.js"
   },
   "files": [
     "dist"
@@ -44,7 +44,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/araujota/arcagent.git",
+    "url": "git+https://github.com/araujota/arcagent.git",
     "directory": "mcp-server"
   },
   "dependencies": {

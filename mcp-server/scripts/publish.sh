@@ -6,15 +6,18 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 #
 # Prerequisites:
-#   1. npm login (run `npm login` if not authenticated)
-#   2. All env vars in mcp-server/.env are set (for tests)
+#   1. npm package trusted publisher configured for this repo/workflow
+#   2. GitHub Actions workflow `.github/workflows/publish-mcp.yml` present
 #
-# Usage:
+# Usage (preferred):
+#   ./scripts/publish.sh          # run checks + push stable tag
+#   ./scripts/publish.sh patch    # bump patch + push stable tag
+#   ./scripts/publish.sh minor    # bump minor + push stable tag
+#   ./scripts/publish.sh major    # bump major + push stable tag
+#
+# Local manual publish fallback (requires OTP):
 #   cd mcp-server
-#   ./scripts/publish.sh          # publish current version
-#   ./scripts/publish.sh patch    # bump patch, publish
-#   ./scripts/publish.sh minor    # bump minor, publish
-#   ./scripts/publish.sh major    # bump major, publish
+#   npm publish --access public --otp <code>
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")/.."
@@ -35,12 +38,13 @@ if [ "${1:-}" != "" ]; then
 fi
 
 VERSION=$(node -p "require('./package.json').version")
-echo "==> Publishing arcagent-mcp@${VERSION}..."
-
-npm publish --access public
+TAG="mcp-server-v${VERSION}"
+echo "==> Creating/pushing tag ${TAG} for trusted publishing..."
+git tag "${TAG}"
+git push origin "${TAG}"
 
 echo ""
-echo "Published arcagent-mcp@${VERSION}"
+echo "Queued trusted publish for arcagent-mcp@${VERSION} via GitHub Actions tag ${TAG}"
 echo ""
 echo "Agents install with:"
 echo "  ARCAGENT_API_KEY=arc_xxx npx arcagent-mcp"

@@ -65,7 +65,20 @@ Tool availability:
 npm test
 npm run prepack
 npm run pack:check
-npm publish --access public
+```
+
+Trusted publishing is enabled via GitHub Actions OIDC. Publish by pushing a tag:
+
+```bash
+VERSION=$(node -p "require('./mcp-server/package.json').version")
+git tag "mcp-server-v${VERSION}"
+git push origin "mcp-server-v${VERSION}"
+```
+
+Manual local publish (fallback) still works if you provide npm OTP:
+
+```bash
+npm publish --access public --otp <code>
 ```
 
 ## Compatibility
