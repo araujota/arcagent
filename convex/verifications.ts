@@ -465,6 +465,52 @@ export const triggerPayoutOnVerificationPass = internalAction({
       });
       if (!bounty) throw new Error("Bounty not found");
 
+      // Test bounties complete the normal lifecycle but never move money.
+      if (bounty.isTestBounty) {
+        const submission = await ctx.runQuery(
+          internal.submissions.getByIdInternal,
+          { submissionId: args.submissionId }
+        );
+        if (!submission) throw new Error("Submission not found");
+
+        await ctx.runMutation(internal.bounties.updateStatusInternal, {
+          bountyId: args.bountyId,
+          status: "completed",
+        });
+
+        const activeClaim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
+          bountyId: args.bountyId,
+        });
+        if (activeClaim) {
+          await ctx.runMutation(internal.bountyClaims.markCompleted, {
+            claimId: activeClaim._id,
+          });
+          await ctx.scheduler.runAfter(0, internal.agentStats.recomputeForAgent, {
+            agentId: activeClaim.agentId,
+          });
+        }
+
+        await ctx.runMutation(internal.agentHellos.recordFromVerification, {
+          bountyId: args.bountyId,
+          submissionId: args.submissionId,
+          verificationId: args.verificationId,
+          agentId: submission.agentId,
+          agentIdentifier: bounty.testBountyAgentIdentifier ?? String(submission.agentId),
+          message: `hello from ${bounty.testBountyAgentIdentifier ?? String(submission.agentId)}`,
+        });
+
+        await ctx.runAction(internal.stripe.checkPayoutReadiness, {
+          bountyId: args.bountyId,
+          agentId: submission.agentId,
+          verificationId: args.verificationId,
+        });
+
+        console.log(
+          `[payout] Test bounty ${args.bountyId} completed without payout; readiness handshake recorded`
+        );
+        return;
+      }
+
       // Only process Stripe payouts for funded escrows
       if (bounty.paymentMethod !== "stripe" || bounty.escrowStatus !== "funded") {
         console.log(
@@ -542,6 +588,13 @@ export const triggerPayoutOnVerificationPass = internalAction({
       console.error(
         `[payout] Failed for bounty ${args.bountyId}: ${errorMessage}`
       );
+
+      const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+        bountyId: args.bountyId,
+      });
+      if (bounty?.isTestBounty) {
+        return;
+      }
 
       // Record the failure as a payment record so retryFailedPayouts can pick it up
       const submission = await ctx.runQuery(

@@ -10,6 +10,7 @@
 
 import type * as __tests___helpers from "../__tests__/helpers.js";
 import type * as activityFeed from "../activityFeed.js";
+import type * as agentHellos from "../agentHellos.js";
 import type * as agentRatings from "../agentRatings.js";
 import type * as agentStats from "../agentStats.js";
 import type * as apiKeys from "../apiKeys.js";
@@ -74,7 +75,9 @@ import type * as sanityGates from "../sanityGates.js";
 import type * as savedRepos from "../savedRepos.js";
 import type * as seed from "../seed.js";
 import type * as stripe from "../stripe.js";
+import type * as stripeHandshakeChecks from "../stripeHandshakeChecks.js";
 import type * as submissions from "../submissions.js";
+import type * as testBounties from "../testBounties.js";
 import type * as testSuites from "../testSuites.js";
 import type * as users from "../users.js";
 import type * as verificationJobs from "../verificationJobs.js";
@@ -93,6 +96,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   "__tests__/helpers": typeof __tests___helpers;
   activityFeed: typeof activityFeed;
+  agentHellos: typeof agentHellos;
   agentRatings: typeof agentRatings;
   agentStats: typeof agentStats;
   apiKeys: typeof apiKeys;
@@ -157,7 +161,9 @@ declare const fullApi: ApiFromModules<{
   savedRepos: typeof savedRepos;
   seed: typeof seed;
   stripe: typeof stripe;
+  stripeHandshakeChecks: typeof stripeHandshakeChecks;
   submissions: typeof submissions;
+  testBounties: typeof testBounties;
   testSuites: typeof testSuites;
   users: typeof users;
   verificationJobs: typeof verificationJobs;

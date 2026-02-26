@@ -464,6 +464,84 @@ export const releaseEscrow = internalAction({
   },
 });
 
+export const checkPayoutReadiness = internalAction({
+  args: {
+    bountyId: v.id("bounties"),
+    agentId: v.id("users"),
+    verificationId: v.id("verifications"),
+  },
+  handler: async (ctx, args) => {
+    const recordResult = async (result: {
+      status: "passed" | "failed";
+      connectAccountId?: string;
+      payoutsEnabled?: boolean;
+      chargesEnabled?: boolean;
+      currentlyDueCount?: number;
+      ready: boolean;
+      message: string;
+    }) => {
+      await ctx.runMutation(internal.stripeHandshakeChecks.record, {
+        bountyId: args.bountyId,
+        agentId: args.agentId,
+        verificationId: args.verificationId,
+        status: result.status,
+        connectAccountId: result.connectAccountId,
+        payoutsEnabled: result.payoutsEnabled,
+        chargesEnabled: result.chargesEnabled,
+        currentlyDueCount: result.currentlyDueCount,
+        ready: result.ready,
+        message: result.message,
+      });
+      return result;
+    };
+
+    const recipient = await ctx.runQuery(internal.users.getByIdInternal, {
+      userId: args.agentId,
+    });
+
+    if (!recipient?.stripeConnectAccountId) {
+      return await recordResult({
+        status: "failed",
+        ready: false,
+        message: "Recipient has no Stripe Connect account configured",
+      });
+    }
+
+    try {
+      const stripe = getStripe();
+      const account = await stripe.accounts.retrieve(
+        recipient.stripeConnectAccountId
+      );
+      const currentlyDueCount = account.requirements?.currently_due?.length ?? 0;
+      const payoutsEnabled = account.payouts_enabled ?? false;
+      const chargesEnabled = account.charges_enabled ?? false;
+      const ready = payoutsEnabled && chargesEnabled && currentlyDueCount === 0;
+
+      return await recordResult({
+        status: ready ? "passed" : "failed",
+        connectAccountId: recipient.stripeConnectAccountId,
+        payoutsEnabled,
+        chargesEnabled,
+        currentlyDueCount,
+        ready,
+        message: ready
+          ? "Stripe payout readiness handshake passed"
+          : "Stripe payout readiness handshake failed: account not payout-ready",
+      });
+    } catch (error) {
+      return await recordResult({
+        status: "failed",
+        connectAccountId: recipient.stripeConnectAccountId,
+        ready: false,
+        message:
+          error instanceof Error
+            ? `Stripe readiness check failed: ${error.message}`
+            : "Stripe readiness check failed",
+      });
+    }
+  },
+});
+
 export const updatePaymentStripeIds = internalMutation({
   args: {
     paymentId: v.id("payments"),

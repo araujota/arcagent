@@ -166,7 +166,7 @@ async function runTaggedBddTests(
       );
 
       // Run the test for this feature
-      const command = getBddTestCommand(language, featurePath);
+      const command = getBddTestCommand(language, featurePath, stepDefsDir);
       if (!command) continue;
 
       const result = await vm.exec(
@@ -233,13 +233,13 @@ async function runTaggedBddTests(
 /**
  * Get the BDD test runner command for a specific feature file.
  */
-function getBddTestCommand(language: string, featurePath: string): string | null {
+function getBddTestCommand(language: string, featurePath: string, stepDefsDir: string): string | null {
   switch (language.toLowerCase()) {
     case "typescript":
     case "javascript":
       return (
-        `if npx cucumber-js --version &>/dev/null; then ` +
-        `  npx cucumber-js ${featurePath} --format json 2>&1; ` +
+        `if npx --yes @cucumber/cucumber cucumber-js --version &>/dev/null; then ` +
+        `  npx --yes @cucumber/cucumber cucumber-js ${featurePath} --require '${stepDefsDir}/*.js' --format json 2>&1; ` +
         `elif npx jest --version &>/dev/null; then ` +
         `  npx jest --testPathPattern='.*' --json 2>&1; ` +
         `else npm test 2>&1; fi`
