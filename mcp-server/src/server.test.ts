@@ -41,6 +41,7 @@ vi.mock("./tools/workspaceGlob", () => ({ registerWorkspaceGlob: vi.fn() }));
 vi.mock("./tools/workspaceGrep", () => ({ registerWorkspaceGrep: vi.fn() }));
 vi.mock("./tools/workspaceApplyPatch", () => ({ registerWorkspaceApplyPatch: vi.fn() }));
 vi.mock("./tools/workspaceCrashReports", () => ({ registerWorkspaceCrashReports: vi.fn() }));
+vi.mock("./tools/checkWorkerStatus", () => ({ registerCheckWorkerStatus: vi.fn() }));
 
 import { createMcpServer } from "./server";
 
@@ -84,6 +85,7 @@ import { registerWorkspaceGlob } from "./tools/workspaceGlob";
 import { registerWorkspaceGrep } from "./tools/workspaceGrep";
 import { registerWorkspaceApplyPatch } from "./tools/workspaceApplyPatch";
 import { registerWorkspaceCrashReports } from "./tools/workspaceCrashReports";
+import { registerCheckWorkerStatus } from "./tools/checkWorkerStatus";
 
 describe("createMcpServer", () => {
   beforeEach(() => {
@@ -143,9 +145,10 @@ describe("createMcpServer", () => {
       registerWorkspaceGrep,
       registerWorkspaceApplyPatch,
       registerWorkspaceCrashReports,
+      registerCheckWorkerStatus,
     ];
 
-    expect(allRegisterFns).toHaveLength(40);
+    expect(allRegisterFns).toHaveLength(41);
 
     for (const fn of allRegisterFns) {
       expect(fn).toHaveBeenCalledTimes(1);
