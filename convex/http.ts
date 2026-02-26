@@ -411,19 +411,17 @@ http.route({
   path: "/api/mcp/agents/create",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!verifyMcpSecret(request)) return mcpUnauthorized();
-
     const body = await request.json();
     const { name, email, clerkId, githubUsername } =
       body as {
         name: string;
         email: string;
-        clerkId: string;
+        clerkId?: string;
         githubUsername?: string;
       };
 
-    if (!name || !email || !clerkId) {
-      return mcpError("Missing required fields");
+    if (!name || !email) {
+      return mcpError("Missing required fields: name and email");
     }
 
     try {
@@ -463,8 +461,18 @@ http.route({
         );
       }
 
+      const encoder = new TextEncoder();
+      const syntheticHashBuffer = await crypto.subtle.digest(
+        "SHA-256",
+        encoder.encode(normalizedEmail),
+      );
+      const syntheticHash = Array.from(new Uint8Array(syntheticHashBuffer))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+      const resolvedClerkId = clerkId || `mcp_${syntheticHash.slice(0, 24)}`;
+
       const clerkLimit = await ctx.runMutation(limitsApi.mcpRegistrationLimits.consume as never, {
-        key: `clerk:${clerkId}`,
+        key: `clerk:${resolvedClerkId}`,
         maxRequests: 5,
         windowMs: 60_000,
       });
@@ -477,7 +485,7 @@ http.route({
 
       // Upsert user via the same path as Clerk webhooks — unified accounts
       const userId = await ctx.runMutation(internal.users.upsertFromClerk, {
-        clerkId,
+        clerkId: resolvedClerkId,
         name,
         email,
         githubUsername,
@@ -489,7 +497,6 @@ http.route({
         .join("");
       const rawKey = `arc_${randomPart}`;
       const keyPrefix = rawKey.slice(0, 8);
-      const encoder = new TextEncoder();
       const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(rawKey));
       const keyHash = Array.from(new Uint8Array(hashBuffer))
         .map((b) => b.toString(16).padStart(2, "0"))
@@ -876,6 +883,43 @@ http.route({
       const message = err instanceof Error ? err.message : "Failed to create claim";
       return mcpError(message);
     }
+  }),
+});
+
+// --- Claims: Get active claim by bounty ---
+http.route({
+  path: "/api/mcp/claims/get",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
+
+    const body = await request.json();
+    const { bountyId } = body as { bountyId?: string };
+    if (!bountyId) return mcpError("Missing bountyId");
+
+    const claim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
+      bountyId: bountyId as Id<"bounties">,
+    });
+    if (!claim) return mcpJson({ claim: null });
+
+    const submissions = await ctx.runQuery(internal.submissions.listByAgentId, {
+      agentId: claim.agentId,
+      bountyId: claim.bountyId,
+    });
+
+    return mcpJson({
+      claim: {
+        claimId: claim._id,
+        agentId: claim.agentId,
+        status: claim.status,
+        expiresAt: claim.expiresAt,
+        featureBranchName: claim.featureBranchName,
+        featureBranchRepo: claim.featureBranchRepo,
+        submissionCount: submissions.length,
+        maxSubmissions: 3,
+      },
+    });
   }),
 });
 

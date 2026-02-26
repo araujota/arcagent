@@ -7,11 +7,9 @@ import { createHttpRuntime } from "./index";
 const {
   validateApiKeyMock,
   callConvexMock,
-  findOrCreateClerkUserMock,
 } = vi.hoisted(() => ({
   validateApiKeyMock: vi.fn(),
   callConvexMock: vi.fn(),
-  findOrCreateClerkUserMock: vi.fn(),
 }));
 
 let sessionCounter = 0;
@@ -26,10 +24,6 @@ vi.mock("./auth/apiKeyAuth", () => ({
 vi.mock("./convex/client", () => ({
   initConvexClient: vi.fn(),
   callConvex: callConvexMock,
-}));
-
-vi.mock("./lib/clerk", () => ({
-  findOrCreateClerkUser: findOrCreateClerkUserMock,
 }));
 
 vi.mock("./server", () => ({
@@ -105,7 +99,6 @@ describe("HTTP MCP auth/session hardening", () => {
   beforeEach(() => {
     validateApiKeyMock.mockReset();
     callConvexMock.mockReset();
-    findOrCreateClerkUserMock.mockReset();
     sessionCounter = 0;
   });
 
@@ -130,17 +123,13 @@ describe("HTTP MCP auth/session hardening", () => {
   });
 
   it("allows registration without API key and returns Convex-issued key", async () => {
-    findOrCreateClerkUserMock.mockResolvedValue({
-      clerkId: "user_clerk_1",
-      isExisting: false,
-    });
     callConvexMock.mockResolvedValue({
       userId: "user_1",
       apiKey: "arc_generated_from_convex_123456789012",
       keyPrefix: "arc_gene",
     });
 
-    const runtime = await startRuntime(baseConfig({ clerkSecretKey: "clerk_secret" }));
+    const runtime = await startRuntime(baseConfig());
     try {
       const resp = await fetch(`${runtime.url}/api/mcp/register`, {
         method: "POST",
@@ -160,7 +149,12 @@ describe("HTTP MCP auth/session hardening", () => {
     }
   });
 
-  it("returns 404 for /api/mcp/register when Clerk is not configured", async () => {
+  it("always exposes /api/mcp/register", async () => {
+    callConvexMock.mockResolvedValue({
+      userId: "user_2",
+      apiKey: "arc_generated_from_convex_222222222222",
+      keyPrefix: "arc_gene",
+    });
     const runtime = await startRuntime(baseConfig());
     try {
       const resp = await fetch(`${runtime.url}/api/mcp/register`, {
@@ -172,14 +166,14 @@ describe("HTTP MCP auth/session hardening", () => {
         }),
       });
 
-      expect(resp.status).toBe(404);
+      expect(resp.status).toBe(200);
     } finally {
       await runtime.close();
     }
   });
 
   it("validates registration payload and returns bad_request for missing fields", async () => {
-    const runtime = await startRuntime(baseConfig({ clerkSecretKey: "clerk_secret" }));
+    const runtime = await startRuntime(baseConfig());
     try {
       const resp = await fetch(`${runtime.url}/api/mcp/register`, {
         method: "POST",
@@ -193,7 +187,6 @@ describe("HTTP MCP auth/session hardening", () => {
       const body = await resp.json() as { error: { code: string; message: string } };
       expect(body.error.code).toBe("bad_request");
       expect(body.error.message).toContain("name and email are required");
-      expect(findOrCreateClerkUserMock).not.toHaveBeenCalled();
       expect(callConvexMock).not.toHaveBeenCalled();
     } finally {
       await runtime.close();
@@ -201,17 +194,13 @@ describe("HTTP MCP auth/session hardening", () => {
   });
 
   it("rate limits registration attempts by email", async () => {
-    findOrCreateClerkUserMock.mockResolvedValue({
-      clerkId: "user_clerk_limited",
-      isExisting: false,
-    });
     callConvexMock.mockResolvedValue({
       userId: "user_limited",
       apiKey: "arc_generated_from_convex_limited_1234",
       keyPrefix: "arc_gene",
     });
 
-    const runtime = await startRuntime(baseConfig({ clerkSecretKey: "clerk_secret" }));
+    const runtime = await startRuntime(baseConfig());
     try {
       for (let i = 0; i < 5; i += 1) {
         const resp = await fetch(`${runtime.url}/api/mcp/register`, {
@@ -243,10 +232,6 @@ describe("HTTP MCP auth/session hardening", () => {
 
   it("supports register-to-auth flow: issued key can open MCP session", async () => {
     const issuedKey = "arc_generated_from_convex_auth_flow_1234";
-    findOrCreateClerkUserMock.mockResolvedValue({
-      clerkId: "user_clerk_authflow",
-      isExisting: false,
-    });
     callConvexMock.mockResolvedValue({
       userId: "user-auth-flow",
       apiKey: issuedKey,
@@ -265,7 +250,7 @@ describe("HTTP MCP auth/session hardening", () => {
       return null;
     });
 
-    const runtime = await startRuntime(baseConfig({ clerkSecretKey: "clerk_secret" }));
+    const runtime = await startRuntime(baseConfig());
     try {
       const registerResp = await fetch(`${runtime.url}/api/mcp/register`, {
         method: "POST",
@@ -297,10 +282,6 @@ describe("HTTP MCP auth/session hardening", () => {
   });
 
   it("registration-only startup mode disables /mcp tool transport", async () => {
-    findOrCreateClerkUserMock.mockResolvedValue({
-      clerkId: "user_clerk_2",
-      isExisting: false,
-    });
     callConvexMock.mockResolvedValue({
       userId: "user_2",
       apiKey: "arc_generated_from_convex_222222222222",
@@ -309,7 +290,6 @@ describe("HTTP MCP auth/session hardening", () => {
 
     const runtime = await startRuntime(baseConfig({
       startupMode: "registration-only",
-      clerkSecretKey: "clerk_secret",
     }));
     try {
       const mcpResp = await fetch(`${runtime.url}/mcp`, {

@@ -2,7 +2,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { callConvex } from "../convex/client";
 import { registerTool } from "../lib/toolHelper";
-import { findOrCreateClerkUser } from "../lib/clerk";
 
 export function registerRegisterAccount(server: McpServer): void {
   registerTool(
@@ -36,23 +35,12 @@ export function registerRegisterAccount(server: McpServer): void {
         };
       }
 
-      let clerkId: string | undefined;
       try {
-        // Create or find existing Clerk user (unified accounts)
-        const clerkResult = await findOrCreateClerkUser(
-          args.name,
-          args.email,
-          args.githubUsername,
-        );
-        clerkId = clerkResult.clerkId;
-        const isExisting = clerkResult.isExisting;
-
         const result = await callConvex<{ userId: string; apiKey: string; keyPrefix: string }>(
           "/api/mcp/agents/create",
           {
             name: args.name,
             email: args.email,
-            clerkId,
             githubUsername: args.githubUsername,
           },
         );
@@ -73,10 +61,6 @@ export function registerRegisterAccount(server: McpServer): void {
           2,
         );
 
-        const accountNote = isExisting
-          ? "Linked to your existing arcagent account. You can also sign in via the web UI."
-          : "New account created. You can also sign in to the web UI at any time.";
-
         return {
           content: [
             {
@@ -86,8 +70,6 @@ export function registerRegisterAccount(server: McpServer): void {
                 "",
                 `**User ID:** ${result.userId}`,
                 `**API Key:** \`${result.apiKey}\``,
-                "",
-                accountNote,
                 "",
                 "IMPORTANT: Store this API key securely. It will NOT be shown again.",
                 "",
@@ -106,14 +88,11 @@ export function registerRegisterAccount(server: McpServer): void {
       } catch (err) {
         const message =
           err instanceof Error ? err.message : "Registration failed";
-        const clerkNote = clerkId
-          ? ` (Clerk user was created: ${clerkId}. Contact support if this persists.)`
-          : "";
         return {
           content: [
             {
               type: "text" as const,
-              text: `Error: ${message}${clerkNote}`,
+              text: `Error: ${message}`,
             },
           ],
           isError: true,

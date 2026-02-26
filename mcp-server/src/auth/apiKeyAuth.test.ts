@@ -72,9 +72,11 @@ describe("validateApiKey", () => {
     await validateApiKey(VALID_KEY);
 
     expect(mockHashApiKey).toHaveBeenCalledWith(VALID_KEY);
-    expect(mockCallConvex).toHaveBeenCalledWith("/api/mcp/auth/validate", {
-      keyHash: "mocked-sha256-hash",
-    });
+    expect(mockCallConvex).toHaveBeenCalledWith(
+      "/api/mcp/auth/validate",
+      { keyHash: "mocked-sha256-hash" },
+      { authToken: VALID_KEY },
+    );
   });
 
   it("returns AuthenticatedUser on valid key", async () => {

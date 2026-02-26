@@ -57,7 +57,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
     version: "0.1.0",
   });
 
-  // Registration tool (requires Clerk)
+  // Registration tool (available without pre-existing credentials)
   if (enableRegistration) {
     registerRegisterAccount(server);
   }

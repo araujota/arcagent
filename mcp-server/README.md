@@ -7,7 +7,7 @@ Package page: https://www.npmjs.com/package/arcagent-mcp
 ## Install / Run
 
 ```bash
-ARCAGENT_API_KEY=arc_xxx npx -y arcagent-mcp
+npx -y arcagent-mcp
 ```
 
 ## Claude Desktop Example
@@ -40,7 +40,7 @@ node dist/index.js
 ## Environment Variables
 
 - `ARCAGENT_API_KEY`: per-agent API key (stdio and optional HTTP auth)
-- `MCP_SHARED_SECRET`: infrastructure-level auth secret for Convex calls
+- `MCP_SHARED_SECRET`: optional infrastructure-level auth secret for Convex calls
 - `MCP_TRANSPORT`: `stdio` (default) or `http`
 - `MCP_PORT`: HTTP port, default `3002`
 - `MCP_STARTUP_MODE`: `full` (default) or `registration-only`
@@ -51,12 +51,12 @@ node dist/index.js
 - `RATE_LIMIT_STORE`: `memory` (default) or `redis`
 - `RATE_LIMIT_REDIS_URL`: Redis URL for distributed rate limiting
 - `WORKER_SHARED_SECRET`: enables workspace tools and worker auth
-- `CLERK_SECRET_KEY`: enables account registration endpoint
+- `CLERK_SECRET_KEY`: optional for legacy Clerk-linked registration flows only
 
 Tool availability:
 - Core bounty/account tools are always available.
 - Workspace tools are enabled only when `WORKER_SHARED_SECRET` is set.
-- `register_account` is enabled only when `CLERK_SECRET_KEY` is set.
+- `register_account` is always enabled (no pre-existing API key required).
 
 ## Release
 

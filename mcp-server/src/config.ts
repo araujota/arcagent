@@ -18,7 +18,7 @@ export interface ServerConfig {
   startupMode: StartupMode;
 }
 
-const DEFAULT_CONVEX_URL = "https://acoustic-starfish-282.convex.cloud";
+const DEFAULT_CONVEX_URL = "https://acoustic-starfish-282.convex.site";
 
 function parseIntEnv(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
@@ -67,18 +67,6 @@ export function assertConfig(config: ServerConfig): void {
     if (config.transport !== "http") {
       throw new Error("MCP_STARTUP_MODE=registration-only requires MCP_TRANSPORT=http");
     }
-    if (!config.mcpSharedSecret) {
-      throw new Error("MCP_STARTUP_MODE=registration-only requires MCP_SHARED_SECRET");
-    }
-    if (!config.clerkSecretKey) {
-      throw new Error("MCP_STARTUP_MODE=registration-only requires CLERK_SECRET_KEY");
-    }
     return;
-  }
-
-  if (!config.mcpSharedSecret && !config.arcagentApiKey) {
-    throw new Error(
-      "Either MCP_SHARED_SECRET (self-hosted) or ARCAGENT_API_KEY (npx) is required",
-    );
   }
 }
