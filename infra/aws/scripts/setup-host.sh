@@ -34,6 +34,8 @@ ROOTFS_BUCKET="${rootfs_bucket}"
 ROOTFS_VERSION="${rootfs_version}"
 ROOTFS_UPLOAD_ON_BOOT="${rootfs_upload_on_boot}"
 AWS_REGION="${aws_region}"
+ROUTE53_ZONE_NAME="${route53_zone_name}"
+WORKER_DNS_NAME="${worker_dns_name}"
 WORKER_ARTIFACT_S3_KEY="${worker_artifact_s3_key}"
 WORKER_PUBLIC_URL="${worker_public_url}"
 ENABLE_SONARQUBE="${enable_sonarqube}"
@@ -42,7 +44,7 @@ SONARQUBE_TOKEN="${sonarqube_token}"
 SNYK_TOKEN="${snyk_token}"
 
 if [ -z "$CONVEX_HTTP_ACTIONS_URL" ]; then
-  CONVEX_HTTP_ACTIONS_URL="${CONVEX_URL/.convex.cloud/.convex.site}"
+  CONVEX_HTTP_ACTIONS_URL="$${CONVEX_URL/.convex.cloud/.convex.site}"
 fi
 
 WORKER_HOST_URL_LOCKED="false"
@@ -451,6 +453,8 @@ CONVEX_HTTP_ACTIONS_URL=$CONVEX_HTTP_ACTIONS_URL
 # auto-detected from instance public IP via ExecStartPre.
 WORKER_HOST_URL=$WORKER_HOST_URL
 WORKER_HOST_URL_LOCKED=$WORKER_HOST_URL_LOCKED
+WORKER_ROUTE53_ZONE=$ROUTE53_ZONE_NAME
+WORKER_DNS_NAME=$WORKER_DNS_NAME
 
 # -------------------------------------------------------
 # VM capacity

@@ -50,6 +50,8 @@ resource "aws_instance" "worker" {
     rootfs_version            = var.rootfs_version
     rootfs_upload_on_boot     = var.rootfs_upload_on_boot
     aws_region                = var.aws_region
+    route53_zone_name         = var.route53_zone_name
+    worker_dns_name           = var.worker_dns_name
     worker_artifact_s3_key    = var.worker_artifact_s3_key
     worker_public_url         = var.worker_public_url
     enable_sonarqube          = var.enable_sonarqube
@@ -65,6 +67,9 @@ resource "aws_instance" "worker" {
   lifecycle {
     # Prevent accidental destruction of running workers
     prevent_destroy = false # Set to true in production
+    # Worker rollouts are handled via deploy artifact + service restart.
+    # Avoid EC2 stop/start churn on every user_data template change.
+    ignore_changes = [user_data]
   }
 }
 

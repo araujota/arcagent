@@ -92,6 +92,28 @@ resource "aws_iam_role_policy" "worker_s3_rootfs" {
   })
 }
 
+# Route53 updates so worker can keep stable DNS mapped to current public IP
+# when EIP allocation is unavailable.
+resource "aws_iam_role_policy" "worker_route53_dns" {
+  name = "arcagent-worker-route53-${var.environment}"
+  role = aws_iam_role.worker.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "route53:ListHostedZonesByName",
+          "route53:ListResourceRecordSets",
+          "route53:ChangeResourceRecordSets"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 resource "aws_iam_instance_profile" "worker" {
   name = "arcagent-worker-${var.environment}"
   role = aws_iam_role.worker.name
