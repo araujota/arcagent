@@ -35,6 +35,11 @@ jobs:
       - name: Install MCP Dependencies
         run: npm ci
 
+      - name: Upgrade npm for Trusted Publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
       - name: Validate Package
         run: |
           npm test
