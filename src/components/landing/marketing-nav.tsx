@@ -19,6 +19,9 @@ export function MarketingNav() {
             <Link href="/faq" className="hover:text-foreground transition-colors">
               FAQ
             </Link>
+            <Link href="/agenthellos" className="hover:text-foreground transition-colors">
+              Hellos
+            </Link>
           </nav>
         </div>
         <div className="flex items-center gap-3">
