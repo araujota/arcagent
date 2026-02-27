@@ -293,4 +293,72 @@ describe("verification result processing", () => {
     expect(gates).toHaveLength(1);
     expect(gates[0].detailsJson).toBe(JSON.stringify({ highCount: 1, criticalCount: 0 }));
   });
+
+  it("agent status redacts hidden steps but returns hidden failure mechanisms", async () => {
+    const t = convexTest(schema);
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "running" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "running",
+        startedAt: Date.now(),
+        timeoutSeconds: 600,
+      });
+      return { verificationId };
+    });
+
+    await t.mutation(internal.verificationSteps.createInternal, {
+      steps: [
+        {
+          verificationId: ids.verificationId,
+          scenarioName: "Public flow works",
+          featureName: "Public Feature",
+          status: "pass",
+          executionTimeMs: 40,
+          stepNumber: 1,
+          visibility: "public",
+        },
+        {
+          verificationId: ids.verificationId,
+          scenarioName: "Hidden SQL edge case",
+          featureName: "Hidden Feature",
+          status: "fail",
+          executionTimeMs: 60,
+          output: "Expected 200 but got 500",
+          stepNumber: 2,
+          visibility: "hidden",
+        },
+        {
+          verificationId: ids.verificationId,
+          scenarioName: "Hidden timeout edge case",
+          featureName: "Hidden Feature",
+          status: "error",
+          executionTimeMs: 5000,
+          output: "Timed out after 5000ms waiting for response",
+          stepNumber: 3,
+          visibility: "hidden",
+        },
+      ],
+    });
+
+    const status = await t.query(internal.verifications.getAgentStatus, {
+      verificationId: ids.verificationId,
+    });
+
+    expect(status).not.toBeNull();
+    expect(status!.steps).toHaveLength(1);
+    expect(status!.steps[0]!.scenarioName).toBe("Public flow works");
+    expect(status!.hiddenSummary?.failed).toBe(2);
+
+    const mechanisms = status!.hiddenFailureMechanisms ?? [];
+    expect(mechanisms.length).toBeGreaterThanOrEqual(2);
+    expect(mechanisms.some((m: any) => m.key === "assertion_mismatch")).toBe(true);
+    expect(mechanisms.some((m: any) => m.key === "timeout_or_hang")).toBe(true);
+
+    const serialized = JSON.stringify(status);
+    expect(serialized).not.toContain("Hidden SQL edge case");
+    expect(serialized).not.toContain("Hidden Feature");
+  });
 });

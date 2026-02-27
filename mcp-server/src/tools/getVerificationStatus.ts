@@ -96,6 +96,7 @@ export function registerGetVerificationStatus(server: McpServer): void {
         }
 
         // Structured feedback with prioritized action items
+        let renderedHiddenMechanisms = false;
         if (v.feedbackJson) {
           try {
             const feedback = JSON.parse(v.feedbackJson);
@@ -112,6 +113,7 @@ export function registerGetVerificationStatus(server: McpServer): void {
                 text += `- **${label}** (${count}): ${guidance}\n`;
               }
               text += "\n";
+              renderedHiddenMechanisms = true;
             }
             if (feedback.actionItems && feedback.actionItems.length > 0) {
               const safeItems = feedback.actionItems.filter(
@@ -124,6 +126,17 @@ export function registerGetVerificationStatus(server: McpServer): void {
             }
           } catch {
             // feedbackJson parse failed — skip
+          }
+        }
+        if (!renderedHiddenMechanisms && Array.isArray(v.hiddenFailureMechanisms) && v.hiddenFailureMechanisms.length > 0) {
+          text += "\n## Hidden Failure Mechanisms (safe summary)\n\n";
+          for (const mechanism of v.hiddenFailureMechanisms.slice(0, 10)) {
+            const label = typeof mechanism?.label === "string" ? mechanism.label : "Unknown edge case";
+            const count = typeof mechanism?.count === "number" ? mechanism.count : "?";
+            const guidance = typeof mechanism?.guidance === "string"
+              ? mechanism.guidance
+              : "Harden boundary conditions and error handling.";
+            text += `- **${label}** (${count}): ${guidance}\n`;
           }
         }
 

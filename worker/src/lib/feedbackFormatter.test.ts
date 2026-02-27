@@ -58,11 +58,11 @@ describe("generateFeedback", () => {
     expect(feedback.overallStatus).toBe("error");
   });
 
-  it("attemptsRemaining = max(0, 5 - attemptNumber)", () => {
-    expect(generateFeedback([], 1).attemptsRemaining).toBe(4);
-    expect(generateFeedback([], 3).attemptsRemaining).toBe(2);
-    expect(generateFeedback([], 5).attemptsRemaining).toBe(0);
-    expect(generateFeedback([], 6).attemptsRemaining).toBe(0);
+  it("attemptsRemaining = max(0, 20 - attemptNumber)", () => {
+    expect(generateFeedback([], 1).attemptsRemaining).toBe(19);
+    expect(generateFeedback([], 3).attemptsRemaining).toBe(17);
+    expect(generateFeedback([], 20).attemptsRemaining).toBe(0);
+    expect(generateFeedback([], 21).attemptsRemaining).toBe(0);
   });
 
   it("action items sorted by category priority (build before lint before test)", () => {

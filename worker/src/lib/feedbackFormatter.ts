@@ -71,7 +71,7 @@ export interface VerificationFeedback {
 // ---------------------------------------------------------------------------
 
 /** Maximum submission attempts per bounty. */
-const MAX_ATTEMPTS = 5;
+const MAX_ATTEMPTS = 20;
 
 /**
  * Priority order for action items. Build errors are most critical (code

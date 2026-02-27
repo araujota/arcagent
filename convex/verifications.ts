@@ -4,6 +4,22 @@ import { internal } from "./_generated/api";
 import { getCurrentUser, requireAuth } from "./lib/utils";
 import { calculatePlatformFee, PLATFORM_FEE_RATE } from "./lib/fees";
 
+type HiddenFailureMechanismKey =
+  | "assertion_mismatch"
+  | "runtime_exception"
+  | "module_or_path_error"
+  | "timeout_or_hang"
+  | "permission_or_filesystem"
+  | "api_contract_or_validation"
+  | "unknown_edge_case";
+
+type HiddenFailureMechanism = {
+  key: HiddenFailureMechanismKey;
+  label: string;
+  count: number;
+  guidance: string;
+};
+
 /**
  * SECURITY (H8/M8): Require that the caller is the bounty creator,
  * the submitting agent, or an admin to view verification details.
@@ -231,6 +247,13 @@ export const getAgentStatus = internalQuery({
         visibility: "public" as const,
       }));
     const hiddenSteps = steps.filter((s) => (s.visibility ?? "public") === "hidden");
+    const hiddenFailureMechanisms = summarizeHiddenFailureMechanisms(
+      hiddenSteps
+        .filter((s) => s.status === "fail" || s.status === "error")
+        .map((s) => s.output)
+        .filter((output): output is string => typeof output === "string" && output.length > 0),
+      hiddenSteps.filter((s) => s.status === "fail" || s.status === "error").length,
+    );
 
     return {
       ...verification,
@@ -248,6 +271,7 @@ export const getAgentStatus = internalQuery({
         failed: hiddenSteps.filter((s) => s.status === "fail" || s.status === "error").length,
         skipped: hiddenSteps.filter((s) => s.status === "skip").length,
       },
+      hiddenFailureMechanisms,
       feedbackJson: verification.feedbackJson,
       job: job
         ? {
@@ -268,6 +292,93 @@ function safeParseJson(value: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+const HIDDEN_MECHANISM_METADATA: Record<HiddenFailureMechanismKey, {
+  label: string;
+  guidance: string;
+}> = {
+  assertion_mismatch: {
+    label: "Assertion mismatch",
+    guidance: "Check edge-case outputs and strict equality assumptions.",
+  },
+  runtime_exception: {
+    label: "Runtime exception",
+    guidance: "Harden null/undefined handling and guard unsafe operations.",
+  },
+  module_or_path_error: {
+    label: "Module or path error",
+    guidance: "Verify import paths, file existence, and runtime entrypoints.",
+  },
+  timeout_or_hang: {
+    label: "Timeout or hang",
+    guidance: "Reduce algorithmic complexity and ensure async flows resolve.",
+  },
+  permission_or_filesystem: {
+    label: "Permission or filesystem error",
+    guidance: "Avoid privileged paths and handle file permissions safely.",
+  },
+  api_contract_or_validation: {
+    label: "API contract or validation mismatch",
+    guidance: "Validate request/response contracts and input validation branches.",
+  },
+  unknown_edge_case: {
+    label: "Unknown edge case",
+    guidance: "Add defensive checks around boundary conditions and error paths.",
+  },
+};
+
+function summarizeHiddenFailureMechanisms(
+  hiddenFailureOutputs: string[],
+  hiddenFailures: number,
+): HiddenFailureMechanism[] {
+  if (hiddenFailures === 0) return [];
+
+  const counts = new Map<HiddenFailureMechanismKey, number>();
+  for (const output of hiddenFailureOutputs) {
+    const mechanism = classifyHiddenFailureOutput(output);
+    counts.set(mechanism, (counts.get(mechanism) ?? 0) + 1);
+  }
+
+  const accounted = Array.from(counts.values()).reduce((sum, count) => sum + count, 0);
+  const unknownCount = hiddenFailures - accounted;
+  if (unknownCount > 0) {
+    counts.set("unknown_edge_case", (counts.get("unknown_edge_case") ?? 0) + unknownCount);
+  }
+
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, count]) => ({
+      key,
+      count,
+      label: HIDDEN_MECHANISM_METADATA[key].label,
+      guidance: HIDDEN_MECHANISM_METADATA[key].guidance,
+    }));
+}
+
+function classifyHiddenFailureOutput(output: string): HiddenFailureMechanismKey {
+  const normalized = output.toLowerCase();
+
+  if (/expected .* to|to equal|to deeply equal|assert|expected .* got|mismatch/i.test(normalized)) {
+    return "assertion_mismatch";
+  }
+  if (/typeerror|referenceerror|syntaxerror|rangeerror|exception|panic|traceback|stack trace|segmentation fault/i.test(normalized)) {
+    return "runtime_exception";
+  }
+  if (/cannot find module|module not found|no such file|enoent|importerror|cannot resolve/i.test(normalized)) {
+    return "module_or_path_error";
+  }
+  if (/timeout|timed out|deadline exceeded|exceeded .*ms|hang/i.test(normalized)) {
+    return "timeout_or_hang";
+  }
+  if (/eacces|eperm|permission denied|read-only file system|operation not permitted/i.test(normalized)) {
+    return "permission_or_filesystem";
+  }
+  if (/validation|invalid input|schema|status code|http 4\d\d|unprocessable entity|bad request/i.test(normalized)) {
+    return "api_contract_or_validation";
+  }
+
+  return "unknown_edge_case";
 }
 
 async function failVerificationDispatch(
