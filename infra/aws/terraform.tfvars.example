@@ -55,14 +55,6 @@ root_volume_size_gb = 200
 # Stable addressing
 allocate_eip = true
 
-# Dedicated per-claim attempt workers (virtualized Nitro path)
-enable_attempt_worker_template = false
-attempt_worker_ami_id          = ""          # required if enabled
-attempt_worker_instance_type   = "c7i.large"
-attempt_worker_root_volume_size_gb = 40
-attempt_worker_open_https      = true
-attempt_worker_open_worker_port = true
-
 # Optional stable DNS for MCP -> worker calls
 route53_zone_name = "speedlesvc.com"
 worker_dns_name   = "arcagent.speedlesvc.com"

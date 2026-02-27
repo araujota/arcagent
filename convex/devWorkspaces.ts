@@ -1,8 +1,6 @@
 import { internalMutation, internalQuery, internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { Id } from "./_generated/dataModel";
-import { shouldUseDedicatedAttemptVm } from "./lib/workspaceIsolation";
 
 // ---------------------------------------------------------------------------
 // Mutations
@@ -193,89 +191,13 @@ export const provisionWorkspace = internalAction({
     expiresAt: v.number(),
   },
   handler: async (ctx, args) => {
-    const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
-      bountyId: args.bountyId,
-    });
-    const dedicatedAttemptMode = shouldUseDedicatedAttemptVm(bounty);
-
     try {
-      if (dedicatedAttemptMode) {
-        const launchStartedAt = Date.now();
-        const launched = await ctx.runAction(internal.attemptWorkersNode.launchForWorkspace, {
-          claimId: args.claimId,
-          bountyId: args.bountyId,
-          agentId: args.agentId,
-          workspaceId: args.workspaceId,
-        }) as {
-          attemptWorkerId: Id<"attemptWorkers">;
-          publicHost: string;
-          controlHost?: string;
-          serviceToken: string;
-        };
-
-        const provisionHost = launched.controlHost ?? launched.publicHost;
-        const response = await fetch(`${provisionHost}/api/workspace/provision`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${launched.serviceToken}`,
-          },
-          body: JSON.stringify({
-            workspaceId: args.workspaceId,
-            claimId: args.claimId,
-            bountyId: args.bountyId,
-            agentId: args.agentId,
-            repoUrl: args.repositoryUrl,
-            commitSha: args.commitSha,
-            language: args.language,
-            expiresAt: args.expiresAt,
-          }),
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          await ctx.runMutation(internal.attemptWorkers.recordBootFailure, {
-            attemptWorkerId: launched.attemptWorkerId,
-            message: `Attempt worker workspace provision failed: ${response.status} ${errorText.slice(0, 300)}`,
-          });
-          throw new Error(`Attempt worker provision error: ${response.status} - ${errorText.slice(0, 300)}`);
-        }
-
-        const result = await response.json() as {
-          vmId: string;
-          workerHost: string;
-          status: string;
-        };
-
-        const resolvedStatus = result.status === "error" ? "error" : "ready";
-        await ctx.runMutation(internal.devWorkspaces.updateStatus, {
-          workspaceId: args.workspaceId,
-          status: resolvedStatus as "ready" | "error",
-          vmId: result.vmId,
-          workerHost: launched.publicHost,
-          attemptWorkerId: launched.attemptWorkerId,
-          attemptMode: "dedicated_attempt_vm",
-          attemptLaunchMs: Date.now() - launchStartedAt,
-          attemptReadyMs: resolvedStatus === "ready" ? Date.now() - launchStartedAt : undefined,
-          readyAt: resolvedStatus === "ready" ? Date.now() : undefined,
-          errorMessage: resolvedStatus === "error" ? "Attempt worker reported error status" : undefined,
-        });
-        if (resolvedStatus === "ready") {
-          await ctx.runMutation(internal.attemptWorkers.update, {
-            attemptWorkerId: launched.attemptWorkerId,
-            status: "ready",
-          });
-        }
-        return;
-      }
-
       const workerUrl = process.env.WORKER_API_URL;
       const workerSecret = process.env.WORKER_SHARED_SECRET;
       if (!workerUrl || !workerSecret) {
         await ctx.runMutation(internal.devWorkspaces.updateStatus, {
           workspaceId: args.workspaceId,
           status: "error",
-          attemptMode: "shared_worker",
           errorMessage: "Worker not configured (WORKER_API_URL/WORKER_SHARED_SECRET missing)",
         });
         return;
@@ -316,7 +238,6 @@ export const provisionWorkspace = internalAction({
         status: resolvedStatus as "ready" | "error",
         vmId: result.vmId,
         workerHost: result.workerHost,
-        attemptMode: "shared_worker",
         readyAt: resolvedStatus === "ready" ? Date.now() : undefined,
         errorMessage: resolvedStatus === "error" ? "Worker reported error status" : undefined,
       });
@@ -346,29 +267,12 @@ export const destroyWorkspace = internalAction({
   },
   handler: async (ctx, args) => {
     const workerSecret = process.env.WORKER_SHARED_SECRET;
-    const ws = await ctx.runQuery(internal.devWorkspaces.getByWorkspaceId, {
-      workspaceId: args.workspaceId,
-    });
 
     // Mark as destroyed in Convex first
     await ctx.runMutation(internal.devWorkspaces.markDestroyed, {
       workspaceId: args.workspaceId,
       reason: args.reason,
     });
-
-    if (ws?.attemptWorkerId) {
-      try {
-        await ctx.runAction(internal.attemptWorkersNode.terminate, {
-          attemptWorkerId: ws.attemptWorkerId,
-          reason: args.reason,
-        });
-      } catch (err) {
-        console.error(
-          `[devWorkspaces] Failed to terminate attempt worker ${String(ws.attemptWorkerId)}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      return;
-    }
 
     // Best-effort call to shared worker to tear down VM
     if (args.workerHost && workerSecret) {

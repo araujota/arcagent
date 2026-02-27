@@ -89,11 +89,17 @@ export function registerCheckWorkerStatus(server: McpServer): void {
         const checksText = checks.length > 0
           ? checks.map(([key, value]) => `- ${key}: ${value}`).join("\n")
           : "- checks unavailable";
+        const backend = body?.checks?.executionBackend ?? "unknown";
+        const backendPolicy = body?.checks?.executionBackendPolicy ?? "unknown";
+        const firecrackerLocked = body?.checks?.firecrackerLocked ?? "unknown";
 
         const text =
           `Worker health for ${baseUrl}\n` +
           `- HTTP status: ${response.status}\n` +
           `- Health status: ${healthStatus}\n` +
+          `- Execution backend: ${backend}\n` +
+          `- Backend policy: ${backendPolicy}\n` +
+          `- Firecracker locked: ${firecrackerLocked}\n` +
           (body?.timestamp ? `- Timestamp: ${body.timestamp}\n` : "") +
           "\nChecks:\n" +
           checksText;

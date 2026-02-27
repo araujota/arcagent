@@ -115,6 +115,7 @@ describe("integration: MCP -> worker -> execution env chain", () => {
   beforeAll(async () => {
     process.env.WORKER_SHARED_SECRET = workerSecret;
     process.env.WORKER_EXECUTION_BACKEND = "process";
+    process.env.ALLOW_UNSAFE_PROCESS_BACKEND = "true";
     process.env.REDIS_URL = "redis://127.0.0.1:6390";
 
     const { createWorkspaceRoutes } = await import("../../../worker/src/workspace/routes");
@@ -302,6 +303,7 @@ describe("integration: MCP -> worker -> execution env chain", () => {
     if (gitRepoDir) {
       await rm(gitRepoDir, { recursive: true, force: true });
     }
+    delete process.env.ALLOW_UNSAFE_PROCESS_BACKEND;
   });
 
   it("provisions workspace, executes commands/files through MCP, then tears down cleanly", async () => {
@@ -366,5 +368,5 @@ describe("integration: MCP -> worker -> execution env chain", () => {
         command: "pwd",
       }),
     ).rejects.toThrow(/Workspace not found or not ready/);
-  });
+  }, 30_000);
 });

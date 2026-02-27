@@ -180,39 +180,3 @@ variable "worker_public_url" {
   type        = string
   default     = ""
 }
-
-variable "enable_attempt_worker_template" {
-  description = "Create launch-template resources for dedicated per-claim attempt workers."
-  type        = bool
-  default     = false
-}
-
-variable "attempt_worker_ami_id" {
-  description = "AMI ID used by dedicated attempt workers. Required when enable_attempt_worker_template=true."
-  type        = string
-  default     = ""
-}
-
-variable "attempt_worker_instance_type" {
-  description = "Instance type for dedicated attempt workers (Nitro virtualized recommended)."
-  type        = string
-  default     = "c7i.large"
-}
-
-variable "attempt_worker_root_volume_size_gb" {
-  description = "Root EBS volume size in GB for dedicated attempt workers."
-  type        = number
-  default     = 40
-}
-
-variable "attempt_worker_open_https" {
-  description = "Allow inbound HTTPS (443) to dedicated attempt workers."
-  type        = bool
-  default     = true
-}
-
-variable "attempt_worker_open_worker_port" {
-  description = "Allow inbound worker API port (3001) to dedicated attempt workers."
-  type        = bool
-  default     = true
-}

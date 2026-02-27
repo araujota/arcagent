@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: bash scripts/ci/assert-firecracker-deploy-config.sh
       - uses: actions/setup-node@v4
         with:
           node-version: 20
