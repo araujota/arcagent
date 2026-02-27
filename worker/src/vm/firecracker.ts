@@ -332,21 +332,22 @@ export async function createFirecrackerVM(
     jailerGid: readabilityGid,
   });
 
+  let firecrackerStdout = "";
+  let firecrackerStderr = "";
   const vmProcessRef = new Promise<FirecrackerProcessExit>((resolve) => {
-    let stdout = "", stderr = "";
-    fcChild.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
-    fcChild.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+    fcChild.stdout?.on("data", (d: Buffer) => { firecrackerStdout += d.toString(); });
+    fcChild.stderr?.on("data", (d: Buffer) => { firecrackerStderr += d.toString(); });
     fcChild.on("close", (code, signal) => resolve({
       exitCode: code,
       signal,
-      stdout,
-      stderr,
+      stdout: firecrackerStdout,
+      stderr: firecrackerStderr,
     }));
     fcChild.on("error", (err) => resolve({
       exitCode: null,
       signal: null,
-      stdout,
-      stderr,
+      stdout: firecrackerStdout,
+      stderr: firecrackerStderr,
       processError: err.message,
     }));
   });
@@ -385,6 +386,8 @@ export async function createFirecrackerVM(
         vmBootStage: "vsock_wait",
         rootfsAccessCheck: rootfsReadability.reason,
         cause: err,
+        stdoutTail: firecrackerStdout,
+        stderrTail: firecrackerStderr,
       });
     }
     // Set socket permissions to 0600
@@ -799,16 +802,18 @@ function buildVmBootError(params: {
   rootfsAccessCheck: RootfsReadabilityCheck["reason"] | string;
   processExit?: FirecrackerProcessExit;
   cause?: unknown;
+  stdoutTail?: string;
+  stderrTail?: string;
 }): Error {
-  const { vmId, vmBootStage, rootfsAccessCheck, processExit, cause } = params;
+  const { vmId, vmBootStage, rootfsAccessCheck, processExit, cause, stdoutTail, stderrTail } = params;
   const firecrackerExitCode =
     processExit?.exitCode !== undefined && processExit?.exitCode !== null
       ? String(processExit.exitCode)
       : processExit
         ? "unknown"
         : "not_exited";
-  const firecrackerStdoutTail = processExit ? tailForLog(processExit.stdout) : "";
-  const firecrackerStderrTailRaw = processExit ? tailForLog(processExit.stderr) : "";
+  const firecrackerStdoutTail = tailForLog(processExit?.stdout ?? stdoutTail ?? "");
+  const firecrackerStderrTailRaw = tailForLog(processExit?.stderr ?? stderrTail ?? "");
   const firecrackerDiagnosticTail = firecrackerStderrTailRaw || firecrackerStdoutTail;
   const signal = processExit?.signal ? String(processExit.signal) : undefined;
   const processError = processExit?.processError ? tailForLog(processExit.processError) : undefined;
