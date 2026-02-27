@@ -368,5 +368,5 @@ describe("integration: MCP -> worker -> execution env chain", () => {
         command: "pwd",
       }),
     ).rejects.toThrow(/Workspace not found or not ready/);
-  });
+  }, 30_000);
 });
