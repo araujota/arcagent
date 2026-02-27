@@ -6,7 +6,7 @@ describe("getVMConfig", () => {
     const cfg = getVMConfig("typescript");
     expect(cfg.rootfsImage).toBe("node-20.ext4");
     expect(cfg.vcpuCount).toBe(2);
-    expect(cfg.memSizeMib).toBe(1024);
+    expect(cfg.memSizeMib).toBe(2048);
   });
 
   it('"javascript" returns same config as "typescript" (alias)', () => {

@@ -114,45 +114,71 @@ async function runTaggedBddTests(
   // SECURITY: Inject step definitions into root-owned directory in the VM.
   // The agent user cannot read /run/bdd_steps/ directly.
   const stepDefsDir = "/run/bdd_steps";
-  await vm.exec(`mkdir -p ${stepDefsDir} && chmod 700 ${stepDefsDir}`, 5_000);
+  await execOrThrow(
+    vm,
+    `mkdir -p ${shellQuote(stepDefsDir)} && chmod 700 ${shellQuote(stepDefsDir)}`,
+    5_000,
+    "root",
+  );
 
   const injectStepDefs = async (stepDefsJson: string | undefined, label: string): Promise<string[]> => {
     if (!stepDefsJson) return [];
     const injectedPaths: string[] = [];
-    try {
-      const files = JSON.parse(stepDefsJson);
-      if (!Array.isArray(files)) return injectedPaths;
-      for (const file of files) {
-        if (file.path && file.content) {
-          const targetPath = `${stepDefsDir}/${label}_${file.path.replace(/\//g, "_")}`;
-          if (vm.writeFile) {
-            await vm.writeFile(
-              targetPath,
-              Buffer.from(file.content, "utf-8"),
-              "0400",
-              "root:root",
-            );
-          } else {
-            const b64 = Buffer.from(file.content).toString("base64");
-            await vm.exec(
-              `echo '${b64}' | base64 -d > ${targetPath} && chmod 0400 ${targetPath} && chown root:root ${targetPath}`,
-              5_000,
-            );
-          }
-          injectedPaths.push(targetPath);
-        }
+    const files = JSON.parse(stepDefsJson);
+    if (!Array.isArray(files)) return injectedPaths;
+    for (const file of files) {
+      if (typeof file?.path !== "string" || typeof file?.content !== "string") {
+        continue;
       }
-    } catch (err) {
-      logger.warn(`Failed to inject ${label} step definitions`, { error: String(err) });
+      const targetPath = `${stepDefsDir}/${label}_${file.path.replace(/\//g, "_")}`;
+      const normalizedContent = normalizeStepDefinitionContent(file.content);
+      if (vm.execWithStdin) {
+        const result = await vm.execWithStdin(
+          `cat > ${shellQuote(targetPath)} && chmod 0400 ${shellQuote(targetPath)} && chown root:root ${shellQuote(targetPath)}`,
+          normalizedContent,
+          5_000,
+          "root",
+        );
+        if (result.exitCode !== 0) {
+          throw new Error(`failed writing step defs to ${targetPath}: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`);
+        }
+      } else {
+        const b64 = Buffer.from(normalizedContent, "utf-8").toString("base64");
+        await execOrThrow(
+          vm,
+          `echo ${shellQuote(b64)} | base64 -d > ${shellQuote(targetPath)} && chmod 0400 ${shellQuote(targetPath)} && chown root:root ${shellQuote(targetPath)}`,
+          5_000,
+          "root",
+        );
+      }
+      injectedPaths.push(targetPath);
     }
     return injectedPaths;
   };
 
-  const publicStepDefPaths = await injectStepDefs(stepDefinitionsPublic, "public");
-  const hiddenStepDefPaths = await injectStepDefs(stepDefinitionsHidden, "hidden");
+  let publicStepDefPaths: string[];
+  let hiddenStepDefPaths: string[];
+  try {
+    publicStepDefPaths = await injectStepDefs(stepDefinitionsPublic, "public");
+    hiddenStepDefPaths = await injectStepDefs(stepDefinitionsHidden, "hidden");
+  } catch (err) {
+    logger.error("Failed to inject BDD step definitions", { error: String(err) });
+    return {
+      gate: "test",
+      status: "error",
+      durationMs: Date.now() - start,
+      summary: `Failed to inject BDD step definitions: ${err instanceof Error ? err.message : String(err)}`,
+      details: {
+        exitCode: 1,
+      },
+    };
+  }
 
   const publicSuites = testSuites.filter((ts) => ts.visibility === "public");
   const hiddenSuites = testSuites.filter((ts) => ts.visibility === "hidden");
+  const bddExecUser = (publicStepDefPaths.length > 0 || hiddenStepDefPaths.length > 0)
+    ? "root"
+    : undefined;
 
   // Run public suites first, then hidden
   for (const group of [
@@ -179,6 +205,7 @@ async function runTaggedBddTests(
       const result = await vm.exec(
         `cd /workspace && ${command} 2>&1`,
         timeoutMs,
+        bddExecUser,
       );
 
       const featureName = suite.title;
@@ -214,7 +241,7 @@ async function runTaggedBddTests(
   }
 
   // SECURITY: Delete step definition files immediately after test execution
-  await vm.exec(`rm -rf ${stepDefsDir}`, 5_000).catch(() => {});
+  await vm.exec(`rm -rf ${shellQuote(stepDefsDir)}`, 5_000, "root").catch(() => {});
 
   const durationMs = Date.now() - start;
   const passed = allSteps.filter((s) => s.status === "pass").length;
@@ -235,6 +262,41 @@ async function runTaggedBddTests(
     },
     steps: allSteps,
   };
+}
+
+async function execOrThrow(
+  vm: VMHandle,
+  command: string,
+  timeoutMs: number,
+  user?: string,
+): Promise<void> {
+  const result = await vm.exec(command, timeoutMs, user);
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr || result.stdout || `command failed with exit code ${result.exitCode}`);
+  }
+}
+
+function normalizeStepDefinitionContent(content: string): string {
+  // Some payloads arrive double-escaped ("\\n", "\\\""), which breaks runtime parsing.
+  if (content.includes("\n")) {
+    return content;
+  }
+  if (!content.includes("\\n") && !content.includes("\\r") && !content.includes("\\t")) {
+    return content;
+  }
+  const normalized = content
+    .replace(/\\\\/g, "\\")
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\"/g, "\"");
+
+  // Step definitions may call require("@cucumber/cucumber") from /run paths.
+  // Resolve via the cucumber runner entrypoint so npx-installed modules are found.
+  return normalized.replace(
+    /require\((['"])@cucumber\/cucumber\1\)/g,
+    "require.main.require('@cucumber/cucumber')",
+  );
 }
 
 /**

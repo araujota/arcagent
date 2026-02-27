@@ -5,7 +5,10 @@
  * point-to-point channel between host kernel and guest VM that never touches
  * the network stack. Access is restricted by Unix domain socket permissions.
  *
- * Protocol: length-prefixed JSON framing
+ * Transport:
+ *   1) Firecracker host-initiated vsock handshake over UDS:
+ *      "CONNECT <port>\n" -> "OK <port>\n"
+ *   2) Then ArcAgent length-prefixed JSON framing:
  *   [4 bytes uint32 BE length][JSON payload]
  */
 
@@ -230,21 +233,15 @@ async function sendVsockRequest(
   request: VsockRequest,
   timeoutMs: number,
 ): Promise<VsockResponse> {
+  const socket = await connectToGuestVsockPort(socketPath, VSOCK_PORT);
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       socket.destroy();
       reject(new Error(`vsock request timed out after ${timeoutMs}ms`));
     }, timeoutMs + CONNECT_TIMEOUT_MS);
 
-    const socket: Socket = connect({ path: socketPath }, () => {
-      // Send length-prefixed JSON
-      const payload = Buffer.from(JSON.stringify(request), "utf-8");
-      const header = Buffer.alloc(4);
-      header.writeUInt32BE(payload.length, 0);
-      socket.write(Buffer.concat([header, payload]));
-    });
-
     const chunks: Buffer[] = [];
+    let settled = false;
 
     socket.on("data", (chunk: Buffer) => {
       chunks.push(chunk);
@@ -258,6 +255,7 @@ async function sendVsockRequest(
 
       // We have a full response
       const jsonBuf = buf.subarray(4, 4 + expectedLen);
+      settled = true;
       clearTimeout(timer);
       socket.destroy();
 
@@ -270,6 +268,7 @@ async function sendVsockRequest(
     });
 
     socket.on("error", (err) => {
+      settled = true;
       clearTimeout(timer);
       reject(new Error(`vsock connection error: ${err.message}`));
     });
@@ -278,10 +277,92 @@ async function sendVsockRequest(
       clearTimeout(timer);
       // If we didn't resolve yet, the connection closed prematurely
       const buf = Buffer.concat(chunks);
-      if (buf.length === 0) {
+      if (!settled && buf.length === 0) {
         reject(new Error("vsock connection closed without response"));
       }
     });
+
+    // Send length-prefixed JSON after successful Firecracker handshake.
+    const payload = Buffer.from(JSON.stringify(request), "utf-8");
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(payload.length, 0);
+    socket.write(Buffer.concat([header, payload]));
+  });
+}
+
+/**
+ * Firecracker vsock host-side UDS requires a CONNECT handshake before
+ * guest traffic is tunneled to the requested guest port.
+ */
+async function connectToGuestVsockPort(
+  socketPath: string,
+  guestPort: number,
+): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = connect({ path: socketPath });
+    let settled = false;
+    let handshakeBuf = Buffer.alloc(0);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      socket.removeListener("connect", onConnect);
+      socket.removeListener("data", onData);
+      socket.removeListener("error", onError);
+      socket.removeListener("close", onClose);
+    };
+
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      socket.destroy();
+      reject(err);
+    };
+
+    const onConnect = () => {
+      socket.write(`CONNECT ${guestPort}\n`);
+    };
+
+    const onData = (chunk: Buffer) => {
+      handshakeBuf = Buffer.concat([handshakeBuf, chunk]);
+      const newlineIndex = handshakeBuf.indexOf(0x0a); // '\n'
+      if (newlineIndex === -1) return;
+
+      const line = handshakeBuf
+        .subarray(0, newlineIndex)
+        .toString("utf-8")
+        .trim();
+      const remainder = handshakeBuf.subarray(newlineIndex + 1);
+      if (!line.startsWith("OK ")) {
+        fail(new Error(`vsock handshake rejected: ${line || "<empty>"}`));
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      if (remainder.length > 0) {
+        // Preserve bytes that arrived immediately after the handshake.
+        socket.unshift(remainder);
+      }
+      resolve(socket);
+    };
+
+    const onError = (err: Error) => {
+      fail(new Error(`vsock connection error: ${err.message}`));
+    };
+
+    const onClose = () => {
+      fail(new Error("vsock connection closed during handshake"));
+    };
+
+    const timer = setTimeout(() => {
+      fail(new Error(`vsock handshake timed out after ${CONNECT_TIMEOUT_MS}ms`));
+    }, CONNECT_TIMEOUT_MS);
+
+    socket.on("connect", onConnect);
+    socket.on("data", onData);
+    socket.on("error", onError);
+    socket.on("close", onClose);
   });
 }
 
@@ -318,22 +399,8 @@ export class VsockPool {
       socket.destroy();
     }
 
-    // Create a new connection
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`VsockPool: connect timeout for ${socketPath}`));
-      }, CONNECT_TIMEOUT_MS);
-
-      const socket = connect({ path: socketPath }, () => {
-        clearTimeout(timer);
-        resolve(socket);
-      });
-
-      socket.on("error", (err) => {
-        clearTimeout(timer);
-        reject(new Error(`VsockPool: connect error: ${err.message}`));
-      });
-    });
+    // Create a new connection with Firecracker CONNECT handshake.
+    return connectToGuestVsockPort(socketPath, VSOCK_PORT);
   }
 
   /**

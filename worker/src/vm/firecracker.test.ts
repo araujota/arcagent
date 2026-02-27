@@ -424,6 +424,47 @@ describe("createFirecrackerVM", () => {
     ).rejects.toThrow(/firecrackerExitCode=1/);
   });
 
+  it("terminates a launched firecracker process when vsock readiness fails", async () => {
+    mockWaitForVsock.mockRejectedValueOnce(new Error("Vsock not reachable"));
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => { throw new Error("ESRCH"); });
+
+    mockExecFile.mockImplementation(
+      (cmd: string, args: string[], optsOrCb?: unknown, cb?: Function) => {
+        const callback = typeof optsOrCb === "function" ? optsOrCb : cb;
+        if (cmd === "debugfs") {
+          if (callback) callback(null, { stdout: "Inode: 42\nSize: 2457600\n", stderr: "" });
+          return createMockChildProcess();
+        }
+        if (cmd === "/usr/local/bin/jailer") {
+          const child: Record<string, unknown> = {
+            pid: 54321,
+            stdout: { on(_event: string, _handler: Function) { return this; } },
+            stderr: { on(_event: string, _handler: Function) { return this; } },
+            on(_event: string, _handler: Function) {
+              // Intentionally never exits; cleanup must attempt process.kill.
+              return child;
+            },
+          };
+          return child;
+        }
+        if (callback) callback(null, { stdout: "", stderr: "" });
+        return createMockChildProcess();
+      },
+    );
+
+    await expect(
+      createFirecrackerVM({
+        jobId: "job-1",
+        rootfsImage: "node-20.ext4",
+        vcpuCount: 2,
+        memSizeMib: 1024,
+      }),
+    ).rejects.toThrow(/Vsock not reachable/);
+
+    expect(killSpy).toHaveBeenCalledWith(54321, "SIGTERM");
+    killSpy.mockRestore();
+  });
+
   it("returns VMHandle with exec/writeFile closures that delegate to vsock", async () => {
     const handle = await createFirecrackerVM({
       jobId: "job-1",

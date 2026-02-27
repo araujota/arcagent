@@ -7,6 +7,7 @@ vi.mock("../index", () => ({
 
 import { runTestGate } from "./testGate";
 import type { TestSuiteInput } from "../queue/jobQueue";
+import type { VMHandle } from "../vm/firecracker";
 
 describe("runTestGate", () => {
   it("TypeScript: detects vitest/jest, exit 0 -> 'pass'", async () => {
@@ -125,6 +126,63 @@ describe("runTestGate", () => {
     // Should have an rm -rf call for step definitions cleanup
     const cleanupCall = execCalls.find((c) => c.includes("rm -rf") && c.includes("bdd_steps"));
     expect(cleanupCall).toBeDefined();
+  });
+
+  it("BDD: runs cucumber as root when injected step definitions are present", async () => {
+    const vm = mockVM(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const suites: TestSuiteInput[] = [{
+      id: "s1",
+      title: "Test",
+      gherkinContent: "Feature: X\n  Scenario: Y\n    Given Z",
+      visibility: "public",
+    }];
+    await runTestGate(
+      vm,
+      "typescript",
+      60_000,
+      null,
+      suites,
+      JSON.stringify([{ path: "steps/public.js", content: "module.exports = {};" }]),
+      undefined,
+    );
+
+    const calls = (vm.exec as ReturnType<typeof vi.fn>).mock.calls;
+    const cucumberCall = calls.find((c) => String(c[0]).includes("cucumber-js"));
+    expect(cucumberCall).toBeDefined();
+    expect(cucumberCall?.[2]).toBe("root");
+  });
+
+  it("BDD: decodes double-escaped step definition content before injection", async () => {
+    const exec = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const execWithStdin = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const vm: VMHandle = {
+      vmId: "vm-test",
+      jobId: "job-test",
+      guestIp: "10.0.0.2",
+      exec,
+      execWithStdin,
+    };
+    const suites: TestSuiteInput[] = [{
+      id: "s1",
+      title: "Test",
+      gherkinContent: "Feature: X\n  Scenario: Y\n    Given Z",
+      visibility: "public",
+    }];
+
+    await runTestGate(
+      vm,
+      "typescript",
+      60_000,
+      null,
+      suites,
+      JSON.stringify([{ path: "steps/public.js", content: "const { Given } = require('@cucumber/cucumber');\\\\nline2" }]),
+      undefined,
+    );
+
+    expect(execWithStdin).toHaveBeenCalled();
+    const stdinPayload = execWithStdin.mock.calls[0]?.[1] as string;
+    expect(stdinPayload).toContain("require.main.require('@cucumber/cucumber')");
+    expect(stdinPayload).toContain("\nline2");
   });
 
   it("Python: uses pytest or unittest", async () => {

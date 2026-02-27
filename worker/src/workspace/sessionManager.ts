@@ -409,8 +409,10 @@ export async function extractDiff(
   const statStart = output.indexOf("---STAT---\n");
   const namesStart = output.indexOf("---NAMES---\n");
 
+  // Preserve exact patch bytes (including trailing newline) so `git apply`
+  // receives a syntactically valid unified diff.
   const diffPatch = diffStart >= 0 && statStart >= 0
-    ? output.substring(diffStart + "---DIFF---\n".length, statStart).trimEnd()
+    ? output.substring(diffStart + "---DIFF---\n".length, statStart)
     : "";
   const diffStat = statStart >= 0 && namesStart >= 0
     ? output.substring(statStart + "---STAT---\n".length, namesStart).trimEnd()

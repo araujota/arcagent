@@ -263,7 +263,7 @@ describe("diff-based verification VM lifecycle", () => {
 
     // writeFile should have been called with the patch
     expect(mockVM.writeFile).toHaveBeenCalledWith(
-      "/tmp/agent.patch",
+      "/workspace/.arcagent/agent.patch",
       expect.any(Buffer),
       "0644",
       "agent:agent",
@@ -343,7 +343,7 @@ describe("worker-VM communication via exec", () => {
     await processVerificationFromDiff(job);
 
     expect(mockVM.writeFile).toHaveBeenCalledWith(
-      "/tmp/agent.patch",
+      "/workspace/.arcagent/agent.patch",
       Buffer.from(patchContent),
       "0644",
       "agent:agent",

@@ -3,6 +3,8 @@ import { DiffContext } from "./diffContext";
 import { logger } from "../index";
 import { sanitizeShellArg } from "./shellSanitize";
 
+const WORKTREE_REF = "WORKTREE";
+
 /**
  * Compute the diff between the base commit and the agent's commit inside the VM.
  *
@@ -21,11 +23,17 @@ export async function computeDiff(
   try {
     // Sanitize commit SHAs before shell interpolation
     const safeBase = sanitizeShellArg(baseCommitSha, "commitSha", "baseCommitSha");
-    const safeAgent = sanitizeShellArg(agentCommitSha, "commitSha", "agentCommitSha");
+    const useWorkingTree = agentCommitSha === WORKTREE_REF;
+    const safeAgent = useWorkingTree
+      ? null
+      : sanitizeShellArg(agentCommitSha, "commitSha", "agentCommitSha");
 
     // Get list of changed files
+    const nameDiffSpec = useWorkingTree
+      ? `${safeBase} --`
+      : `${safeBase}..${safeAgent}`;
     const nameResult = await vm.exec(
-      `cd /workspace && git diff --name-only ${safeBase}..${safeAgent} 2>&1`,
+      `cd /workspace && git diff --name-only ${nameDiffSpec} 2>&1`,
       30_000,
     );
 
@@ -52,8 +60,11 @@ export async function computeDiff(
     }
 
     // Get unified diff with zero context lines for precise line ranges
+    const unifiedDiffSpec = useWorkingTree
+      ? `${safeBase} --`
+      : `${safeBase}..${safeAgent}`;
     const diffResult = await vm.exec(
-      `cd /workspace && git diff -U0 ${safeBase}..${safeAgent} 2>&1`,
+      `cd /workspace && git diff -U0 ${unifiedDiffSpec} 2>&1`,
       30_000,
     );
 

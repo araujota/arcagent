@@ -431,7 +431,7 @@ describe("Flow 2: Verification job lifecycle (Convex → worker → VM → gates
 
     // 1. Patch was written to VM
     expect(mockVM.writeFile).toHaveBeenCalledWith(
-      "/tmp/agent.patch",
+      "/workspace/.arcagent/agent.patch",
       Buffer.from(diffPatch),
       "0644",
       "agent:agent",
@@ -461,6 +461,7 @@ describe("Flow 2: Verification job lifecycle (Convex → worker → VM → gates
       exec: vi.fn()
         .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })  // git clone
         .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })  // chown
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })  // mkdir/chown patch dir
         .mockResolvedValueOnce({                                          // git apply FAILS
           stdout: "",
           stderr: "error: patch failed: src/index.ts:1\nerror: src/index.ts: patch does not apply",
@@ -649,7 +650,7 @@ describe("Flow 3: Workspace to verification handoff", () => {
 
     // Patch was applied to the clean VM
     expect(verifyVM.writeFile).toHaveBeenCalledWith(
-      "/tmp/agent.patch",
+      "/workspace/.arcagent/agent.patch",
       expect.any(Buffer),
       "0644",
       "agent:agent",
@@ -786,14 +787,14 @@ describe("Flow 5: Worker ↔ VM communication patterns", () => {
     const patchContent = "diff --git a/file.ts b/file.ts\n+new code\n";
 
     await mockVM.writeFile(
-      "/tmp/agent.patch",
+      "/workspace/.arcagent/agent.patch",
       Buffer.from(patchContent),
       "0644",
       "agent:agent",
     );
 
     expect(mockVM.writeFile).toHaveBeenCalledWith(
-      "/tmp/agent.patch",
+      "/workspace/.arcagent/agent.patch",
       Buffer.from(patchContent),
       "0644",
       "agent:agent",

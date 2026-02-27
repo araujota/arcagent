@@ -152,6 +152,8 @@ export async function createFirecrackerVM(
   let encryptedOverlay: EncryptedOverlayHandle | null = null;
   let vmSshKeyPath: string | undefined;
   let configPath: string | undefined;
+  let firecrackerPid: number | undefined;
+  let vmProcessRef: Promise<FirecrackerProcessExit> | undefined;
 
   try {
 
@@ -318,7 +320,7 @@ export async function createFirecrackerVM(
       "--no-api",
     ];
   const fcChild = execFile(launchCmd, launchArgs);
-  const firecrackerPid = fcChild.pid;
+  firecrackerPid = fcChild.pid;
 
   logger.info("Launching Firecracker", {
     vmId,
@@ -334,7 +336,7 @@ export async function createFirecrackerVM(
 
   let firecrackerStdout = "";
   let firecrackerStderr = "";
-  const vmProcessRef = new Promise<FirecrackerProcessExit>((resolve) => {
+  vmProcessRef = new Promise<FirecrackerProcessExit>((resolve) => {
     fcChild.stdout?.on("data", (d: Buffer) => { firecrackerStdout += d.toString(); });
     fcChild.stderr?.on("data", (d: Buffer) => { firecrackerStderr += d.toString(); });
     fcChild.on("close", (code, signal) => resolve({
@@ -357,7 +359,7 @@ export async function createFirecrackerVM(
     try {
       const bootState = await Promise.race([
         waitForVsock(vsockSocketPath, vmId).then(() => ({ state: "ready" as const })),
-        vmProcessRef.then((exit) => ({ state: "exited" as const, exit })),
+        vmProcessRef!.then((exit) => ({ state: "exited" as const, exit })),
       ]);
       if (bootState.state === "exited") {
         throw buildVmBootError({
@@ -371,7 +373,7 @@ export async function createFirecrackerVM(
       if (err instanceof Error && err.message.startsWith("VM boot failed for")) {
         throw err;
       }
-      const earlyExit = await waitForProcessExitBriefly(vmProcessRef, 200);
+      const earlyExit = await waitForProcessExitBriefly(vmProcessRef!, 200);
       if (earlyExit) {
         throw buildVmBootError({
           vmId,
@@ -469,6 +471,9 @@ export async function createFirecrackerVM(
 
   } catch (err) {
     // Best-effort cleanup for partial VM creation failures.
+    if (firecrackerPid) {
+      await terminateFirecrackerProcess(firecrackerPid, vmProcessRef).catch(() => {});
+    }
     if (egressProxy) {
       await removeProxyRedirect(tapDevice, egressProxy.port).catch(() => {});
       await stopEgressProxy(egressProxy).catch(() => {});
@@ -796,6 +801,33 @@ async function waitForProcessExitBriefly(
   ]);
 }
 
+async function terminateFirecrackerProcess(
+  firecrackerPid: number,
+  processRef?: Promise<FirecrackerProcessExit>,
+): Promise<void> {
+  const alreadyExited = processRef ? await waitForProcessExitBriefly(processRef, 0) : null;
+  if (alreadyExited) return;
+
+  try {
+    process.kill(firecrackerPid, "SIGTERM");
+  } catch {
+    return;
+  }
+
+  if (processRef) {
+    const exitedAfterTerm = await waitForProcessExitBriefly(processRef, 500);
+    if (exitedAfterTerm) return;
+  } else {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  try {
+    process.kill(firecrackerPid, "SIGKILL");
+  } catch {
+    // already gone
+  }
+}
+
 function buildVmBootError(params: {
   vmId: string;
   vmBootStage: "rootfs_access_check" | "jailer_launch" | "vsock_wait";
@@ -847,8 +879,8 @@ async function applyEgressFiltering(tapDevice: string): Promise<void> {
   // TCP 80 (HTTP) is dropped to prevent MitM on package downloads.
   // All package managers and git support HTTPS.
   const rules: string[][] = [
-    // Allow established/related connections back in
-    ["FORWARD", "-i", tapDevice, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+    // Allow return traffic from allowed outbound flows back into the VM.
+    ["FORWARD", "-o", tapDevice, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
     // Allow DNS (UDP 53)
     ["FORWARD", "-i", tapDevice, "-p", "udp", "--dport", "53", "-j", "ACCEPT"],
     // Allow HTTPS (TCP 443)
@@ -871,7 +903,7 @@ async function removeEgressFiltering(tapDevice: string): Promise<void> {
   // Remove all FORWARD rules referencing this TAP device.
   // Run multiple times since there are multiple rules.
   for (let i = 0; i < 5; i++) {
-    await execFileAsync("iptables", ["-D", "FORWARD", "-i", tapDevice, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"]).catch(() => {});
+    await execFileAsync("iptables", ["-D", "FORWARD", "-o", tapDevice, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"]).catch(() => {});
     await execFileAsync("iptables", ["-D", "FORWARD", "-i", tapDevice, "-p", "udp", "--dport", "53", "-j", "ACCEPT"]).catch(() => {});
     await execFileAsync("iptables", ["-D", "FORWARD", "-i", tapDevice, "-p", "tcp", "--dport", "443", "-j", "ACCEPT"]).catch(() => {});
     await execFileAsync("iptables", ["-D", "FORWARD", "-i", tapDevice, "-j", "DROP"]).catch(() => {});
