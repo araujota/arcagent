@@ -206,8 +206,8 @@ validate_rootfs_image() {
     echo "ERROR: Rootfs validation failed for $image_path: /workspace missing"
     return 1
   fi
-  workspace_uid="$(echo "$workspace_stat" | sed -n 's/.*User:[[:space:]]*\\([0-9]\\+\\).*/\\1/p' | head -1)"
-  workspace_gid="$(echo "$workspace_stat" | sed -n 's/.*Group:[[:space:]]*\\([0-9]\\+\\).*/\\1/p' | head -1)"
+  workspace_uid="$(echo "$workspace_stat" | sed -n 's/.*User:[[:space:]]*\([0-9]\+\).*/\1/p' | head -1)"
+  workspace_gid="$(echo "$workspace_stat" | sed -n 's/.*Group:[[:space:]]*\([0-9]\+\).*/\1/p' | head -1)"
   if [ "$workspace_uid" != "1000" ] || [ "$workspace_gid" != "1000" ]; then
     echo "ERROR: Rootfs validation failed for $image_path: /workspace ownership is ${workspace_uid}:${workspace_gid}, expected 1000:1000"
     return 1

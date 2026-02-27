@@ -61,7 +61,7 @@ for img in "${ROOTFS_IMAGES[@]}"; do
   fi
 
   stat_out="$(debugfs -R "stat /usr/local/bin/vsock-agent" "$ext4_path" 2>/dev/null || true)"
-  size="$(echo "$stat_out" | sed -n 's/.*Size:[[:space:]]*\\([0-9]\\+\\).*/\\1/p' | head -1)"
+  size="$(echo "$stat_out" | sed -n 's/.*Size:[[:space:]]*\([0-9]\+\).*/\1/p' | head -1)"
   if [ -z "$size" ] || [ "$size" -lt 32768 ]; then
     echo "FAIL: [$img] missing/invalid /usr/local/bin/vsock-agent (size=$size)"
     exit 1
@@ -74,8 +74,8 @@ for img in "${ROOTFS_IMAGES[@]}"; do
   fi
 
   workspace_stat="$(debugfs -R "stat /workspace" "$ext4_path" 2>/dev/null || true)"
-  workspace_uid="$(echo "$workspace_stat" | sed -n 's/.*User:[[:space:]]*\\([0-9]\\+\\).*/\\1/p' | head -1)"
-  workspace_gid="$(echo "$workspace_stat" | sed -n 's/.*Group:[[:space:]]*\\([0-9]\\+\\).*/\\1/p' | head -1)"
+  workspace_uid="$(echo "$workspace_stat" | sed -n 's/.*User:[[:space:]]*\([0-9]\+\).*/\1/p' | head -1)"
+  workspace_gid="$(echo "$workspace_stat" | sed -n 's/.*Group:[[:space:]]*\([0-9]\+\).*/\1/p' | head -1)"
   if [ "$workspace_uid" != "1000" ] || [ "$workspace_gid" != "1000" ]; then
     echo "FAIL: [$img] /workspace ownership is ${workspace_uid}:${workspace_gid}, expected 1000:1000"
     exit 1
