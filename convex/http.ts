@@ -1620,21 +1620,60 @@ http.route({
     const agentId = auth.authMethod === "api_key" ? auth.userId! : bodyAgentId;
     if (!agentId || !bountyId) return mcpError("Missing agentId or bountyId");
 
-    const ws = await ctx.runQuery(internal.devWorkspaces.getActiveByAgentAndBounty, {
+    const claim = await ctx.runQuery(internal.bountyClaims.getByAgentAndBounty, {
       agentId: agentId as Id<"users">,
       bountyId: bountyId as Id<"bounties">,
     });
 
+    if (!claim) {
+      return mcpJson({ found: false, reason: "no_active_claim" });
+    }
+
+    let ws = await ctx.runQuery(internal.devWorkspaces.getByClaimId, {
+      claimId: claim._id,
+    });
+
     if (!ws) {
-      return mcpJson({ found: false });
+      try {
+        await ctx.runMutation(internal.bountyClaims.ensureWorkspaceForActiveClaim, {
+          claimId: claim._id,
+        });
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "Failed to create workspace for active claim";
+        return mcpJson({
+          found: false,
+          reason: "workspace_provision_failed",
+          claimId: claim._id,
+          claimStatus: claim.status,
+          expiresAt: claim.expiresAt,
+          message,
+        });
+      }
+
+      ws = await ctx.runQuery(internal.devWorkspaces.getByClaimId, {
+        claimId: claim._id,
+      });
+    }
+
+    if (!ws) {
+      return mcpJson({
+        found: false,
+        reason: "workspace_not_yet_created",
+        claimId: claim._id,
+        claimStatus: claim.status,
+        expiresAt: claim.expiresAt,
+      });
     }
 
     return mcpJson({
       found: true,
+      claimId: claim._id,
       workspaceId: ws.workspaceId,
       workerHost: ws.workerHost,
       status: ws.status,
       expiresAt: ws.expiresAt,
+      errorMessage: ws.errorMessage,
     });
   }),
 });

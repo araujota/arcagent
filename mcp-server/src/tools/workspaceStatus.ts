@@ -46,14 +46,27 @@ export function registerWorkspaceStatus(server: McpServer): void {
 
       const ws = await getWorkspaceForAgent(user.userId, args.bountyId);
       if (!ws.found) {
+        const lines: string[] = ["No workspace is currently available for this bounty."];
+        if (ws.reason === "no_active_claim") {
+          lines.push(
+            "Use `claim_bounty` to claim the bounty — a workspace will be provisioned automatically.",
+          );
+        } else {
+          if (ws.claimId) {
+            lines.push(`Active claim detected: \`${ws.claimId}\`.`);
+          }
+          if (ws.reason === "workspace_provision_failed" && ws.message) {
+            lines.push(`Provisioning error: ${ws.message}`);
+          } else {
+            lines.push("If you just claimed this bounty, workspace provisioning has been (re)triggered.");
+          }
+          lines.push("Check again in 10-20 seconds with `workspace_status`.");
+        }
         return {
           content: [
             {
               type: "text" as const,
-              text:
-                "No workspace found for this bounty.\n\n" +
-                "Use `claim_bounty` to claim the bounty — a workspace will be provisioned automatically.\n" +
-                "Then use `workspace_status` to check when it's ready (~30-90 seconds).",
+              text: lines.join("\n\n"),
             },
           ],
         };
@@ -85,6 +98,9 @@ export function registerWorkspaceStatus(server: McpServer): void {
 
       if (ws.status !== "ready") {
         parts.push(`\nWorkspace is in status: ${ws.status}`);
+        if (ws.status === "error" && ws.errorMessage) {
+          parts.push(`- **Last error:** ${ws.errorMessage}`);
+        }
         return {
           content: [{ type: "text" as const, text: parts.join("\n") }],
         };

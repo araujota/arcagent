@@ -185,6 +185,76 @@ export const release = internalMutation({
   },
 });
 
+export const ensureWorkspaceForActiveClaim = internalMutation({
+  args: {
+    claimId: v.id("bountyClaims"),
+  },
+  handler: async (ctx, args) => {
+    const claim = await ctx.db.get(args.claimId);
+    if (!claim) throw new Error("Claim not found");
+    if (claim.status !== "active") throw new Error("Claim is not active");
+
+    const existingWorkspace = await ctx.db
+      .query("devWorkspaces")
+      .withIndex("by_claimId", (q) => q.eq("claimId", args.claimId))
+      .first();
+
+    if (existingWorkspace) {
+      return {
+        created: false,
+        workspaceId: existingWorkspace.workspaceId,
+        status: existingWorkspace.status,
+      };
+    }
+
+    const bounty = await ctx.db.get(claim.bountyId);
+    if (!bounty) throw new Error("Bounty not found");
+
+    const repoConn = await ctx.db
+      .query("repoConnections")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", claim.bountyId))
+      .first();
+
+    const repositoryUrl = repoConn?.repositoryUrl ?? bounty.repositoryUrl ?? "";
+    if (!repositoryUrl) {
+      throw new Error("Cannot create workspace: repository URL is not configured for this bounty");
+    }
+
+    const workspaceId = crypto.randomUUID();
+    const wsDocId = await ctx.db.insert("devWorkspaces", {
+      claimId: claim._id,
+      bountyId: claim.bountyId,
+      agentId: claim.agentId,
+      workspaceId,
+      workerHost: "",
+      status: "provisioning",
+      language: repoConn?.languages?.[0] ?? "typescript",
+      repositoryUrl,
+      baseCommitSha: repoConn?.commitSha ?? "",
+      createdAt: Date.now(),
+      expiresAt: claim.expiresAt,
+    });
+
+    await ctx.scheduler.runAfter(0, internal.devWorkspaces.provisionWorkspace, {
+      workspaceDocId: wsDocId,
+      workspaceId,
+      claimId: claim._id,
+      bountyId: claim.bountyId,
+      agentId: claim.agentId,
+      repositoryUrl,
+      commitSha: repoConn?.commitSha ?? "",
+      language: repoConn?.languages?.[0] ?? "typescript",
+      expiresAt: claim.expiresAt,
+    });
+
+    return {
+      created: true,
+      workspaceId,
+      status: "provisioning",
+    };
+  },
+});
+
 export const expireStale = internalMutation({
   args: {},
   handler: async (ctx) => {

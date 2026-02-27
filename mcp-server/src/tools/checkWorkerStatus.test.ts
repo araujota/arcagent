@@ -47,15 +47,12 @@ describe("check_worker_status tool", () => {
   it("returns error when no workspace is found", async () => {
     mockGetWorkspaceForAgent.mockResolvedValueOnce({
       found: false,
-      workspaceId: "",
-      workerHost: "",
-      status: "missing",
-      expiresAt: 0,
+      reason: "workspace_not_yet_created",
     });
 
     const result = await runWithAuth(testUser, () => handler({ bountyId: "bounty_1" }));
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("No workspace found");
+    expect(result.content[0].text).toContain("Workspace is not ready yet");
   });
 
   it("pings worker /api/health and returns status details", async () => {

@@ -12,17 +12,29 @@ import { LruTtlCache } from "../lib/lruCache";
 // Types
 // ---------------------------------------------------------------------------
 
-interface WorkspaceLookup {
-  found: boolean;
-  workspaceId: string;
-  workerHost: string;
-  status: string;
-  expiresAt: number;
-}
+export type WorkspaceLookup =
+  | {
+      found: false;
+      reason?: string;
+      message?: string;
+      claimId?: string;
+      claimStatus?: string;
+      expiresAt?: number;
+    }
+  | {
+      found: true;
+      workspaceId: string;
+      workerHost: string;
+      status: string;
+      expiresAt: number;
+      errorMessage?: string;
+      claimId?: string;
+    };
 
 interface CacheEntry {
   data: WorkspaceLookup;
   fetchedAt: number;
+  ttlMs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -37,6 +49,14 @@ function cacheKey(agentId: string, bountyId: string): string {
   return `${agentId}:${bountyId}`;
 }
 
+function cacheTtlForLookup(data: WorkspaceLookup): number {
+  if (!data.found) return 0;
+  if (data.status === "provisioning") return 5_000;
+  if (data.status === "error") return 10_000;
+  if (data.status === "destroyed") return 30_000;
+  return TTL_MS;
+}
+
 /**
  * Get workspace info for an agent + bounty pair.
  * Returns cached result if fresh, otherwise fetches from Convex.
@@ -48,7 +68,7 @@ export async function getWorkspaceForAgent(
   const key = cacheKey(agentId, bountyId);
   const cached = cache.get(key);
 
-  if (cached && Date.now() - cached.fetchedAt < TTL_MS) {
+  if (cached && Date.now() - cached.fetchedAt < cached.ttlMs) {
     return cached.data;
   }
 
@@ -57,7 +77,10 @@ export async function getWorkspaceForAgent(
     { agentId, bountyId },
   );
 
-  cache.set(key, { data, fetchedAt: Date.now() });
+  const ttlMs = cacheTtlForLookup(data);
+  if (ttlMs > 0) {
+    cache.set(key, { data, fetchedAt: Date.now(), ttlMs });
+  }
   return data;
 }
 

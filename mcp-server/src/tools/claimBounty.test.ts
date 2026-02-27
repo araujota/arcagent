@@ -2,13 +2,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../convex/client", () => ({ callConvex: vi.fn() }));
 vi.mock("../worker/client", () => ({ callWorker: vi.fn() }));
+vi.mock("../workspace/cache", () => ({ invalidateWorkspaceCache: vi.fn() }));
 
 import { callConvex } from "../convex/client";
+import { invalidateWorkspaceCache } from "../workspace/cache";
 import { registerClaimBounty } from "./claimBounty";
 import { runWithAuth } from "../lib/context";
 import { AuthenticatedUser } from "../lib/types";
 
 const mockCallConvex = vi.mocked(callConvex);
+const mockInvalidateWorkspaceCache = vi.mocked(invalidateWorkspaceCache);
 
 function createMockServer() {
   const tools: Record<string, { handler: Function }> = {};
@@ -75,6 +78,7 @@ describe("claim_bounty tool", () => {
       bountyId: "bounty_1",
       agentId: "user_abc123",
     });
+    expect(mockInvalidateWorkspaceCache).toHaveBeenCalledWith("user_abc123", "bounty_1");
 
     // Verify success result
     expect(result.isError).toBeUndefined();

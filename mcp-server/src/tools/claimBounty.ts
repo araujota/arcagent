@@ -4,6 +4,7 @@ import { callConvex } from "../convex/client";
 import { ConvexBountyDetails } from "../lib/types";
 import { registerTool } from "../lib/toolHelper";
 import { getAuthUser, requireScope } from "../lib/context";
+import { invalidateWorkspaceCache } from "../workspace/cache";
 
 export function registerClaimBounty(server: McpServer): void {
   registerTool(
@@ -53,6 +54,7 @@ export function registerClaimBounty(server: McpServer): void {
       }
 
       const { claimId } = claimResult;
+      invalidateWorkspaceCache(agentId, args.bountyId);
       let text = `# Bounty Claimed Successfully\n\n`;
       text += `**Claim ID:** ${claimId}\n`;
       text += `**Bounty:** ${bounty.title}\n`;
