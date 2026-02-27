@@ -376,8 +376,8 @@ export const runVerificationFromDiff = internalAction({
     sourceWorkspaceId: v.string(),
   },
   handler: async (ctx, args) => {
-    let workerHost = process.env.WORKER_API_URL;
-    let workerAuthToken = process.env.WORKER_SHARED_SECRET;
+    const workerHost = process.env.WORKER_API_URL;
+    const workerAuthToken = process.env.WORKER_SHARED_SECRET;
 
     if (!workerHost || !workerAuthToken) {
       const message = "Verification worker is not configured (WORKER_API_URL missing).";
@@ -654,8 +654,8 @@ export const runVerification = internalAction({
     bountyId: v.id("bounties"),
   },
   handler: async (ctx, args) => {
-    let workerHost = process.env.WORKER_API_URL;
-    let workerAuthToken = process.env.WORKER_SHARED_SECRET;
+    const workerHost = process.env.WORKER_API_URL;
+    const workerAuthToken = process.env.WORKER_SHARED_SECRET;
 
     if (!workerHost || !workerAuthToken) {
       const message = "Verification worker is not configured (WORKER_API_URL missing).";

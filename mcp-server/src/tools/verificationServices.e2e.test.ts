@@ -74,6 +74,7 @@ describe("e2e: redis + sonar/snyk gates + mcp result relay", () => {
   let tempRoot = "";
   const originalPath = process.env.PATH ?? "";
   const originalProcessBackendPath = process.env.PROCESS_BACKEND_PATH ?? "";
+  const originalAllowUnsafeProcessBackend = process.env.ALLOW_UNSAFE_PROCESS_BACKEND;
   let queue: Awaited<ReturnType<typeof import("../../../worker/src/queue/jobQueue").createVerificationQueue>>["queue"];
   let worker: Awaited<ReturnType<typeof import("../../../worker/src/queue/jobQueue").createVerificationQueue>>["worker"];
   let queueEvents: Awaited<ReturnType<typeof import("../../../worker/src/queue/jobQueue").createVerificationQueue>>["queueEvents"];
@@ -289,6 +290,7 @@ exit 0
     process.env.REDIS_URL = `redis://127.0.0.1:${redisPort}`;
     process.env.CONVEX_URL = convexBaseUrl;
     process.env.WORKER_EXECUTION_BACKEND = "process";
+    process.env.ALLOW_UNSAFE_PROCESS_BACKEND = "true";
     process.env.SNYK_TOKEN = "snyk-token-e2e";
     process.env.SONARQUBE_URL = sonarBaseUrl;
     process.env.SONARQUBE_TOKEN = "sonar-token-e2e";
@@ -392,6 +394,11 @@ exit 0
 
     process.env.PATH = originalPath;
     process.env.PROCESS_BACKEND_PATH = originalProcessBackendPath;
+    if (originalAllowUnsafeProcessBackend === undefined) {
+      delete process.env.ALLOW_UNSAFE_PROCESS_BACKEND;
+    } else {
+      process.env.ALLOW_UNSAFE_PROCESS_BACKEND = originalAllowUnsafeProcessBackend;
+    }
   }, 120_000);
 
   it("runs verification through redis-backed worker and posts gate payload including snyk/sonarqube", () => {
