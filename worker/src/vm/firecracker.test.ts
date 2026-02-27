@@ -118,16 +118,18 @@ vi.mock("./vmConfig", () => ({
 // ---------------------------------------------------------------------------
 // Mock node:fs/promises (used inside firecracker.ts via dynamic import)
 // ---------------------------------------------------------------------------
-const { mockFsWriteFile, mockFsChmod, mockFsUnlink } = vi.hoisted(() => ({
+const { mockFsWriteFile, mockFsChmod, mockFsUnlink, mockFsStat } = vi.hoisted(() => ({
   mockFsWriteFile: vi.fn(),
   mockFsChmod: vi.fn(),
   mockFsUnlink: vi.fn(),
+  mockFsStat: vi.fn(),
 }));
 
 vi.mock("node:fs/promises", () => ({
   writeFile: mockFsWriteFile,
   chmod: mockFsChmod,
   unlink: mockFsUnlink,
+  stat: mockFsStat,
 }));
 
 // ---------------------------------------------------------------------------
@@ -196,6 +198,11 @@ describe("createFirecrackerVM", () => {
     mockFsWriteFile.mockResolvedValue(undefined);
     mockFsChmod.mockResolvedValue(undefined);
     mockFsUnlink.mockResolvedValue(undefined);
+    mockFsStat.mockResolvedValue({
+      mode: 0o100660,
+      uid: 1001,
+      gid: 1001,
+    });
     mockVsockExec.mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
     mockVsockExecWithStdin.mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
     mockVsockWriteFile.mockResolvedValue(undefined);
@@ -351,6 +358,70 @@ describe("createFirecrackerVM", () => {
       expect.stringMatching(/fc-vsock-vm-abcd1234\.sock$/),
       "vm-abcd1234",
     );
+  });
+
+  it("fails fast with EACCES rootfs before launching jailer when jailer cannot read overlay", async () => {
+    mockFsStat.mockResolvedValueOnce({
+      mode: 0o100600,
+      uid: 0,
+      gid: 0,
+    });
+
+    await expect(
+      createFirecrackerVM({
+        jobId: "job-1",
+        rootfsImage: "node-20.ext4",
+        vcpuCount: 2,
+        memSizeMib: 1024,
+      }),
+    ).rejects.toThrow(/EACCES rootfs/);
+
+    const jailerCalls = findExecCalls("/usr/local/bin/jailer");
+    expect(jailerCalls).toHaveLength(0);
+  });
+
+  it("surfaces firecracker exit code and stderr tail when VM exits before vsock readiness", async () => {
+    mockWaitForVsock.mockImplementationOnce(
+      () => new Promise<void>(() => {}),
+    );
+
+    mockExecFile.mockImplementation(
+      (cmd: string, args: string[], optsOrCb?: unknown, cb?: Function) => {
+        const callback = typeof optsOrCb === "function" ? optsOrCb : cb;
+        if (cmd === "debugfs") {
+          if (callback) callback(null, { stdout: "Inode: 42\nSize: 2457600\n", stderr: "" });
+          return createMockChildProcess();
+        }
+        if (cmd === "/usr/local/bin/jailer") {
+          const child: Record<string, unknown> = {
+            pid: 12345,
+            stdout: { on(_event: string, _handler: Function) { return this; } },
+            stderr: {
+              on(event: string, handler: Function) {
+                if (event === "data") queueMicrotask(() => handler(Buffer.from("open rootfs failed")));
+                return this;
+              },
+            },
+            on(event: string, handler: Function) {
+              if (event === "close") queueMicrotask(() => handler(1, null));
+              return child;
+            },
+          };
+          return child;
+        }
+        if (callback) callback(null, { stdout: "", stderr: "" });
+        return createMockChildProcess();
+      },
+    );
+
+    await expect(
+      createFirecrackerVM({
+        jobId: "job-1",
+        rootfsImage: "node-20.ext4",
+        vcpuCount: 2,
+        memSizeMib: 1024,
+      }),
+    ).rejects.toThrow(/firecrackerExitCode=1/);
   });
 
   it("returns VMHandle with exec/writeFile closures that delegate to vsock", async () => {

@@ -15,6 +15,10 @@ interface StartupLogResponse {
     workspaceStatus?: string;
     workerHost?: string | null;
     workspaceError?: string | null;
+    vmBootStage?: string | null;
+    firecrackerExitCode?: number | null;
+    firecrackerStderrTail?: string | null;
+    rootfsAccessCheck?: string | null;
     expiresAt?: number | null;
     workerHealth?: {
       reachable?: boolean;
@@ -81,6 +85,14 @@ export function registerWorkspaceStartupLog(server: McpServer): void {
           `- Workspace status: ${startup?.workspaceStatus ?? "unknown"}`,
           startup?.workerHost ? `- Worker host: ${startup.workerHost}` : null,
           startup?.workspaceError ? `- Workspace error: ${startup.workspaceError}` : null,
+          startup?.vmBootStage ? `- VM boot stage: ${startup.vmBootStage}` : null,
+          startup?.firecrackerExitCode !== undefined && startup?.firecrackerExitCode !== null
+            ? `- Firecracker exit code: ${startup.firecrackerExitCode}`
+            : null,
+          startup?.rootfsAccessCheck ? `- Rootfs access check: ${startup.rootfsAccessCheck}` : null,
+          startup?.firecrackerStderrTail
+            ? `- Firecracker stderr tail: ${startup.firecrackerStderrTail}`
+            : null,
           startup?.workerHealth
             ? `- Worker reachable: ${startup.workerHealth.reachable ? "yes" : "no"}`
             : null,

@@ -246,7 +246,7 @@ describe("waitForVsock", () => {
     });
 
     await expect(waitForVsock(sock, "vm-retry", 3, 10)).rejects.toThrow(
-      /Vsock not reachable for VM vm-retry after 3 retries/,
+      /Vsock not reachable for VM vm-retry after 3 retries; lastError=/,
     );
   });
 
@@ -254,7 +254,7 @@ describe("waitForVsock", () => {
     const sock = socketPath(); // no server listening
 
     await expect(waitForVsock(sock, "vm-noconn", 2, 10)).rejects.toThrow(
-      /Vsock not reachable/,
+      /Vsock not reachable.*lastError=/,
     );
   });
 });

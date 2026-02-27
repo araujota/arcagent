@@ -265,6 +265,37 @@ const ALLOWED_WORKSPACE_ROUTE_PATHS = new Set<string>([
   "/api/workspace/session-exec",
 ]);
 
+function parseWorkspaceBootDiagnostics(
+  workspaceError?: string | null,
+  workerHealthChecks?: Record<string, string>,
+): {
+  vmBootStage: string | null;
+  firecrackerExitCode: number | null;
+  firecrackerStderrTail: string | null;
+  rootfsAccessCheck: string | null;
+} {
+  const error = workspaceError ?? "";
+  const vmBootStageMatch = error.match(/vmBootStage=([a-z_]+)/i);
+  const exitCodeMatch = error.match(/firecrackerExitCode=([^\s,\)]+)/i);
+  const stderrTailMatch = error.match(
+    /firecrackerStderrTail=(.*?)(?:,\s*firecrackerProcessError=|,\s*lastError=|\)\s*$|$)/i,
+  );
+  const rootfsFromError = error.match(/rootfsAccessCheck=([^\s,\)]+)/i)?.[1] ?? null;
+  const rootfsFromHealth = workerHealthChecks?.jailerCanReadEncryptedRootfsSample ?? null;
+
+  const parsedExit = exitCodeMatch?.[1] && /^-?\d+$/.test(exitCodeMatch[1])
+    ? parseInt(exitCodeMatch[1], 10)
+    : null;
+  const stderrTail = stderrTailMatch?.[1]?.trim();
+
+  return {
+    vmBootStage: vmBootStageMatch?.[1] ?? null,
+    firecrackerExitCode: parsedExit,
+    firecrackerStderrTail: stderrTail || null,
+    rootfsAccessCheck: rootfsFromError ?? rootfsFromHealth,
+  };
+}
+
 function toBase64Url(bytes: Uint8Array): string {
   const base64 = btoa(String.fromCharCode(...bytes));
   return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
@@ -1883,6 +1914,7 @@ http.route({
         workspaceStatus: ws.status,
         workerHost: ws.workerHost || null,
         workspaceError: ws.errorMessage ?? null,
+        ...parseWorkspaceBootDiagnostics(ws.errorMessage, workerHealth?.checks),
         expiresAt: ws.expiresAt,
         workerHealth,
       },

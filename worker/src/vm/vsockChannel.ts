@@ -511,17 +511,29 @@ export async function waitForVsock(
   maxRetries: number = 20,
   baseDelayMs: number = 100,
 ): Promise<void> {
+  let lastError: string | null = null;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const result = await vsockExec(socketPath, "echo ok", 5_000);
       if (result.exitCode === 0 && result.stdout.trim() === "ok") {
         return;
       }
-    } catch {
-      const delay = Math.min(baseDelayMs * 2 ** (attempt - 1), 3_000);
-      logger.debug("Vsock not yet available", { vmId, attempt, nextRetryMs: delay });
-      await new Promise((r) => setTimeout(r, delay));
+      lastError = `unexpected response: exitCode=${result.exitCode}, stdout=${result.stdout.trim() || "<empty>"}, stderr=${result.stderr.trim() || "<empty>"}`;
+    } catch (err) {
+      // Keep the last low-level connection error for terminal diagnostics.
+      // This is critical for distinguishing guest boot failures from transient delays.
+      lastError = err instanceof Error ? err.message : String(err);
     }
+    const delay = Math.min(baseDelayMs * 2 ** (attempt - 1), 3_000);
+    logger.debug("Vsock not yet available", { vmId, attempt, nextRetryMs: delay });
+    await new Promise((r) => setTimeout(r, delay));
   }
-  throw new Error(`Vsock not reachable for VM ${vmId} after ${maxRetries} retries`);
+  const suffix = lastError ? `; lastError=${lastError}` : "";
+  const message = `Vsock not reachable for VM ${vmId} after ${maxRetries} retries${suffix}`;
+  logger.warn("Vsock readiness check failed", {
+    vmId,
+    maxRetries,
+    lastError: lastError ?? undefined,
+  });
+  throw new Error(message);
 }
