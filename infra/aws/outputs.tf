@@ -50,13 +50,3 @@ output "rootfs_bucket" {
   description = "S3 bucket for pre-built rootfs images"
   value       = aws_s3_bucket.rootfs.id
 }
-
-output "attempt_worker_launch_template_id" {
-  description = "Launch template ID for dedicated attempt workers"
-  value       = var.enable_attempt_worker_template ? aws_launch_template.attempt_worker[0].id : ""
-}
-
-output "attempt_worker_security_group_id" {
-  description = "Security group ID for dedicated attempt workers"
-  value       = var.enable_attempt_worker_template ? aws_security_group.attempt_worker[0].id : ""
-}

@@ -11,18 +11,18 @@ interface StartupLogResponse {
   claimId?: string;
   bountyId?: string;
   startupLog?: {
-    found?: boolean;
-    message?: string;
-    log?: string;
-    status?: string;
-    bootLogRef?: string | null;
-    instanceId?: string;
-    publicHost?: string | null;
-    launchRequestedAt?: number | null;
-    runningAt?: number | null;
-    healthyAt?: number | null;
-    terminatedAt?: number | null;
-    errorMessage?: string | null;
+    mode?: string;
+    workspaceStatus?: string;
+    workerHost?: string | null;
+    workspaceError?: string | null;
+    expiresAt?: number | null;
+    workerHealth?: {
+      reachable?: boolean;
+      httpStatus?: number;
+      status?: string;
+      checks?: Record<string, string>;
+      error?: string;
+    } | null;
   };
 }
 
@@ -30,7 +30,7 @@ export function registerWorkspaceStartupLog(server: McpServer): void {
   registerTool(
     server,
     "workspace_startup_log",
-    "Fetch dedicated attempt-worker startup diagnostics (EC2 + worker bootstrap) for a claimed bounty workspace.",
+    "Fetch workspace startup diagnostics (shared worker + Firecracker execution environment health) for a claimed bounty workspace.",
     {
       bountyId: z.string().optional().describe("Bounty ID (recommended for agent usage)"),
       workspaceId: z.string().optional().describe("Workspace ID (optional operator override)"),
@@ -68,23 +68,32 @@ export function registerWorkspaceStartupLog(server: McpServer): void {
         }
 
         const startup = result.startupLog;
+        const checks = startup?.workerHealth?.checks
+          ? Object.entries(startup.workerHealth.checks).map(([k, v]) => `- ${k}: ${v}`)
+          : [];
         const lines = [
           "# Workspace Startup Diagnostics",
           "",
           `- Bounty: ${result.bountyId ?? args.bountyId ?? "unknown"}`,
           `- Claim: ${result.claimId ?? args.claimId ?? "unknown"}`,
           `- Workspace: ${result.workspaceId ?? args.workspaceId ?? "unknown"}`,
-          `- Status: ${startup?.status ?? startup?.message ?? "unknown"}`,
-          startup?.instanceId ? `- Instance: ${startup.instanceId}` : null,
-          startup?.publicHost ? `- Worker host: ${startup.publicHost}` : null,
-          startup?.bootLogRef ? `- Boot log ref: ${startup.bootLogRef}` : null,
-          startup?.errorMessage ? `- Error: ${startup.errorMessage}` : null,
+          `- Mode: ${startup?.mode ?? "shared_worker"}`,
+          `- Workspace status: ${startup?.workspaceStatus ?? "unknown"}`,
+          startup?.workerHost ? `- Worker host: ${startup.workerHost}` : null,
+          startup?.workspaceError ? `- Workspace error: ${startup.workspaceError}` : null,
+          startup?.workerHealth
+            ? `- Worker reachable: ${startup.workerHealth.reachable ? "yes" : "no"}`
+            : null,
+          startup?.workerHealth?.httpStatus !== undefined
+            ? `- Worker health HTTP: ${startup.workerHealth.httpStatus}`
+            : null,
+          startup?.workerHealth?.status ? `- Worker health status: ${startup.workerHealth.status}` : null,
+          startup?.workerHealth?.error ? `- Worker health error: ${startup.workerHealth.error}` : null,
+          startup?.expiresAt ? `- Workspace expires at: ${new Date(startup.expiresAt).toISOString()}` : null,
           "",
-          "## Boot Log",
+          "## Worker Health Checks",
           "",
-          startup?.log && startup.log.trim().length > 0
-            ? "```\n" + startup.log + "\n```"
-            : "No boot log captured yet.",
+          checks.length > 0 ? checks.join("\n") : "No worker health checks captured yet.",
         ].filter(Boolean);
 
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };

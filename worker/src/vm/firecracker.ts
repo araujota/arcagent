@@ -76,6 +76,8 @@ const SSH_KEY_PATH = process.env.FC_SSH_KEY_PATH ?? "/root/.ssh/id_ed25519";
 /** SSH port on guest (when vsock is disabled). */
 const GUEST_SSH_PORT = parseInt(process.env.FC_GUEST_SSH_PORT ?? "22", 10);
 const EXECUTION_BACKEND = (process.env.WORKER_EXECUTION_BACKEND ?? "firecracker").toLowerCase();
+const ALLOW_UNSAFE_PROCESS_BACKEND =
+  process.env.NODE_ENV !== "production" && process.env.ALLOW_UNSAFE_PROCESS_BACKEND === "true";
 
 // ---------------------------------------------------------------------------
 // VM lifecycle
@@ -95,6 +97,12 @@ export async function createFirecrackerVM(
   opts: FirecrackerVMOptions,
 ): Promise<VMHandle> {
   if (EXECUTION_BACKEND === "process") {
+    if (!ALLOW_UNSAFE_PROCESS_BACKEND) {
+      throw new Error(
+        "Process backend is disabled for deployed runtimes. " +
+        "Use WORKER_EXECUTION_BACKEND=firecracker, or set ALLOW_UNSAFE_PROCESS_BACKEND=true in local non-production only.",
+      );
+    }
     return createProcessVM(opts);
   }
 

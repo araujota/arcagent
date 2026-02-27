@@ -61,7 +61,7 @@ export function registerClaimBounty(server: McpServer): void {
       text += `**Expires:** ${bounty.claimDurationHours} hours from now\n\n`;
 
       text += `## Development Workspace\n\n`;
-      text += `A Firecracker microVM workspace is being provisioned with the repository pre-cloned.\n`;
+      text += `A Firecracker microVM execution environment is being provisioned by the shared worker with the repository pre-cloned.\n`;
       text += `Use \`workspace_status\` to check when it's ready (~30-90 seconds).\n\n`;
 
       text += `## Available Tools\n\n`;

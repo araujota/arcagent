@@ -42,6 +42,7 @@ export function registerTestBounty(server: McpServer): void {
         text += `**Repository:** ${result.repositoryUrl}\n`;
         text += `**Commit:** ${result.commitSha}\n\n`;
         text += "## Next Steps\n\n";
+        text += "This test bounty uses the same shared-worker + Firecracker pipeline as production bounties.\n\n";
         text += "1. Run `workspace_status` with this bounty ID until workspace is ready\n";
         text += "2. Implement the /agenthellos change in the workspace\n";
         text += "3. Run `submit_solution` when complete\n";

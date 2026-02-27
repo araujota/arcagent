@@ -9,7 +9,6 @@ import {
   verifyWorkerCallbackSignature,
   isFreshWorkerCallbackTimestamp,
 } from "./lib/hmac";
-import { deriveAttemptTokenSigningSecret } from "./lib/attemptWorkerAuth";
 
 const http = httpRouter();
 
@@ -1719,18 +1718,8 @@ http.route({
       return mcpError("Workspace is expired", 409);
     }
 
-    let signingSecret =
+    const signingSecret =
       process.env.WORKER_TOKEN_SIGNING_SECRET || process.env.WORKER_SHARED_SECRET;
-
-    if (ws.attemptWorkerId) {
-      const attemptWorker = await ctx.runQuery(internal.attemptWorkers.getByIdInternal, {
-        attemptWorkerId: ws.attemptWorkerId,
-      });
-      if (!attemptWorker) {
-        return mcpError("Attempt worker record not found", 503);
-      }
-      signingSecret = await deriveAttemptTokenSigningSecret(attemptWorker.tokenSigningKeyId);
-    }
 
     if (!signingSecret) {
       return mcpError("Worker token signing secret not configured", 503);
@@ -1762,7 +1751,7 @@ http.route({
   }),
 });
 
-// --- Workspace: Attempt startup log (operator diagnostics) ---
+// --- Workspace: Startup diagnostics (shared worker + execution env health) ---
 http.route({
   path: "/api/mcp/workspace/startup-log",
   method: "POST",
@@ -1784,10 +1773,13 @@ http.route({
     let ws:
       | {
           workspaceId: string;
-          attemptWorkerId?: Id<"attemptWorkers">;
           claimId: Id<"bountyClaims">;
           bountyId: Id<"bounties">;
           agentId: Id<"users">;
+          status: "provisioning" | "ready" | "error" | "destroyed";
+          workerHost: string;
+          errorMessage?: string;
+          expiresAt: number;
         }
       | null = null;
 
@@ -1838,24 +1830,62 @@ http.route({
     if (!ws) {
       return mcpJson({ found: false, message: "Workspace not found" }, 404);
     }
-    if (!ws.attemptWorkerId) {
-      return mcpJson({
-        found: false,
-        workspaceId: ws.workspaceId,
-        message: "Workspace is not using dedicated attempt VM mode",
-      });
-    }
 
-    const log = await ctx.runAction(internal.attemptWorkersNode.getStartupLog, {
-      attemptWorkerId: ws.attemptWorkerId,
-    });
+    let workerHealth: {
+      reachable: boolean;
+      httpStatus?: number;
+      status?: string;
+      checks?: Record<string, string>;
+      error?: string;
+    } | null = null;
+
+    if (ws.workerHost && /^https?:\/\//i.test(ws.workerHost)) {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const controller = new AbortController();
+        timeout = setTimeout(() => controller.abort(), 5000);
+        const response = await fetch(`${ws.workerHost.replace(/\/+$/, "")}/api/health`, {
+          method: "GET",
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        const body = await response.json().catch(() => ({} as Record<string, unknown>));
+        workerHealth = {
+          reachable: response.ok,
+          httpStatus: response.status,
+          status: typeof body.status === "string" ? body.status : "unknown",
+          checks: typeof body.checks === "object" && body.checks
+            ? (body.checks as Record<string, string>)
+            : undefined,
+        };
+      } catch (err) {
+        workerHealth = {
+          reachable: false,
+          error: err instanceof Error ? err.message : "Failed to reach worker health endpoint",
+        };
+      } finally {
+        if (timeout) clearTimeout(timeout);
+      }
+    } else {
+      workerHealth = {
+        reachable: false,
+        error: "Worker host is not available yet",
+      };
+    }
 
     return mcpJson({
       found: true,
       workspaceId: ws.workspaceId,
       claimId: ws.claimId,
       bountyId: ws.bountyId,
-      startupLog: log,
+      startupLog: {
+        mode: "shared_worker",
+        workspaceStatus: ws.status,
+        workerHost: ws.workerHost || null,
+        workspaceError: ws.errorMessage ?? null,
+        expiresAt: ws.expiresAt,
+        workerHealth,
+      },
     });
   }),
 });

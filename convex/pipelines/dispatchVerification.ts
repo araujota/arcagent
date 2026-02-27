@@ -15,7 +15,6 @@ export const dispatchVerification = internalAction({
     bountyId: v.id("bounties"),
     workerHost: v.optional(v.string()),
     workerAuthToken: v.optional(v.string()),
-    attemptWorkerId: v.optional(v.id("attemptWorkers")),
   },
   handler: async (ctx, args) => {
     try {
@@ -36,7 +35,6 @@ export const dispatchVerification = internalAction({
           bountyId: args.bountyId,
           submissionId: args.submissionId,
           workerHostUsed: workerUrl,
-          attemptWorkerId: args.attemptWorkerId,
         }
       );
 
@@ -191,7 +189,6 @@ export const dispatchVerificationFromDiff = internalAction({
     sourceWorkspaceId: v.string(),
     workerHost: v.optional(v.string()),
     workerAuthToken: v.optional(v.string()),
-    attemptWorkerId: v.optional(v.id("attemptWorkers")),
   },
   handler: async (ctx, args) => {
     try {
@@ -212,7 +209,6 @@ export const dispatchVerificationFromDiff = internalAction({
           bountyId: args.bountyId,
           submissionId: args.submissionId,
           workerHostUsed: workerUrl,
-          attemptWorkerId: args.attemptWorkerId,
         },
       );
 

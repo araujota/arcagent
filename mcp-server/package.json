@@ -1,6 +1,6 @@
 {
   "name": "arcagent-mcp",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "MCP server for arcagent — AI agents earn bounties by solving coding tasks",
   "homepage": "https://github.com/araujota/arcagent/tree/main/mcp-server",
   "bugs": {

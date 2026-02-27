@@ -193,6 +193,25 @@ validate_rootfs_image() {
     echo "ERROR: Rootfs validation failed for $image_path: vsock-agent size $size < $MIN_VSOCK_AGENT_BYTES"
     return 1
   fi
+
+  local passwd_out
+  passwd_out="$(debugfs -R "cat /etc/passwd" "$image_path" 2>/dev/null || true)"
+  if ! echo "$passwd_out" | grep -q '^agent:x:1000:1000:'; then
+    echo "ERROR: Rootfs validation failed for $image_path: missing agent user (uid/gid 1000)"
+    return 1
+  fi
+
+  local workspace_stat workspace_uid workspace_gid
+  if ! workspace_stat=$(debugfs -R "stat /workspace" "$image_path" 2>/dev/null); then
+    echo "ERROR: Rootfs validation failed for $image_path: /workspace missing"
+    return 1
+  fi
+  workspace_uid="$(echo "$workspace_stat" | sed -n 's/.*User:[[:space:]]*\\([0-9]\\+\\).*/\\1/p' | head -1)"
+  workspace_gid="$(echo "$workspace_stat" | sed -n 's/.*Group:[[:space:]]*\\([0-9]\\+\\).*/\\1/p' | head -1)"
+  if [ "$workspace_uid" != "1000" ] || [ "$workspace_gid" != "1000" ]; then
+    echo "ERROR: Rootfs validation failed for $image_path: /workspace ownership is ${workspace_uid}:${workspace_gid}, expected 1000:1000"
+    return 1
+  fi
 }
 
 # ---------------------------------------------------------------------------

@@ -1,11 +1,8 @@
 import { query, internalMutation, internalAction, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { Id } from "./_generated/dataModel";
 import { getCurrentUser, requireAuth } from "./lib/utils";
 import { calculatePlatformFee, PLATFORM_FEE_RATE } from "./lib/fees";
-import { deriveAttemptServiceToken } from "./lib/attemptWorkerAuth";
-import { shouldUseDedicatedAttemptVm } from "./lib/workspaceIsolation";
 
 /**
  * SECURITY (H8/M8): Require that the caller is the bounty creator,
@@ -379,31 +376,11 @@ export const runVerificationFromDiff = internalAction({
     sourceWorkspaceId: v.string(),
   },
   handler: async (ctx, args) => {
-    const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
-      bountyId: args.bountyId,
-    });
-    const useDedicatedAttempt = shouldUseDedicatedAttemptVm(bounty);
-
     let workerHost = process.env.WORKER_API_URL;
     let workerAuthToken = process.env.WORKER_SHARED_SECRET;
-    let attemptWorkerId: Id<"attemptWorkers"> | undefined;
-
-    if (useDedicatedAttempt) {
-      const attempt = await ctx.runQuery(internal.attemptWorkers.getByWorkspaceId, {
-        workspaceId: args.sourceWorkspaceId,
-      });
-
-      if (attempt?.publicHost && (attempt.status === "healthy" || attempt.status === "ready")) {
-        workerHost = attempt.publicHost;
-        workerAuthToken = await deriveAttemptServiceToken(attempt.tokenSigningKeyId);
-        attemptWorkerId = attempt._id;
-      }
-    }
 
     if (!workerHost || !workerAuthToken) {
-      const message = useDedicatedAttempt
-        ? "Dedicated attempt worker is unavailable for this workspace."
-        : "Verification worker is not configured (WORKER_API_URL missing).";
+      const message = "Verification worker is not configured (WORKER_API_URL missing).";
       await failVerificationDispatch(
         ctx,
         {
@@ -427,7 +404,6 @@ export const runVerificationFromDiff = internalAction({
         sourceWorkspaceId: args.sourceWorkspaceId,
         workerHost,
         workerAuthToken,
-        attemptWorkerId,
       },
     );
   },
@@ -678,41 +654,11 @@ export const runVerification = internalAction({
     bountyId: v.id("bounties"),
   },
   handler: async (ctx, args) => {
-    const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
-      bountyId: args.bountyId,
-    });
-    const useDedicatedAttempt = shouldUseDedicatedAttemptVm(bounty);
-
     let workerHost = process.env.WORKER_API_URL;
     let workerAuthToken = process.env.WORKER_SHARED_SECRET;
-    let attemptWorkerId: Id<"attemptWorkers"> | undefined;
-
-    if (useDedicatedAttempt) {
-      const claim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
-        bountyId: args.bountyId,
-      });
-      if (claim) {
-        const ws = await ctx.runQuery(internal.devWorkspaces.getByClaimId, {
-          claimId: claim._id,
-        });
-        if (ws?.workspaceId) {
-          const attempt = await ctx.runQuery(internal.attemptWorkers.getByWorkspaceId, {
-            workspaceId: ws.workspaceId,
-          });
-
-          if (attempt?.publicHost && (attempt.status === "healthy" || attempt.status === "ready")) {
-            workerHost = attempt.publicHost;
-            workerAuthToken = await deriveAttemptServiceToken(attempt.tokenSigningKeyId);
-            attemptWorkerId = attempt._id;
-          }
-        }
-      }
-    }
 
     if (!workerHost || !workerAuthToken) {
-      const message = useDedicatedAttempt
-        ? "Dedicated attempt worker is unavailable for this bounty."
-        : "Verification worker is not configured (WORKER_API_URL missing).";
+      const message = "Verification worker is not configured (WORKER_API_URL missing).";
       await failVerificationDispatch(
         ctx,
         {
@@ -732,7 +678,6 @@ export const runVerification = internalAction({
         bountyId: args.bountyId,
         workerHost,
         workerAuthToken,
-        attemptWorkerId,
       }
     );
   },

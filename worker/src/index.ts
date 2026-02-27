@@ -52,29 +52,27 @@ async function main(): Promise<void> {
   const port = parseInt(process.env.PORT ?? "3001", 10);
   const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
   const executionBackend = (process.env.WORKER_EXECUTION_BACKEND ?? "firecracker").toLowerCase();
-  const isolationMode = (process.env.WORKSPACE_ISOLATION_MODE ?? "shared_worker").toLowerCase();
   const isProduction = process.env.NODE_ENV === "production";
+  const allowUnsafeProcessBackend =
+    !isProduction && process.env.ALLOW_UNSAFE_PROCESS_BACKEND === "true";
 
-  if (isProduction) {
-    if (executionBackend === "firecracker") {
-      if (process.env.FC_HARDEN_EGRESS !== "true") {
-        logger.error("FC_HARDEN_EGRESS must be true in production firecracker mode");
-        process.exit(1);
-      }
-    } else if (executionBackend === "process") {
-      if (isolationMode !== "dedicated_attempt_vm") {
-        logger.error("Process backend in production requires dedicated attempt VM isolation mode", {
-          executionBackend,
-          isolationMode,
-        });
-        process.exit(1);
-      }
-    } else {
-      logger.error("Unsupported production execution backend", {
+  if (executionBackend !== "firecracker") {
+    if (!allowUnsafeProcessBackend) {
+      logger.error("Only firecracker execution backend is allowed for deployed runtimes", {
         executionBackend,
+        allowUnsafeProcessBackend,
       });
       process.exit(1);
     }
+    logger.warn("Running with unsafe local process backend override", {
+      executionBackend,
+      allowUnsafeProcessBackend,
+    });
+  }
+
+  if (isProduction && process.env.FC_HARDEN_EGRESS !== "true") {
+    logger.error("FC_HARDEN_EGRESS must be true in production firecracker mode");
+    process.exit(1);
   }
 
   if (executionBackend === "process") {
@@ -111,6 +109,10 @@ async function main(): Promise<void> {
   logger.info("BullMQ queue and worker initialised", {
     redisUrl: redisUrl.replace(/\/\/.*@/, "//<redacted>@"),
   });
+  logger.info("Execution backend lock state", {
+    executionBackend,
+    firecrackerLocked: executionBackend === "firecracker",
+  });
 
   // Express app
   const app = express();
@@ -132,8 +134,18 @@ async function main(): Promise<void> {
     }
 
     checks.executionBackend = executionBackend;
+    checks.firecrackerLocked = executionBackend === "firecracker" ? "true" : "false";
+    checks.executionIsolation = executionBackend === "firecracker" ? "microvm_rootfs" : "unsafe_process";
+    checks.workerHostRuntime = "ok";
     checks.snykCli = hasBinary("snyk") ? "ok" : "missing";
     checks.sonarScanner = hasBinary("sonar-scanner") ? "ok" : "missing";
+
+    if (executionBackend !== "firecracker") {
+      checks.executionBackendPolicy = allowUnsafeProcessBackend ? "unsafe_override" : "violation";
+      healthy = false;
+    } else {
+      checks.executionBackendPolicy = "ok";
+    }
 
     if (executionBackend === "process" && process.env.SNYK_TOKEN && checks.snykCli !== "ok") {
       healthy = false;
@@ -160,12 +172,15 @@ async function main(): Promise<void> {
 
       // Rootfs directory (check at least one .ext4 exists)
       const rootfsDir = process.env.FC_ROOTFS_DIR ?? "/var/lib/firecracker/rootfs";
+      checks.rootfsPath = rootfsDir;
       try {
         const files = readdirSync(rootfsDir).filter(f => f.endsWith(".ext4"));
-        checks.rootfs = files.length > 0 ? "ok" : "empty";
-        if (checks.rootfs !== "ok") healthy = false;
+        checks.rootfsDirectory = "ok";
+        checks.rootfsImages = files.length > 0 ? "ok" : "empty";
+        if (checks.rootfsImages !== "ok") healthy = false;
       } catch {
-        checks.rootfs = "missing";
+        checks.rootfsDirectory = "missing";
+        checks.rootfsImages = "unknown";
         healthy = false;
       }
     }

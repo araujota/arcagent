@@ -44,10 +44,14 @@ describe("workspace_startup_log tool", () => {
       claimId: "c1",
       workspaceId: "w1",
       startupLog: {
-        status: "healthy",
-        instanceId: "i-123",
-        publicHost: "https://w1.speedlesvc.com",
-        log: "boot line",
+        mode: "shared_worker",
+        workspaceStatus: "error",
+        workerHost: "https://w1.speedlesvc.com",
+        workspaceError: "Worker API error: 500 - boom",
+        workerHealth: {
+          reachable: false,
+          error: "connect ECONNREFUSED",
+        },
       },
     });
 
@@ -55,7 +59,8 @@ describe("workspace_startup_log tool", () => {
 
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain("Workspace Startup Diagnostics");
-    expect(result.content[0].text).toContain("i-123");
+    expect(result.content[0].text).toContain("Mode: shared_worker");
+    expect(result.content[0].text).toContain("Workspace status: error");
     expect(mockCallConvex).toHaveBeenCalledWith("/api/mcp/workspace/startup-log", {
       bountyId: "b1",
       workspaceId: undefined,
