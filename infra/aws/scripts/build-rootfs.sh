@@ -188,7 +188,7 @@ validate_rootfs_image() {
     return 1
   fi
   local size
-  size=$(echo "$stat_out" | awk '/Size:/{print $2; exit}')
+  size=$(echo "$stat_out" | sed -n 's/.*Size:[[:space:]]*\([0-9]\+\).*/\1/p' | head -1)
   if [ -z "$size" ] || [ "$size" -lt "$MIN_VSOCK_AGENT_BYTES" ]; then
     echo "ERROR: Rootfs validation failed for $image_path: vsock-agent size $size < $MIN_VSOCK_AGENT_BYTES"
     return 1
