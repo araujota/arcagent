@@ -1,7 +1,7 @@
 import express from "express";
 import { execFileSync } from "node:child_process";
 import { createLogger, format, transports } from "winston";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { createVerificationQueue, closeQueue } from "./queue/jobQueue";
 import { createRoutes } from "./api/routes";
 import { authMiddleware } from "./api/auth";
@@ -183,6 +183,33 @@ async function main(): Promise<void> {
         checks.rootfsImages = "unknown";
         healthy = false;
       }
+
+      checks.kvmDevice = existsSync("/dev/kvm") ? "ok" : "missing";
+      if (checks.kvmDevice !== "ok") healthy = false;
+
+      checks.vhostVsockDevice = existsSync("/dev/vhost-vsock") ? "ok" : "missing";
+      if (checks.vhostVsockDevice !== "ok") healthy = false;
+      checks.firecrackerLaunchMode = process.env.FC_USE_JAILER === "false" ? "direct" : "jailer";
+
+      const jailerUid = process.env.FC_JAILER_UID ?? "1001";
+      const jailerGid = process.env.FC_JAILER_GID ?? "1001";
+      checks.jailerUid = jailerUid;
+      checks.jailerGid = jailerGid;
+
+      const encryptedRootfsSamplePath = resolveEncryptedRootfsSamplePath();
+      checks.encryptedRootfsSamplePath = encryptedRootfsSamplePath ?? "none";
+      checks.jailerCanReadEncryptedRootfsSample = evaluateReadabilityForIdentity(
+        encryptedRootfsSamplePath,
+        jailerUid,
+        jailerGid,
+      );
+      if (
+        checks.jailerCanReadEncryptedRootfsSample.startsWith("permission_denied") ||
+        checks.jailerCanReadEncryptedRootfsSample.startsWith("stat_failed") ||
+        checks.jailerCanReadEncryptedRootfsSample.startsWith("invalid_jailer_identity")
+      ) {
+        healthy = false;
+      }
     }
 
     const status = healthy ? 200 : 503;
@@ -346,4 +373,55 @@ function startSystemdWatchdog(): () => void {
     }
     void notify(["STOPPING=1", "--status=arcagent-worker shutting down"]);
   };
+}
+
+function resolveEncryptedRootfsSamplePath(): string | null {
+  const configured = process.env.FC_ENCRYPTED_ROOTFS_SAMPLE_PATH?.trim();
+  if (configured) return configured;
+
+  try {
+    const mapperEntries = readdirSync("/dev/mapper")
+      .filter((entry) => entry.startsWith("fc-crypt-"))
+      .sort();
+    if (mapperEntries.length > 0) {
+      return `/dev/mapper/${mapperEntries[0]}`;
+    }
+  } catch {
+    // /dev/mapper may not exist in local development.
+  }
+
+  return null;
+}
+
+function evaluateReadabilityForIdentity(
+  samplePath: string | null,
+  jailerUidRaw: string,
+  jailerGidRaw: string,
+): string {
+  if (!samplePath) return "unknown_no_sample_device";
+  if (!existsSync(samplePath)) return "sample_missing";
+  if (!/^\d+$/.test(jailerUidRaw) || !/^\d+$/.test(jailerGidRaw)) {
+    return "invalid_jailer_identity";
+  }
+
+  const jailerUid = parseInt(jailerUidRaw, 10);
+  const jailerGid = parseInt(jailerGidRaw, 10);
+
+  try {
+    const resolved = realpathSync(samplePath);
+    const fsStat = statSync(resolved);
+    const modeBits = fsStat.mode & 0o777;
+    const mode = modeBits.toString(8).padStart(3, "0");
+    const readable =
+      jailerUid === 0 ||
+      (jailerUid === fsStat.uid && (modeBits & 0o400) !== 0) ||
+      (jailerGid === fsStat.gid && (modeBits & 0o040) !== 0) ||
+      (modeBits & 0o004) !== 0;
+    if (readable) return "ok";
+
+    return `permission_denied(mode=${mode},owner=${fsStat.uid}:${fsStat.gid},resolved=${resolved})`;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `stat_failed(${message})`;
+  }
 }

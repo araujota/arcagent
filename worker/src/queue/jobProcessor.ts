@@ -238,15 +238,24 @@ export async function processVerificationFromDiff(
     if (!vm.writeFile) {
       throw new Error("VM does not support writeFile — cannot apply diff patch");
     }
-    await vm.writeFile("/tmp/agent.patch", Buffer.from(data.diffPatch), "0644", "agent:agent");
+    const patchPath = "/workspace/.arcagent/agent.patch";
+    await vm.exec("mkdir -p /workspace/.arcagent && chown -R agent:agent /workspace/.arcagent 2>/dev/null || true");
+    await vm.writeFile(patchPath, Buffer.from(data.diffPatch), "0644", "agent:agent");
 
     const applyResult = await vm.exec(
-      "cd /workspace && git apply --whitespace=fix /tmp/agent.patch",
+      `cd /workspace && git apply --whitespace=fix ${patchPath}`,
       30_000,
       "agent",
     );
 
     if (applyResult.exitCode !== 0) {
+      logger.warn("Diff verification patch apply failed", {
+        jobId: data.jobId,
+        exitCode: applyResult.exitCode,
+        stdout: applyResult.stdout?.slice(0, 2000),
+        stderr: applyResult.stderr?.slice(0, 2000),
+      });
+
       // Patch failed to apply — fail immediately
       const patchGate: GateResult = {
         gate: "patch-apply",
@@ -283,15 +292,19 @@ export async function processVerificationFromDiff(
     }
 
     // Clean up the patch file
-    await vm.exec("rm /tmp/agent.patch");
+    await vm.exec(`rm ${patchPath}`);
 
     await job.updateProgress(25);
 
     // 5. Compute diff context from the applied patch
     let diffContext: DiffContext | null = null;
     try {
-      diffContext = await computeDiff(vm, data.commitSha, "HEAD");
-    } catch {
+      diffContext = await computeDiff(vm, data.commitSha, "WORKTREE");
+    } catch (err) {
+      logger.warn("Failed to compute diff context for diff-based verification", {
+        jobId: data.jobId,
+        error: err instanceof Error ? err.message : String(err),
+      });
       // Diff context is optional — proceed without it
     }
 

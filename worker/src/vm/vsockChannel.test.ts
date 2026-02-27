@@ -31,7 +31,9 @@ function socketPath(): string {
 }
 
 /**
- * Create a mock guest agent that speaks the length-prefixed JSON protocol.
+ * Create a mock Firecracker-vsock guest agent:
+ *   1) expects Firecracker host CONNECT handshake
+ *   2) then speaks ArcAgent length-prefixed JSON protocol.
  * The handler receives a parsed VsockRequest and returns a VsockResponse.
  */
 function createMockGuestAgent(
@@ -39,13 +41,15 @@ function createMockGuestAgent(
   handler: (req: VsockRequest) => VsockResponse,
 ): Server {
   const server = createServer((socket) => {
-    const chunks: Buffer[] = [];
-    socket.on("data", (chunk) => {
-      chunks.push(chunk);
-      const buf = Buffer.concat(chunks);
+    let buf = Buffer.alloc(0);
+    let handshakeDone = false;
+
+    const maybeProcessRequest = () => {
+      if (!handshakeDone) return;
       if (buf.length < 4) return;
       const len = buf.readUInt32BE(0);
       if (buf.length < 4 + len) return;
+
       const req: VsockRequest = JSON.parse(
         buf.subarray(4, 4 + len).toString("utf-8"),
       );
@@ -55,6 +59,21 @@ function createMockGuestAgent(
       header.writeUInt32BE(payload.length, 0);
       socket.write(Buffer.concat([header, payload]));
       socket.end();
+    };
+
+    socket.on("data", (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      if (!handshakeDone) {
+        const newline = buf.indexOf(0x0a);
+        if (newline === -1) return;
+        const line = buf.subarray(0, newline).toString("utf-8").trim();
+        expect(line).toBe("CONNECT 5000");
+        socket.write("OK 5000\n");
+        buf = buf.subarray(newline + 1);
+        handshakeDone = true;
+      }
+
+      maybeProcessRequest();
     });
   });
   server.listen(path);
@@ -119,7 +138,7 @@ describe("vsockExec", () => {
 
   it("times out when guest doesn't respond", async () => {
     const sock = socketPath();
-    // Create a server that accepts but never replies
+    // Create a server that accepts but never replies to handshake/request.
     const server = createServer((_socket) => {
       // intentionally silent
     });
@@ -246,7 +265,7 @@ describe("waitForVsock", () => {
     });
 
     await expect(waitForVsock(sock, "vm-retry", 3, 10)).rejects.toThrow(
-      /Vsock not reachable for VM vm-retry after 3 retries/,
+      /Vsock not reachable for VM vm-retry after 3 retries; lastError=/,
     );
   });
 
@@ -254,7 +273,7 @@ describe("waitForVsock", () => {
     const sock = socketPath(); // no server listening
 
     await expect(waitForVsock(sock, "vm-noconn", 2, 10)).rejects.toThrow(
-      /Vsock not reachable/,
+      /Vsock not reachable.*lastError=/,
     );
   });
 });

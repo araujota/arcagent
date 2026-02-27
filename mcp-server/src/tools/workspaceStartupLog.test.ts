@@ -48,6 +48,10 @@ describe("workspace_startup_log tool", () => {
         workspaceStatus: "error",
         workerHost: "https://w1.speedlesvc.com",
         workspaceError: "Worker API error: 500 - boom",
+        vmBootStage: "vsock_wait",
+        firecrackerExitCode: 1,
+        firecrackerStderrTail: "open /dev/dm-0: permission denied",
+        rootfsAccessCheck: "permission_denied",
         workerHealth: {
           reachable: false,
           error: "connect ECONNREFUSED",
@@ -61,6 +65,9 @@ describe("workspace_startup_log tool", () => {
     expect(result.content[0].text).toContain("Workspace Startup Diagnostics");
     expect(result.content[0].text).toContain("Mode: shared_worker");
     expect(result.content[0].text).toContain("Workspace status: error");
+    expect(result.content[0].text).toContain("VM boot stage: vsock_wait");
+    expect(result.content[0].text).toContain("Firecracker exit code: 1");
+    expect(result.content[0].text).toContain("Rootfs access check: permission_denied");
     expect(mockCallConvex).toHaveBeenCalledWith("/api/mcp/workspace/startup-log", {
       bountyId: "b1",
       workspaceId: undefined,
