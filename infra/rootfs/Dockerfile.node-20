@@ -23,9 +23,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -s /bin/bash -u 1000 agent && \
+RUN useradd -m -s /bin/bash -u 1000 -U agent && \
     mkdir -p /workspace && \
-    chown agent:agent /workspace
+    chown agent:agent /workspace && \
+    chmod 0755 /workspace && \
+    (gpasswd -d agent sudo >/dev/null 2>&1 || true)
 
 RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
 

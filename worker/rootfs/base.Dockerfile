@@ -50,10 +50,13 @@ RUN ssh-keygen -A \
     && echo "UseDNS no" >> /etc/ssh/sshd_config \
     && echo "MaxSessions 10" >> /etc/ssh/sshd_config
 
-# Create workspace directory and agent user (uid 1000)
-RUN mkdir -p /workspace && chmod 777 /workspace
-RUN adduser -D -u 1000 -h /home/agent -s /bin/bash agent \
-    && echo "agent ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+# Create a least-privilege workspace user (uid/gid 1000).
+RUN addgroup -g 1000 agent \
+    && adduser -D -u 1000 -G agent -h /home/agent -s /bin/bash agent \
+    && mkdir -p /workspace \
+    && chown agent:agent /workspace \
+    && chmod 0755 /workspace \
+    && (delgroup agent wheel 2>/dev/null || true)
 
 # Install vsock-agent binary for host ↔ guest communication
 COPY vsock-agent /usr/local/bin/vsock-agent

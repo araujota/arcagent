@@ -63,8 +63,40 @@ async function userExists(username: string): Promise<boolean> {
   }
 }
 
+async function groupExists(groupName: string): Promise<boolean> {
+  if (!hasBinary("getent")) return false;
+  try {
+    await execFileAsync("getent", ["group", groupName]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveExecutionUserShell(): string {
+  if (process.env.PROCESS_BACKEND_EXEC_SHELL) {
+    return process.env.PROCESS_BACKEND_EXEC_SHELL;
+  }
+  return hasBinary("bash") ? "/bin/bash" : "/bin/sh";
+}
+
+function getExecErrorMessage(err: unknown): string {
+  const execErr = err as { stderr?: string; message?: string };
+  const stderr = execErr.stderr?.trim();
+  if (stderr) return stderr;
+  return execErr.message ?? String(err);
+}
+
 async function ensureExecutionUserExists(username: string): Promise<void> {
   if (await userExists(username)) return;
+
+  const runningAsRoot = typeof process.getuid === "function" && process.getuid() === 0;
+  if (!runningAsRoot) {
+    throw new Error(
+      `Process backend execution user '${username}' does not exist and worker is not running as root. ` +
+      `Pre-create '${username}' in the worker image or host bootstrap.`,
+    );
+  }
 
   if (!hasBinary("useradd")) {
     throw new Error(
@@ -72,14 +104,28 @@ async function ensureExecutionUserExists(username: string): Promise<void> {
     );
   }
 
+  const shell = resolveExecutionUserShell();
+  const shouldCreateGroup = !(await groupExists(username));
+  const useraddArgs = ["-m", "-s", shell];
+  if (shouldCreateGroup) useraddArgs.push("-U");
+  useraddArgs.push(username);
   try {
-    await execFileAsync("useradd", ["-m", "-s", "/bin/bash", username]);
-  } catch {
+    await execFileAsync("useradd", useraddArgs);
+  } catch (err) {
+    logger.warn("Failed to create process backend execution user with useradd", {
+      username,
+      shell,
+      useraddArgs: useraddArgs.join(" "),
+      error: getExecErrorMessage(err),
+    });
     // Another concurrent worker may have created the user; verify before failing.
   }
 
   if (!(await userExists(username))) {
-    throw new Error(`Process backend execution user '${username}' does not exist`);
+    throw new Error(
+      `Process backend execution user '${username}' does not exist after bootstrap. ` +
+      `Ensure '${username}' is present in the worker image/host bootstrap.`,
+    );
   }
 }
 

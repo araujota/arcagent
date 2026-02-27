@@ -22,9 +22,11 @@ RUN apt-get update -qq && \
     rm -rf /var/lib/apt/lists/*
 
 # Unprivileged user for running untrusted code
-RUN useradd -m -s /bin/bash -u 1000 agent && \
+RUN useradd -m -s /bin/bash -u 1000 -U agent && \
     mkdir -p /workspace && \
-    chown agent:agent /workspace
+    chown agent:agent /workspace && \
+    chmod 0755 /workspace && \
+    (gpasswd -d agent sudo >/dev/null 2>&1 || true)
 
 # SSH fallback (if vsock is disabled)
 RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh

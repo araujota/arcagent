@@ -22,9 +22,11 @@ RUN curl -fsSL https://go.dev/dl/go1.22.0.linux-amd64.tar.gz | tar -C /usr/local
     echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/go.sh
 ENV PATH="/usr/local/go/bin:${PATH}"
 
-RUN useradd -m -s /bin/bash -u 1000 agent && \
+RUN useradd -m -s /bin/bash -u 1000 -U agent && \
     mkdir -p /workspace && \
-    chown agent:agent /workspace
+    chown agent:agent /workspace && \
+    chmod 0755 /workspace && \
+    (gpasswd -d agent sudo >/dev/null 2>&1 || true)
 
 RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
 
