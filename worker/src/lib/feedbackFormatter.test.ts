@@ -156,5 +156,54 @@ describe("generateFeedback", () => {
     expect(feedback.testResults).toHaveLength(1);
     expect(feedback.testResults[0]!.scenarioName).toBe("Login works");
     expect(feedback.actionItems.some((a) => a.includes("hidden scenario(s) failed"))).toBe(true);
+    expect(feedback.hiddenFailureMechanisms).toHaveLength(1);
+    expect(feedback.hiddenFailureMechanisms[0]?.key).toBe("assertion_mismatch");
+  });
+
+  it("summarizes hidden failures by mechanism without exposing hidden scenario names", () => {
+    const gates: GateResult[] = [
+      makeGate({
+        gate: "test",
+        steps: [
+          {
+            scenarioName: "Hidden contract case",
+            featureName: "Secret Feature",
+            status: "fail",
+            executionTimeMs: 100,
+            stepNumber: 1,
+            visibility: "hidden" as const,
+            output: "Cannot find module './adapter'",
+          },
+          {
+            scenarioName: "Hidden edge timeout",
+            featureName: "Secret Feature",
+            status: "error",
+            executionTimeMs: 1200,
+            stepNumber: 2,
+            visibility: "hidden" as const,
+            output: "Timed out after 5000ms waiting for response",
+          },
+          {
+            scenarioName: "Hidden unknown",
+            featureName: "Secret Feature",
+            status: "fail",
+            executionTimeMs: 50,
+            stepNumber: 3,
+            visibility: "hidden" as const,
+          },
+        ],
+      }),
+    ];
+
+    const feedback = generateFeedback(gates, 2);
+    const mechanisms = feedback.hiddenFailureMechanisms;
+
+    expect(mechanisms.find((m) => m.key === "module_or_path_error")?.count).toBe(1);
+    expect(mechanisms.find((m) => m.key === "timeout_or_hang")?.count).toBe(1);
+    expect(mechanisms.find((m) => m.key === "unknown_edge_case")?.count).toBe(1);
+
+    const serialized = JSON.stringify(mechanisms);
+    expect(serialized).not.toContain("Hidden contract case");
+    expect(serialized).not.toContain("Secret Feature");
   });
 });

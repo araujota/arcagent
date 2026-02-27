@@ -93,6 +93,18 @@ export function registerGetSubmissionFeedback(server: McpServer): void {
           }
         }
 
+        if (Array.isArray(feedback.hiddenFailureMechanisms) && feedback.hiddenFailureMechanisms.length > 0) {
+          text += `\n## Hidden Failure Mechanisms (safe summary)\n\n`;
+          for (const mechanism of feedback.hiddenFailureMechanisms.slice(0, 10)) {
+            const label = typeof mechanism?.label === "string" ? mechanism.label : "Unknown edge case";
+            const count = typeof mechanism?.count === "number" ? mechanism.count : "?";
+            const guidance = typeof mechanism?.guidance === "string"
+              ? mechanism.guidance
+              : "Harden boundary conditions and error handling.";
+            text += `- **${label}** (${count}): ${guidance}\n`;
+          }
+        }
+
         return { content: [{ type: "text" as const, text }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to get feedback";
