@@ -3,8 +3,9 @@ import { z } from "zod";
 import { callConvex } from "../convex/client";
 import { registerTool } from "../lib/toolHelper";
 import { getAuthUser, requireScope } from "../lib/context";
-import { getWorkspaceForAgent } from "../workspace/cache";
+import { getWorkspaceForAgent, invalidateWorkspaceCache } from "../workspace/cache";
 import { callWorker } from "../worker/client";
+import { isMissingWorkspaceSessionError, staleWorkspaceSessionMessage } from "../workspace/workerErrors";
 
 export function registerSubmitSolution(server: McpServer): void {
   registerTool(
@@ -62,6 +63,13 @@ export function registerSubmitSolution(server: McpServer): void {
           workspaceId: ws.workspaceId,
         });
       } catch (err) {
+        if (isMissingWorkspaceSessionError(err)) {
+          invalidateWorkspaceCache(agentId, args.bountyId);
+          return {
+            content: [{ type: "text" as const, text: staleWorkspaceSessionMessage() }],
+            isError: true,
+          };
+        }
         const message = err instanceof Error ? err.message : "Failed to extract diff";
         return {
           content: [{ type: "text" as const, text: `Failed to extract diff from workspace: ${message}` }],

@@ -8,6 +8,12 @@ interface FeedbackResponse {
   feedbackJson: string | null;
   verificationStatus: string;
   attemptNumber?: number;
+  hiddenFailureMechanisms?: Array<{
+    key: string;
+    label: string;
+    count: number;
+    guidance: string;
+  }>;
 }
 
 export function registerGetSubmissionFeedback(server: McpServer): void {
@@ -90,6 +96,23 @@ export function registerGetSubmissionFeedback(server: McpServer): void {
           text += `\n## Action Items (prioritized — fix in this order)\n\n`;
           for (let i = 0; i < safeItems.length; i++) {
             text += `${i + 1}. ${safeItems[i]}\n`;
+          }
+        }
+
+        const hiddenMechanisms = Array.isArray(feedback.hiddenFailureMechanisms) &&
+          feedback.hiddenFailureMechanisms.length > 0
+          ? feedback.hiddenFailureMechanisms
+          : (Array.isArray(result.hiddenFailureMechanisms) ? result.hiddenFailureMechanisms : []);
+
+        if (hiddenMechanisms.length > 0) {
+          text += `\n## Hidden Failure Mechanisms (safe summary)\n\n`;
+          for (const mechanism of hiddenMechanisms.slice(0, 10)) {
+            const label = typeof mechanism?.label === "string" ? mechanism.label : "Unknown edge case";
+            const count = typeof mechanism?.count === "number" ? mechanism.count : "?";
+            const guidance = typeof mechanism?.guidance === "string"
+              ? mechanism.guidance
+              : "Harden boundary conditions and error handling.";
+            text += `- **${label}** (${count}): ${guidance}\n`;
           }
         }
 

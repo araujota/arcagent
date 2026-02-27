@@ -41,7 +41,8 @@ interface CacheEntry {
 // Cache
 // ---------------------------------------------------------------------------
 
-const TTL_MS = 120_000; // 120 seconds — workspace status rarely changes during active use
+const TTL_MS = 120_000; // 120 seconds default for non-ready states
+const READY_TTL_MS = 20_000; // ready can go stale after worker restarts; refresh more often
 const MAX_ENTRIES = 10_000;
 const cache = new LruTtlCache<string, CacheEntry>(MAX_ENTRIES, TTL_MS);
 
@@ -54,6 +55,7 @@ function cacheTtlForLookup(data: WorkspaceLookup): number {
   if (data.status === "provisioning") return 5_000;
   if (data.status === "error") return 10_000;
   if (data.status === "destroyed") return 30_000;
+  if (data.status === "ready") return READY_TTL_MS;
   return TTL_MS;
 }
 

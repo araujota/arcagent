@@ -164,7 +164,7 @@ describe("Submissions", () => {
       ).rejects.toThrow("running verification");
     });
 
-    it("SECURITY (H7): enforces 5-submission max", async () => {
+    it("SECURITY (H7): enforces 20-submission max", async () => {
       const t = convexTest(schema);
       const { agentId, bountyId } = await t.run(async (ctx) => {
         const creatorId = await seedUser(ctx);
@@ -173,8 +173,8 @@ describe("Submissions", () => {
           status: "in_progress",
         });
         await seedClaim(ctx, bountyId, agentId, { status: "active" });
-        // Create 5 failed submissions
-        for (let i = 0; i < 5; i++) {
+        // Create 20 failed submissions
+        for (let i = 0; i < 20; i++) {
           await seedSubmission(ctx, bountyId, agentId, {
             status: "failed",
             commitHash: `abc${1000 + i}`,

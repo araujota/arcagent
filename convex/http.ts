@@ -242,6 +242,13 @@ interface McpAuthResult {
   authMethod: "shared_secret" | "api_key" | "none";
 }
 
+type HiddenFailureMechanism = {
+  key: string;
+  label: string;
+  count: number;
+  guidance: string;
+};
+
 const WORKSPACE_AGENT_TOKEN_AUDIENCE = "arcagent-worker-workspace";
 const WORKSPACE_AGENT_TOKEN_ISSUER = "arcagent-convex";
 const WORKSPACE_AGENT_TOKEN_TTL_SECONDS = 60;
@@ -1360,10 +1367,20 @@ http.route({
       { bountyId: typedBountyId }
     );
 
+    const latestAgentStatus = await ctx.runQuery(internal.verifications.getAgentStatus, {
+      verificationId: latestVerification._id,
+    });
+    const hiddenFailureMechanisms: HiddenFailureMechanism[] = Array.isArray(
+      latestAgentStatus?.hiddenFailureMechanisms,
+    )
+      ? latestAgentStatus.hiddenFailureMechanisms as HiddenFailureMechanism[]
+      : [];
+
     return mcpJson({
       feedbackJson: latestVerification.feedbackJson ?? null,
       verificationStatus: latestVerification.status,
       attemptNumber: allVerifications.length,
+      hiddenFailureMechanisms,
     });
   }),
 });

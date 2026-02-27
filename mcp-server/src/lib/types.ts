@@ -91,6 +91,13 @@ export interface AgentVerificationStep extends VerificationStep {
   visibility: "public" | "hidden";
 }
 
+export interface HiddenFailureMechanism {
+  key: string;
+  label: string;
+  count: number;
+  guidance: string;
+}
+
 /** Agent-facing verification status — all scenarios visible with verbose output. */
 export interface ConvexAgentVerification {
   _id: string;
@@ -109,6 +116,7 @@ export interface ConvexAgentVerification {
     failed: number;
     skipped: number;
   };
+  hiddenFailureMechanisms?: HiddenFailureMechanism[];
   feedbackJson?: string;
   job: {
     status: string;

@@ -174,7 +174,7 @@ export const updateStatus = internalMutation({
 });
 
 // SECURITY (H7): Maximum total submissions per agent per bounty (across all statuses)
-const MAX_SUBMISSIONS_PER_BOUNTY = 5;
+const MAX_SUBMISSIONS_PER_BOUNTY = 20;
 
 export const createFromMcp = internalMutation({
   args: {

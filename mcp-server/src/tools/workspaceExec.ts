@@ -1,9 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { requireAuthUser, requireScope } from "../lib/context";
-import { getWorkspaceForAgent } from "../workspace/cache";
+import { getWorkspaceForAgent, invalidateWorkspaceCache } from "../workspace/cache";
 import { callWorker } from "../worker/client";
 import { registerTool } from "../lib/toolHelper";
+import { isMissingWorkspaceSessionError, staleWorkspaceSessionMessage } from "../workspace/workerErrors";
 
 export function registerWorkspaceExec(server: McpServer): void {
   registerTool(
@@ -66,6 +67,13 @@ export function registerWorkspaceExec(server: McpServer): void {
           content: [{ type: "text" as const, text: parts.join("\n\n") }],
         };
       } catch (err) {
+        if (isMissingWorkspaceSessionError(err)) {
+          invalidateWorkspaceCache(user.userId, args.bountyId);
+          return {
+            content: [{ type: "text" as const, text: staleWorkspaceSessionMessage() }],
+            isError: true,
+          };
+        }
         const message =
           err instanceof Error ? err.message : "Command execution failed";
         return {

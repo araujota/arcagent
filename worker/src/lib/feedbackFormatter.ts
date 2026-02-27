@@ -41,6 +41,20 @@ export interface TestFeedback {
   output?: string;
 }
 
+export interface HiddenFailureMechanism {
+  key:
+    | "assertion_mismatch"
+    | "runtime_exception"
+    | "module_or_path_error"
+    | "timeout_or_hang"
+    | "permission_or_filesystem"
+    | "api_contract_or_validation"
+    | "unknown_edge_case";
+  label: string;
+  count: number;
+  guidance: string;
+}
+
 /** Top-level structured feedback returned to agents. */
 export interface VerificationFeedback {
   overallStatus: "pass" | "fail" | "error";
@@ -48,6 +62,7 @@ export interface VerificationFeedback {
   attemptsRemaining: number;
   gates: GateFeedback[];
   testResults: TestFeedback[];
+  hiddenFailureMechanisms: HiddenFailureMechanism[];
   actionItems: string[];
 }
 
@@ -56,7 +71,7 @@ export interface VerificationFeedback {
 // ---------------------------------------------------------------------------
 
 /** Maximum submission attempts per bounty. */
-const MAX_ATTEMPTS = 5;
+const MAX_ATTEMPTS = 20;
 
 /**
  * Priority order for action items. Build errors are most critical (code
@@ -98,11 +113,15 @@ export function generateFeedback(
   // Hidden scenarios remain confidential and are represented via aggregate guidance.
   const testResults: TestFeedback[] = [];
   let hiddenFailures = 0;
+  const hiddenFailureOutputs: string[] = [];
   for (const g of gateResults) {
     if (g.steps) {
       for (const step of g.steps) {
         if (step.visibility === "hidden") {
-          if (step.status === "fail" || step.status === "error") hiddenFailures += 1;
+          if (step.status === "fail" || step.status === "error") {
+            hiddenFailures += 1;
+            if (step.output) hiddenFailureOutputs.push(step.output);
+          }
           continue;
         }
         testResults.push({
@@ -116,8 +135,18 @@ export function generateFeedback(
     }
   }
 
+  const hiddenFailureMechanisms = summarizeHiddenFailureMechanisms(
+    hiddenFailureOutputs,
+    hiddenFailures,
+  );
+
   // Build prioritized action items
-  const actionItems = buildActionItems(gates, testResults, hiddenFailures);
+  const actionItems = buildActionItems(
+    gates,
+    testResults,
+    hiddenFailures,
+    hiddenFailureMechanisms,
+  );
 
   return {
     overallStatus,
@@ -125,6 +154,7 @@ export function generateFeedback(
     attemptsRemaining: Math.max(0, MAX_ATTEMPTS - attemptNumber),
     gates,
     testResults,
+    hiddenFailureMechanisms,
     actionItems,
   };
 }
@@ -147,6 +177,7 @@ function buildActionItems(
   gates: GateFeedback[],
   testResults: TestFeedback[],
   hiddenFailures: number,
+  hiddenFailureMechanisms: HiddenFailureMechanism[],
 ): string[] {
   const items: { priority: number; text: string }[] = [];
 
@@ -195,7 +226,7 @@ function buildActionItems(
         text: `[test] Scenario "${t.scenarioName}" (${t.featureName}, ${t.visibility}) failed${t.output ? `: ${t.output.slice(0, 200)}` : ""}`,
       });
     }
-  if (failedTests.length > 20) {
+    if (failedTests.length > 20) {
       items.push({
         priority,
         text: `[test] ... and ${failedTests.length - 20} more failed scenarios`,
@@ -205,9 +236,16 @@ function buildActionItems(
 
   if (hiddenFailures > 0) {
     const priority = CATEGORY_PRIORITY["test"] ?? 99;
+    const topMechanisms = hiddenFailureMechanisms.slice(0, 3);
+    const mechanismSummary = topMechanisms
+      .map((m) => `${m.label} (${m.count})`)
+      .join(", ");
+    const mechanismText = mechanismSummary
+      ? ` Likely mechanisms: ${mechanismSummary}.`
+      : "";
     items.push({
       priority,
-      text: `[test] ${hiddenFailures} hidden scenario(s) failed. Fix public failures first, then harden edge-case handling, input validation, and error paths.`,
+      text: `[test] ${hiddenFailures} hidden scenario(s) failed.${mechanismText} Fix public failures first, then harden edge-case handling, input validation, and error paths.`,
     });
   }
 
@@ -215,4 +253,101 @@ function buildActionItems(
   items.sort((a, b) => a.priority - b.priority);
 
   return items.map((i) => i.text);
+}
+
+const HIDDEN_MECHANISM_METADATA: Record<HiddenFailureMechanism["key"], {
+  label: string;
+  guidance: string;
+}> = {
+  assertion_mismatch: {
+    label: "Assertion mismatch",
+    guidance: "Check edge-case outputs and strict equality assumptions.",
+  },
+  runtime_exception: {
+    label: "Runtime exception",
+    guidance: "Harden null/undefined handling and guard unsafe operations.",
+  },
+  module_or_path_error: {
+    label: "Module or path error",
+    guidance: "Verify import paths, file existence, and runtime entrypoints.",
+  },
+  timeout_or_hang: {
+    label: "Timeout or hang",
+    guidance: "Reduce algorithmic complexity and ensure async flows resolve.",
+  },
+  permission_or_filesystem: {
+    label: "Permission or filesystem error",
+    guidance: "Avoid privileged paths and handle file permissions safely.",
+  },
+  api_contract_or_validation: {
+    label: "API contract or validation mismatch",
+    guidance: "Validate request/response contracts and input validation branches.",
+  },
+  unknown_edge_case: {
+    label: "Unknown edge case",
+    guidance: "Add defensive checks around boundary conditions and error paths.",
+  },
+};
+
+function summarizeHiddenFailureMechanisms(
+  hiddenFailureOutputs: string[],
+  hiddenFailures: number,
+): HiddenFailureMechanism[] {
+  if (hiddenFailures === 0) return [];
+
+  const counts = new Map<HiddenFailureMechanism["key"], number>();
+  for (const output of hiddenFailureOutputs) {
+    const mechanism = classifyHiddenFailureOutput(output);
+    counts.set(mechanism, (counts.get(mechanism) ?? 0) + 1);
+  }
+
+  const accounted = Array.from(counts.values()).reduce((sum, count) => sum + count, 0);
+  const unknownCount = hiddenFailures - accounted;
+  if (unknownCount > 0) {
+    counts.set("unknown_edge_case", (counts.get("unknown_edge_case") ?? 0) + unknownCount);
+  }
+
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, count]) => ({
+      key,
+      count,
+      label: HIDDEN_MECHANISM_METADATA[key].label,
+      guidance: HIDDEN_MECHANISM_METADATA[key].guidance,
+    }));
+}
+
+function classifyHiddenFailureOutput(output: string): HiddenFailureMechanism["key"] {
+  const normalized = output.toLowerCase();
+
+  if (
+    /expected .* to|to equal|to deeply equal|assert|expected .* got|mismatch/i.test(normalized)
+  ) {
+    return "assertion_mismatch";
+  }
+  if (
+    /typeerror|referenceerror|syntaxerror|rangeerror|exception|panic|traceback|stack trace|segmentation fault/i.test(
+      normalized,
+    )
+  ) {
+    return "runtime_exception";
+  }
+  if (
+    /cannot find module|module not found|no such file|enoent|importerror|cannot resolve/i.test(
+      normalized,
+    )
+  ) {
+    return "module_or_path_error";
+  }
+  if (/timeout|timed out|deadline exceeded|exceeded .*ms|hang/i.test(normalized)) {
+    return "timeout_or_hang";
+  }
+  if (/eacces|eperm|permission denied|read-only file system|operation not permitted/i.test(normalized)) {
+    return "permission_or_filesystem";
+  }
+  if (/validation|invalid input|schema|status code|http 4\d\d|unprocessable entity|bad request/i.test(normalized)) {
+    return "api_contract_or_validation";
+  }
+
+  return "unknown_edge_case";
 }
