@@ -115,4 +115,45 @@ describe("workspace cache", () => {
     });
     expect(result).toEqual(mockWorkspace);
   });
+
+  it("does not cache missing workspace lookups", async () => {
+    mockCallConvex
+      .mockResolvedValueOnce({ found: false, reason: "no_active_claim" })
+      .mockResolvedValueOnce({ found: false, reason: "no_active_claim" });
+
+    await getWorkspaceForAgent("agent_1", "bounty_missing");
+    await getWorkspaceForAgent("agent_1", "bounty_missing");
+
+    expect(mockCallConvex).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses short TTL for provisioning workspaces", async () => {
+    mockCallConvex
+      .mockResolvedValueOnce({
+        found: true,
+        workspaceId: "ws_123",
+        workerHost: "https://worker.example.com",
+        status: "provisioning",
+        expiresAt: Date.now() + 3600_000,
+      })
+      .mockResolvedValueOnce({
+        found: true,
+        workspaceId: "ws_123",
+        workerHost: "https://worker.example.com",
+        status: "ready",
+        expiresAt: Date.now() + 3600_000,
+      });
+
+    await getWorkspaceForAgent("agent_1", "bounty_1");
+    expect(mockCallConvex).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(6_000);
+    const result = await getWorkspaceForAgent("agent_1", "bounty_1");
+
+    expect(mockCallConvex).toHaveBeenCalledTimes(2);
+    expect(result.found).toBe(true);
+    if (result.found) {
+      expect(result.status).toBe("ready");
+    }
+  });
 });

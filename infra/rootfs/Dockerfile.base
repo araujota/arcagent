@@ -22,16 +22,17 @@ RUN apt-get update -qq && \
     rm -rf /var/lib/apt/lists/*
 
 # Unprivileged user for running untrusted code
-RUN useradd -m -s /bin/bash -u 1001 agent && \
+RUN useradd -m -s /bin/bash -u 1000 agent && \
     mkdir -p /workspace && \
     chown agent:agent /workspace
 
 # SSH fallback (if vsock is disabled)
 RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
 
-# Placeholder guest agent — replace with compiled binary
-COPY guest-agent.sh /usr/local/bin/guest-agent
-RUN chmod 755 /usr/local/bin/guest-agent
+# Compiled vsock agent used for host<->guest RPC
+COPY vsock-agent /usr/local/bin/vsock-agent
+RUN chmod 755 /usr/local/bin/vsock-agent && \
+    ln -sf /usr/local/bin/vsock-agent /usr/local/bin/guest-agent
 
 # SysV init script for guest agent
 COPY guest-agent-init.sh /etc/init.d/guest-agent

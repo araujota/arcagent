@@ -344,6 +344,8 @@ export default defineSchema({
     bountyId: v.id("bounties"),
     submissionId: v.id("submissions"),
     workerJobId: v.optional(v.string()),
+    workerHostUsed: v.optional(v.string()),
+    attemptWorkerId: v.optional(v.id("attemptWorkers")),
     status: v.union(
       v.literal("queued"),
       v.literal("provisioning"),
@@ -533,6 +535,13 @@ export default defineSchema({
     agentId: v.id("users"),
     workspaceId: v.string(),
     workerHost: v.string(),
+    attemptWorkerId: v.optional(v.id("attemptWorkers")),
+    attemptMode: v.optional(v.union(
+      v.literal("shared_worker"),
+      v.literal("dedicated_attempt_vm"),
+    )),
+    attemptLaunchMs: v.optional(v.number()),
+    attemptReadyMs: v.optional(v.number()),
     vmId: v.optional(v.string()),
     status: v.union(
       v.literal("provisioning"),
@@ -688,4 +697,40 @@ export default defineSchema({
     .index("by_agentId", ["agentId"])
     .index("by_crashType", ["crashType"])
     .index("by_createdAt", ["createdAt"]),
+
+  attemptWorkers: defineTable({
+    claimId: v.id("bountyClaims"),
+    bountyId: v.id("bounties"),
+    agentId: v.id("users"),
+    workspaceId: v.string(),
+    instanceId: v.optional(v.string()),
+    publicHost: v.optional(v.string()),
+    status: v.union(
+      v.literal("launching"),
+      v.literal("running"),
+      v.literal("healthy"),
+      v.literal("ready"),
+      v.literal("terminating"),
+      v.literal("terminated"),
+      v.literal("error"),
+    ),
+    launchRequestedAt: v.number(),
+    runningAt: v.optional(v.number()),
+    healthyAt: v.optional(v.number()),
+    terminatedAt: v.optional(v.number()),
+    terminateReason: v.optional(v.string()),
+    bootLogRef: v.optional(v.string()),
+    serviceTokenHash: v.string(),
+    tokenSigningKeyId: v.string(),
+    mode: v.union(
+      v.literal("shared_worker"),
+      v.literal("dedicated_attempt_vm"),
+    ),
+    errorMessage: v.optional(v.string()),
+  })
+    .index("by_claimId", ["claimId"])
+    .index("by_workspaceId", ["workspaceId"])
+    .index("by_instanceId", ["instanceId"])
+    .index("by_bountyId", ["bountyId"])
+    .index("by_status", ["status"]),
 });

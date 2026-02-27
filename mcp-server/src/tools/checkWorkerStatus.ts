@@ -36,13 +36,15 @@ export function registerCheckWorkerStatus(server: McpServer): void {
 
       const ws = await getWorkspaceForAgent(user.userId, args.bountyId);
       if (!ws.found) {
+        const message =
+          ws.reason === "no_active_claim"
+            ? "No active claim found for this bounty.\n\nClaim the bounty first with `claim_bounty`, then retry `check_worker_status`."
+            : "Workspace is not ready yet for this claim.\n\nUse `workspace_status` to track provisioning and retry once status is `ready`.";
         return {
           content: [
             {
               type: "text" as const,
-              text:
-                "No workspace found for this bounty.\n\n" +
-                "Claim the bounty first with `claim_bounty`, then retry `check_worker_status`.",
+              text: message,
             },
           ],
           isError: true,

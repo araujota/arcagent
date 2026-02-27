@@ -10,7 +10,7 @@
 #   - Language runtime (Node.js, Python, etc.)
 #   - Git (for cloning repos)
 #   - Guest vsock agent (listens on vsock port 5000)
-#   - "agent" user (uid 1001) for running untrusted code
+#   - "agent" user (uid 1000) for running untrusted code
 #
 # Images are placed in /var/lib/firecracker/rootfs/
 # ---------------------------------------------------------------------------
@@ -19,8 +19,21 @@ set -euo pipefail
 ROOTFS_DIR="/var/lib/firecracker/rootfs"
 MOUNT_DIR="/tmp/fc-rootfs-mount"
 IMAGE_SIZE_MB=4096
+VSOCK_AGENT_BIN="${VSOCK_AGENT_BIN:-/opt/arcagent/scripts/vsock-agent}"
+MIN_VSOCK_AGENT_BYTES="${MIN_VSOCK_AGENT_BYTES:-32768}"
 
 mkdir -p "$ROOTFS_DIR" "$MOUNT_DIR"
+
+if [ ! -x "$VSOCK_AGENT_BIN" ]; then
+  echo "ERROR: Missing required vsock agent binary: $VSOCK_AGENT_BIN"
+  echo "Refusing to build rootfs without a real vsock-agent binary."
+  exit 1
+fi
+
+if [ ! -s "$VSOCK_AGENT_BIN" ] || [ "$(stat -c%s "$VSOCK_AGENT_BIN")" -lt "$MIN_VSOCK_AGENT_BYTES" ]; then
+  echo "ERROR: vsock-agent binary at $VSOCK_AGENT_BIN is too small or empty."
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Helper: create a base rootfs with Ubuntu minimal
@@ -54,7 +67,7 @@ create_base_rootfs() {
     sudo
 
   # Create unprivileged "agent" user for running workspace code
-  chroot "$MOUNT_DIR" useradd -m -s /bin/bash -u 1001 agent
+  chroot "$MOUNT_DIR" useradd -m -s /bin/bash -u 1000 agent
   chroot "$MOUNT_DIR" mkdir -p /workspace
   chroot "$MOUNT_DIR" chown agent:agent /workspace
 
@@ -73,39 +86,18 @@ create_base_rootfs() {
 ### END INIT INFO
 case "$1" in
   start)
-    /usr/local/bin/guest-agent &
+    /usr/local/bin/vsock-agent &
     ;;
   stop)
-    killall guest-agent 2>/dev/null
+    killall vsock-agent 2>/dev/null
     ;;
 esac
 INITEOF
   chmod 755 "$MOUNT_DIR/etc/init.d/guest-agent"
 
-  # Install the guest agent binary
-  # The guest agent is a simple program that:
-  #   1. Listens on vsock port 5000
-  #   2. Accepts JSON-framed requests: { "type": "exec"|"write_file", ... }
-  #   3. Executes commands or writes files, returns JSON results
-  #
-  # For now, create a placeholder. The real binary should be built separately
-  # and placed at /usr/local/bin/guest-agent in the rootfs.
-  cat > "$MOUNT_DIR/usr/local/bin/guest-agent" <<'AGENTEOF'
-#!/usr/bin/env bash
-# Placeholder guest agent — replace with compiled binary
-# This shell version handles basic exec requests over vsock
-echo "guest-agent: starting on vsock port 5000" >&2
-
-# The real guest agent should be a compiled Go/Rust binary that:
-# - Listens on vsock CID=3 port 5000
-# - Accepts 4-byte BE length-prefixed JSON frames
-# - Handles: exec (run shell commands), write_file (write content to path)
-# - Returns 4-byte BE length-prefixed JSON responses
-# - Supports running commands as different users (su -c)
-echo "guest-agent: placeholder — replace with compiled binary" >&2
-sleep infinity
-AGENTEOF
-  chmod 755 "$MOUNT_DIR/usr/local/bin/guest-agent"
+  # Install real vsock-agent binary (and compatibility symlink).
+  install -m 0755 "$VSOCK_AGENT_BIN" "$MOUNT_DIR/usr/local/bin/vsock-agent"
+  ln -sf /usr/local/bin/vsock-agent "$MOUNT_DIR/usr/local/bin/guest-agent"
 
   # Network configuration (static IP assigned via kernel boot args)
   cat > "$MOUNT_DIR/etc/resolv.conf" <<'DNSEOF'
@@ -186,6 +178,21 @@ install_language() {
   trap - RETURN
 }
 
+validate_rootfs_image() {
+  local image_path="$1"
+  local stat_out
+  if ! stat_out=$(debugfs -R "stat /usr/local/bin/vsock-agent" "$image_path" 2>/dev/null); then
+    echo "ERROR: Rootfs validation failed for $image_path: /usr/local/bin/vsock-agent missing"
+    return 1
+  fi
+  local size
+  size=$(echo "$stat_out" | awk '/Size:/{print $2; exit}')
+  if [ -z "$size" ] || [ "$size" -lt "$MIN_VSOCK_AGENT_BYTES" ]; then
+    echo "ERROR: Rootfs validation failed for $image_path: vsock-agent size $size < $MIN_VSOCK_AGENT_BYTES"
+    return 1
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Build each language image
 # ---------------------------------------------------------------------------
@@ -211,6 +218,7 @@ for image_name in "${!IMAGES[@]}"; do
   echo "Building $image_name..."
   create_base_rootfs "$image_path" "$image_name"
   install_language "$image_path" "${IMAGES[$image_name]}"
+  validate_rootfs_image "$image_path"
   chown arcagent:arcagent "$image_path"
   echo "Done: $image_name ($(du -h "$image_path" | cut -f1))"
 done

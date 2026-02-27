@@ -6,7 +6,7 @@
  * blocked by iptables. This prevents DNS tunneling and data exfiltration.
  */
 
-import { writeFile, unlink } from "node:fs/promises";
+import { readFile, writeFile, unlink } from "node:fs/promises";
 import { logger } from "../index";
 import { execFileAsync } from "../lib/execFileAsync";
 
@@ -70,20 +70,14 @@ export async function startDnsResolver(
 
   await writeFile(configPath, lines.join("\n") + "\n");
 
-  // Start dnsmasq
-  try {
-    await execFileAsync("dnsmasq", [
-      "--conf-file=" + configPath,
-      "--log-queries",
-      "--log-facility=/tmp/fc-dns-${vmId}.log",
-    ]);
-    logger.info("DNS resolver started", { vmId, gatewayIp, domains: allowedDomains.length });
-  } catch (err) {
-    logger.warn("Failed to start DNS resolver (dnsmasq may not be installed)", {
-      vmId,
-      error: String(err),
-    });
-  }
+  await execFileAsync("dnsmasq", [
+    "--conf-file=" + configPath,
+    "--log-queries",
+    `--log-facility=/tmp/fc-dns-${vmId}.log`,
+  ]);
+  await waitForPidFile(pidFile, 5_000);
+
+  logger.info("DNS resolver started", { vmId, gatewayIp, domains: allowedDomains.length });
 
   return { vmId, configPath, pidFile, gatewayIp };
 }
@@ -93,7 +87,6 @@ export async function startDnsResolver(
  */
 export async function stopDnsResolver(handle: DnsResolverHandle): Promise<void> {
   try {
-    const { readFile } = await import("node:fs/promises");
     const pid = (await readFile(handle.pidFile, "utf-8")).trim();
     if (pid) {
       process.kill(parseInt(pid, 10), "SIGTERM");
@@ -130,13 +123,7 @@ export async function applyDnsRedirect(
   ];
 
   for (const rule of rules) {
-    const table = rule.includes("-t") ? [] : [];
-    await execFileAsync("iptables", ["-A", ...rule]).catch((err) => {
-      logger.warn("Failed to add DNS redirect rule", {
-        rule: rule.join(" "),
-        error: String(err),
-      });
-    });
+    await execFileAsync("iptables", ["-A", ...rule]);
   }
 }
 
@@ -159,4 +146,18 @@ export async function removeDnsRedirect(
     "-D", "FORWARD", "-i", tapDevice, "-p", "udp", "--sport", "53",
     "-m", "length", "--length", "256:65535", "-j", "DROP",
   ]).catch(() => {});
+}
+
+async function waitForPidFile(pidFile: string, timeoutMs: number): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const pidText = (await readFile(pidFile, "utf8")).trim();
+      if (pidText) return;
+    } catch {
+      // keep polling
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for DNS resolver pid file: ${pidFile}`);
 }

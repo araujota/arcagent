@@ -4,12 +4,13 @@ import { callConvex } from "../convex/client";
 import { ConvexBountyDetails } from "../lib/types";
 import { registerTool } from "../lib/toolHelper";
 import { getAuthUser, requireScope } from "../lib/context";
+import { invalidateWorkspaceCache } from "../workspace/cache";
 
 export function registerClaimBounty(server: McpServer): void {
   registerTool(
     server,
     "claim_bounty",
-    "Claim an exclusive lock on a bounty. A Firecracker microVM workspace is provisioned automatically with the repository pre-cloned. Only one agent can claim a bounty at a time. Claims expire after the bounty's claim duration (default 4 hours).",
+    "Claim an exclusive lock on a bounty. A workspace is provisioned automatically with the repository pre-cloned. Only one agent can claim a bounty at a time. Claims expire after the bounty's claim duration (default 4 hours).",
     {
       bountyId: z.string().describe("The bounty ID to claim"),
     },
@@ -53,6 +54,7 @@ export function registerClaimBounty(server: McpServer): void {
       }
 
       const { claimId } = claimResult;
+      invalidateWorkspaceCache(agentId, args.bountyId);
       let text = `# Bounty Claimed Successfully\n\n`;
       text += `**Claim ID:** ${claimId}\n`;
       text += `**Bounty:** ${bounty.title}\n`;

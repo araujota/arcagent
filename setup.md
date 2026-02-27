@@ -136,6 +136,12 @@ Set via `npx convex env set VARIABLE_NAME "value"` or in the Convex Dashboard un
 | Variable | Required | Description | How to get it |
 |----------|----------|-------------|---------------|
 | `WORKER_API_URL` | Yes | Worker HTTP endpoint for dispatching verification jobs | `http://localhost:3001` locally, or your worker's production URL |
+| `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` (default) or `dedicated_attempt_vm` | Set in Convex env to enable per-claim attempt workers |
+| `ATTEMPT_WORKER_LAUNCH_TEMPLATE_ID` | For dedicated mode | Launch template ID for per-claim attempt VMs | Terraform output `attempt_worker_launch_template_id` |
+| `ATTEMPT_WORKER_SECURITY_GROUP_IDS` | Optional | Comma-separated SG IDs override at launch | Terraform output `attempt_worker_security_group_id` |
+| `ATTEMPT_WORKER_SUBNET_ID` | Optional | Subnet ID override for attempt VM launch | Use one of your worker VPC public subnets |
+| `ATTEMPT_WORKER_SERVICE_TOKEN_SECRET` | For dedicated mode | Secret used to derive per-attempt worker service tokens | `openssl rand -hex 32` |
+| `ATTEMPT_WORKER_TOKEN_SIGNING_SECRET` | For dedicated mode | Secret used to derive per-attempt workspace JWT signing keys | `openssl rand -hex 32` |
 
 ---
 
@@ -151,6 +157,7 @@ Create `worker/.env`.
 | `CONVEX_HTTP_ACTIONS_URL` | Recommended | Convex HTTP actions URL (`.convex.site`) used for `/api/*` callbacks | Derive from `CONVEX_URL` by replacing `.cloud` with `.site` |
 | `WORKER_SHARED_SECRET` | Yes | Auth with Convex HTTP endpoints | Must match value set in Convex env |
 | `WORKER_EXECUTION_BACKEND` | No | Execution backend (`firecracker` or `process`) | Production should use `firecracker`; `process` is for non-KVM local/test fallback |
+| `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` or `dedicated_attempt_vm` | `process` backend in production requires `dedicated_attempt_vm` |
 | `REDIS_URL` | Yes | Redis for BullMQ job queue | `redis://localhost:6379` locally, or Redis cloud connection string |
 | `PORT` | No | Express server port (default: `3001`) | Set if port 3001 is taken |
 | `LOG_LEVEL` | No | Winston log level (default: `"info"`) | Options: `error`, `warn`, `info`, `debug` |

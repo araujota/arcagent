@@ -60,6 +60,13 @@ for img in "${ROOTFS_IMAGES[@]}"; do
     exit 1
   fi
 
+  stat_out="$(debugfs -R "stat /usr/local/bin/vsock-agent" "$ext4_path" 2>/dev/null || true)"
+  size="$(echo "$stat_out" | awk '/Size:/{print $2; exit}')"
+  if [ -z "$size" ] || [ "$size" -lt 32768 ]; then
+    echo "FAIL: [$img] missing/invalid /usr/local/bin/vsock-agent (size=$size)"
+    exit 1
+  fi
+
   echo "PASS: [$img] hydrated successfully"
   pass_count=$((pass_count + 1))
 done

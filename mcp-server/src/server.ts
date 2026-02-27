@@ -42,6 +42,7 @@ import { registerWorkspaceApplyPatch } from "./tools/workspaceApplyPatch";
 import { registerWorkspaceCrashReports } from "./tools/workspaceCrashReports";
 import { registerCheckWorkerStatus } from "./tools/checkWorkerStatus";
 import { registerTestBounty } from "./tools/testBounty";
+import { registerWorkspaceStartupLog } from "./tools/workspaceStartupLog";
 
 export interface McpServerOptions {
   enableWorkspaceTools?: boolean;
@@ -109,6 +110,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
     registerWorkspaceApplyPatch(server);
     registerWorkspaceCrashReports(server);
     registerCheckWorkerStatus(server);
+    registerWorkspaceStartupLog(server);
   }
 
   return server;

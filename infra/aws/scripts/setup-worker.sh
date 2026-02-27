@@ -47,7 +47,8 @@ After=network-online.target arcagent-runtime-stack.service
 Wants=network-online.target arcagent-runtime-stack.service
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 User=root
 # Root required for: creating TAP devices, iptables rules, jailer execution,
 # dm-crypt setup. The worker itself is Node.js but needs these host privileges.
@@ -92,7 +93,7 @@ LimitNPROC=32768
 # Memory ceiling — OOM-kill if Node.js leaks beyond this (bare-metal has 32+ GB)
 MemoryMax=8G
 # Watchdog — systemd kills and restarts the process if it stops notifying.
-# The worker uses sd_notify via the health endpoint on a 60s interval.
+# The worker process sends READY/WATCHDOG/STOPPING via systemd-notify.
 WatchdogSec=120
 
 [Install]

@@ -13,11 +13,14 @@ export const dispatchVerification = internalAction({
     verificationId: v.id("verifications"),
     submissionId: v.id("submissions"),
     bountyId: v.id("bounties"),
+    workerHost: v.optional(v.string()),
+    workerAuthToken: v.optional(v.string()),
+    attemptWorkerId: v.optional(v.id("attemptWorkers")),
   },
   handler: async (ctx, args) => {
     try {
-      const workerUrl = process.env.WORKER_API_URL;
-      const workerSecret = process.env.WORKER_SHARED_SECRET;
+      const workerUrl = args.workerHost ?? process.env.WORKER_API_URL;
+      const workerSecret = args.workerAuthToken ?? process.env.WORKER_SHARED_SECRET;
 
       if (!workerUrl || !workerSecret) {
         throw new Error(
@@ -32,6 +35,8 @@ export const dispatchVerification = internalAction({
           verificationId: args.verificationId,
           bountyId: args.bountyId,
           submissionId: args.submissionId,
+          workerHostUsed: workerUrl,
+          attemptWorkerId: args.attemptWorkerId,
         }
       );
 
@@ -184,11 +189,14 @@ export const dispatchVerificationFromDiff = internalAction({
     baseCommitSha: v.string(),
     diffPatch: v.string(),
     sourceWorkspaceId: v.string(),
+    workerHost: v.optional(v.string()),
+    workerAuthToken: v.optional(v.string()),
+    attemptWorkerId: v.optional(v.id("attemptWorkers")),
   },
   handler: async (ctx, args) => {
     try {
-      const workerUrl = process.env.WORKER_API_URL;
-      const workerSecret = process.env.WORKER_SHARED_SECRET;
+      const workerUrl = args.workerHost ?? process.env.WORKER_API_URL;
+      const workerSecret = args.workerAuthToken ?? process.env.WORKER_SHARED_SECRET;
 
       if (!workerUrl || !workerSecret) {
         throw new Error(
@@ -203,6 +211,8 @@ export const dispatchVerificationFromDiff = internalAction({
           verificationId: args.verificationId,
           bountyId: args.bountyId,
           submissionId: args.submissionId,
+          workerHostUsed: workerUrl,
+          attemptWorkerId: args.attemptWorkerId,
         },
       );
 

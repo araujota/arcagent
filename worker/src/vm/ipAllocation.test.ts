@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 // ---------------------------------------------------------------------------
 
 // Import the actual module but access internal state via exports
-import { _getAllocatedIps, releaseGuestIp } from "./firecracker";
+import { _getAllocatedIps, _resetIpAllocationsForTests, releaseGuestIp } from "./firecracker";
 
 // We need to mock everything else that firecracker.ts imports
 import { vi } from "vitest";
@@ -52,9 +52,7 @@ vi.mock("./vmConfig", () => ({
 
 describe("IP allocation registry", () => {
   beforeEach(() => {
-    // Clear the allocated IPs set before each test
-    const ips = _getAllocatedIps();
-    ips.clear();
+    _resetIpAllocationsForTests();
   });
 
   it("releaseGuestIp removes IP from registry", () => {

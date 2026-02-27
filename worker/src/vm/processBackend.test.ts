@@ -111,4 +111,23 @@ describe("process backend (Cloudflare mode)", () => {
 
     await expect(access(rootDir)).rejects.toBeDefined();
   });
+
+  it("scrubs worker secrets from child command environment", async () => {
+    const previous = process.env.WORKER_SHARED_SECRET;
+    process.env.WORKER_SHARED_SECRET = "top-secret";
+
+    const handle = await mkHandle();
+    try {
+      const result = await handle.exec("printf '%s' \"$WORKER_SHARED_SECRET\"");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("");
+    } finally {
+      await destroyProcessVM(handle);
+      if (previous === undefined) {
+        delete process.env.WORKER_SHARED_SECRET;
+      } else {
+        process.env.WORKER_SHARED_SECRET = previous;
+      }
+    }
+  });
 });

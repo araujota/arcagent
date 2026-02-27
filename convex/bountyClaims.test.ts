@@ -243,6 +243,66 @@ describe("Bounty Claims", () => {
     });
   });
 
+  describe("ensureWorkspaceForActiveClaim", () => {
+    it("is idempotent when workspace already exists", async () => {
+      const t = convexTest(schema);
+      const { claimId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx, { role: "creator" });
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "in_progress",
+          repositoryUrl: "https://github.com/test/repo",
+        });
+        const claimId = await seedClaim(ctx, bountyId, agentId, {
+          status: "active",
+        });
+        await ctx.db.insert("devWorkspaces" as any, {
+          claimId,
+          bountyId,
+          agentId,
+          workspaceId: "ws_existing",
+          workerHost: "",
+          status: "provisioning",
+          language: "typescript",
+          repositoryUrl: "https://github.com/test/repo",
+          baseCommitSha: "",
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 4 * 60 * 60 * 1000,
+        });
+        return { claimId };
+      });
+
+      const result = await t.mutation(internal.bountyClaims.ensureWorkspaceForActiveClaim, {
+        claimId,
+      });
+
+      expect(result.created).toBe(false);
+      expect(result.status).toBe("provisioning");
+      expect(result.workspaceId).toBe("ws_existing");
+    });
+
+    it("throws when repository URL is missing", async () => {
+      const t = convexTest(schema);
+      const { claimId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx, { role: "creator" });
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "in_progress",
+        });
+        const claimId = await seedClaim(ctx, bountyId, agentId, {
+          status: "active",
+        });
+        return { claimId };
+      });
+
+      await expect(
+        t.mutation(internal.bountyClaims.ensureWorkspaceForActiveClaim, {
+          claimId,
+        }),
+      ).rejects.toThrow("repository URL is not configured");
+    });
+  });
+
   describe("expireStale", () => {
     it("expires stale claims past expiresAt", async () => {
       const t = convexTest(schema);
