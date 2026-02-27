@@ -12,6 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 S3_BUCKET="${1:?Usage: build-and-upload.sh <s3-bucket> [version] [image...]}"
 VERSION="${2:-v1}"
 shift 2 || shift $#
@@ -29,6 +30,32 @@ fi
 IMAGE_SIZE_MB=4096
 OUTPUT_DIR="/tmp/arcagent-rootfs-build"
 mkdir -p "$OUTPUT_DIR"
+VSOCK_AGENT_BIN="$SCRIPT_DIR/vsock-agent"
+
+cleanup() {
+  rm -f "$VSOCK_AGENT_BIN"
+}
+trap cleanup EXIT
+
+echo ">>> Building vsock-agent binary..."
+if ! command -v go >/dev/null 2>&1; then
+  echo "ERROR: Go toolchain is required to build worker/vsock-agent."
+  exit 1
+fi
+(
+  cd "$REPO_ROOT/worker/vsock-agent"
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$VSOCK_AGENT_BIN" ./
+)
+
+if [ ! -s "$VSOCK_AGENT_BIN" ]; then
+  echo "ERROR: Failed to build vsock-agent binary."
+  exit 1
+fi
+if ! file "$VSOCK_AGENT_BIN" | grep -q "ELF 64-bit LSB executable"; then
+  echo "ERROR: Built vsock-agent is not a Linux ELF binary."
+  file "$VSOCK_AGENT_BIN" || true
+  exit 1
+fi
 
 echo "=== ArcAgent Rootfs Build ==="
 echo "Bucket:  s3://$S3_BUCKET/$VERSION/"

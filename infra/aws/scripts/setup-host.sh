@@ -92,6 +92,7 @@ apt-get install -y -qq \
   dmsetup \
   cryptsetup \
   file \
+  e2fsprogs \
   acl \
   unzip \
   awscli \
@@ -277,6 +278,16 @@ if ! id -u arcagent &>/dev/null; then
 fi
 usermod -aG kvm arcagent 2>/dev/null || true
 
+# Process backend execution user (used in dedicated attempt VM mode)
+if ! id -u agent &>/dev/null; then
+  useradd -m -s /bin/bash agent
+fi
+
+# Block instance metadata access for agent commands (defense-in-depth).
+iptables -C OUTPUT -m owner --uid-owner agent -d 169.254.169.254/32 -j REJECT 2>/dev/null || \
+  iptables -A OUTPUT -m owner --uid-owner agent -d 169.254.169.254/32 -j REJECT
+iptables-save > /etc/iptables/rules.v4
+
 # Firecracker directories
 mkdir -p /var/lib/firecracker/rootfs
 mkdir -p /var/lib/firecracker/kernel
@@ -334,11 +345,40 @@ echo ">>> Downloading pre-built rootfs images from s3://$ROOTFS_BUCKET/$ROOTFS_V
 ROOTFS_IMAGES=(base node-20 python-312 rust-stable go-122 java-21)
 ROOTFS_DOWNLOAD_FAILED=false
 BUILT_ROOTFS_IMAGES=()
+MIN_VSOCK_AGENT_BYTES=32768
+
+validate_rootfs_image() {
+  local ext4_path="$1"
+  local image_name="$2"
+  local stat_out size
+
+  if ! stat_out=$(debugfs -R "stat /usr/local/bin/vsock-agent" "$ext4_path" 2>/dev/null); then
+    echo "  ERROR: $image_name.ext4 missing /usr/local/bin/vsock-agent"
+    return 1
+  fi
+  size=$(echo "$stat_out" | awk '/Size:/{print $2; exit}')
+  if [ -z "$size" ] || [ "$size" -lt "$MIN_VSOCK_AGENT_BYTES" ]; then
+    echo "  ERROR: $image_name.ext4 has invalid vsock-agent size ($size bytes)"
+    return 1
+  fi
+  return 0
+}
 
 for img in "$${ROOTFS_IMAGES[@]}"; do
   dest="/var/lib/firecracker/rootfs/$${img}.ext4"
   if [ -f "$dest" ]; then
-    echo "  $${img}.ext4 already exists — skipping"
+    echo "  $${img}.ext4 already exists — validating"
+    if ! validate_rootfs_image "$dest" "$img"; then
+      echo "  WARNING: Existing $${img}.ext4 failed validation; deleting"
+      rm -f "$dest"
+      ROOTFS_DOWNLOAD_FAILED=true
+    else
+      echo "  Existing $${img}.ext4 passed validation"
+      continue
+    fi
+  fi
+
+  if [ -f "$dest" ]; then
     continue
   fi
 
@@ -347,8 +387,14 @@ for img in "$${ROOTFS_IMAGES[@]}"; do
        --region "$AWS_REGION" --quiet; then
     echo "  Decompressing $${img}.ext4.zst..."
     zstd -d --rm "/tmp/$${img}.ext4.zst" -o "$dest"
-    chown arcagent:arcagent "$dest"
-    echo "  Done: $${img}.ext4 ($(du -h "$dest" | cut -f1))"
+    if validate_rootfs_image "$dest" "$img"; then
+      chown arcagent:arcagent "$dest"
+      echo "  Done: $${img}.ext4 ($(du -h "$dest" | cut -f1))"
+    else
+      rm -f "$dest"
+      ROOTFS_DOWNLOAD_FAILED=true
+      echo "  WARNING: Discarded invalid $${img}.ext4"
+    fi
   else
     echo "  WARNING: Failed to download $${img}.ext4.zst from S3"
     ROOTFS_DOWNLOAD_FAILED=true
@@ -362,7 +408,11 @@ if [ "$ROOTFS_DOWNLOAD_FAILED" = "true" ]; then
     bash /opt/arcagent/scripts/build-rootfs.sh
     for img in "$${ROOTFS_IMAGES[@]}"; do
       if [ -f "/var/lib/firecracker/rootfs/$${img}.ext4" ]; then
-        BUILT_ROOTFS_IMAGES+=("$${img}")
+        if validate_rootfs_image "/var/lib/firecracker/rootfs/$${img}.ext4" "$img"; then
+          BUILT_ROOTFS_IMAGES+=("$${img}")
+        else
+          rm -f "/var/lib/firecracker/rootfs/$${img}.ext4"
+        fi
       fi
     done
   else
@@ -370,6 +420,13 @@ if [ "$ROOTFS_DOWNLOAD_FAILED" = "true" ]; then
     echo "Upload images to S3 first: bash infra/rootfs/build-and-upload.sh $ROOTFS_BUCKET $ROOTFS_VERSION"
   fi
 fi
+
+for img in "$${ROOTFS_IMAGES[@]}"; do
+  if [ ! -f "/var/lib/firecracker/rootfs/$${img}.ext4" ]; then
+    echo "ERROR: Required rootfs image missing after hydration/build: $${img}.ext4"
+    exit 1
+  fi
+done
 
 if [ "$ROOTFS_UPLOAD_ON_BOOT" = "true" ] && [ "$${#BUILT_ROOTFS_IMAGES[@]}" -gt 0 ]; then
   echo ">>> Uploading locally-built rootfs images to s3://$ROOTFS_BUCKET/$ROOTFS_VERSION/ ..."
@@ -468,8 +525,12 @@ WORKSPACE_IDLE_TIMEOUT_MS=$WORKSPACE_IDLE_TIMEOUT_MS
 # -------------------------------------------------------
 # Firecracker / VM configuration
 # -------------------------------------------------------
+WORKER_EXECUTION_BACKEND=firecracker
+WORKSPACE_ISOLATION_MODE=shared_worker
 FC_USE_VSOCK=true
 FC_HARDEN_EGRESS=$HARDEN_EGRESS
+FC_VSOCK_INIT_PATH=/usr/local/bin/vsock-agent
+FC_VALIDATE_VSOCK_ROOTFS=true
 FIRECRACKER_BIN=/usr/local/bin/firecracker
 JAILER_BIN=/usr/local/bin/jailer
 FC_KERNEL_IMAGE=/var/lib/firecracker/vmlinux

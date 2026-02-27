@@ -162,6 +162,10 @@ function defaultExecFileMock() {
   mockExecFile.mockImplementation(
     (cmd: string, args: string[], optsOrCb?: unknown, cb?: Function) => {
       const callback = typeof optsOrCb === "function" ? optsOrCb : cb;
+      if (cmd === "debugfs") {
+        if (callback) callback(null, { stdout: "Inode: 42\nSize: 2457600\n", stderr: "" });
+        return createMockChildProcess();
+      }
       if (callback) callback(null, { stdout: "", stderr: "" });
       // Return ChildProcess-like object for raw execFile calls (e.g. jailer launch).
       // For promisified calls the return value is ignored by promisify.

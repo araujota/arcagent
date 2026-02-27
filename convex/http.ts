@@ -9,6 +9,7 @@ import {
   verifyWorkerCallbackSignature,
   isFreshWorkerCallbackTimestamp,
 } from "./lib/hmac";
+import { deriveAttemptTokenSigningSecret } from "./lib/attemptWorkerAuth";
 
 const http = httpRouter();
 
@@ -1718,8 +1719,19 @@ http.route({
       return mcpError("Workspace is expired", 409);
     }
 
-    const signingSecret =
+    let signingSecret =
       process.env.WORKER_TOKEN_SIGNING_SECRET || process.env.WORKER_SHARED_SECRET;
+
+    if (ws.attemptWorkerId) {
+      const attemptWorker = await ctx.runQuery(internal.attemptWorkers.getByIdInternal, {
+        attemptWorkerId: ws.attemptWorkerId,
+      });
+      if (!attemptWorker) {
+        return mcpError("Attempt worker record not found", 503);
+      }
+      signingSecret = await deriveAttemptTokenSigningSecret(attemptWorker.tokenSigningKeyId);
+    }
+
     if (!signingSecret) {
       return mcpError("Worker token signing secret not configured", 503);
     }
@@ -1746,6 +1758,104 @@ http.route({
     return mcpJson({
       token,
       expiresAt: exp * 1000,
+    });
+  }),
+});
+
+// --- Workspace: Attempt startup log (operator diagnostics) ---
+http.route({
+  path: "/api/mcp/workspace/startup-log",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
+
+    const body = await request.json();
+    const { bountyId, workspaceId, claimId } = body as {
+      bountyId?: string;
+      workspaceId?: string;
+      claimId?: string;
+    };
+
+    if (!workspaceId && !claimId && !bountyId) {
+      return mcpError("Missing workspaceId, claimId, or bountyId");
+    }
+
+    let ws:
+      | {
+          workspaceId: string;
+          attemptWorkerId?: Id<"attemptWorkers">;
+          claimId: Id<"bountyClaims">;
+          bountyId: Id<"bounties">;
+          agentId: Id<"users">;
+        }
+      | null = null;
+
+    if (workspaceId) {
+      ws = await ctx.runQuery(internal.devWorkspaces.getByWorkspaceId, {
+        workspaceId,
+      });
+    } else if (claimId) {
+      ws = await ctx.runQuery(internal.devWorkspaces.getByClaimId, {
+        claimId: claimId as Id<"bountyClaims">,
+      });
+    } else if (bountyId) {
+      const typedBountyId = bountyId as Id<"bounties">;
+      if (auth.authMethod === "api_key" && auth.userId) {
+        const userId = auth.userId as Id<"users">;
+        const ownClaim = await ctx.runQuery(internal.bountyClaims.getByAgentAndBountyAnyStatus, {
+          agentId: userId,
+          bountyId: typedBountyId,
+        });
+        if (ownClaim) {
+          ws = await ctx.runQuery(internal.devWorkspaces.getByClaimId, {
+            claimId: ownClaim._id,
+          });
+        } else {
+          const creatorAccess = await isBountyCreator(ctx, auth.userId, typedBountyId);
+          if (!creatorAccess) return mcpError("Forbidden", 403);
+          const activeClaim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
+            bountyId: typedBountyId,
+          });
+          if (activeClaim) {
+            ws = await ctx.runQuery(internal.devWorkspaces.getByClaimId, {
+              claimId: activeClaim._id,
+            });
+          }
+        }
+      } else {
+        const activeClaim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
+          bountyId: typedBountyId,
+        });
+        if (activeClaim) {
+          ws = await ctx.runQuery(internal.devWorkspaces.getByClaimId, {
+            claimId: activeClaim._id,
+          });
+        }
+      }
+    }
+
+    if (!ws) {
+      return mcpJson({ found: false, message: "Workspace not found" }, 404);
+    }
+    if (!ws.attemptWorkerId) {
+      return mcpJson({
+        found: false,
+        workspaceId: ws.workspaceId,
+        message: "Workspace is not using dedicated attempt VM mode",
+      });
+    }
+
+    const log = await ctx.runAction(internal.attemptWorkersNode.getStartupLog, {
+      attemptWorkerId: ws.attemptWorkerId,
+    });
+
+    return mcpJson({
+      found: true,
+      workspaceId: ws.workspaceId,
+      claimId: ws.claimId,
+      bountyId: ws.bountyId,
+      startupLog: log,
     });
   }),
 });

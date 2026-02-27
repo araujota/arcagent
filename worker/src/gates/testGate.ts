@@ -116,11 +116,12 @@ async function runTaggedBddTests(
   const stepDefsDir = "/run/bdd_steps";
   await vm.exec(`mkdir -p ${stepDefsDir} && chmod 700 ${stepDefsDir}`, 5_000);
 
-  const injectStepDefs = async (stepDefsJson: string | undefined, label: string) => {
-    if (!stepDefsJson) return;
+  const injectStepDefs = async (stepDefsJson: string | undefined, label: string): Promise<string[]> => {
+    if (!stepDefsJson) return [];
+    const injectedPaths: string[] = [];
     try {
       const files = JSON.parse(stepDefsJson);
-      if (!Array.isArray(files)) return;
+      if (!Array.isArray(files)) return injectedPaths;
       for (const file of files) {
         if (file.path && file.content) {
           const targetPath = `${stepDefsDir}/${label}_${file.path.replace(/\//g, "_")}`;
@@ -138,15 +139,17 @@ async function runTaggedBddTests(
               5_000,
             );
           }
+          injectedPaths.push(targetPath);
         }
       }
     } catch (err) {
       logger.warn(`Failed to inject ${label} step definitions`, { error: String(err) });
     }
+    return injectedPaths;
   };
 
-  await injectStepDefs(stepDefinitionsPublic, "public");
-  await injectStepDefs(stepDefinitionsHidden, "hidden");
+  const publicStepDefPaths = await injectStepDefs(stepDefinitionsPublic, "public");
+  const hiddenStepDefPaths = await injectStepDefs(stepDefinitionsHidden, "hidden");
 
   const publicSuites = testSuites.filter((ts) => ts.visibility === "public");
   const hiddenSuites = testSuites.filter((ts) => ts.visibility === "hidden");
@@ -166,7 +169,11 @@ async function runTaggedBddTests(
       );
 
       // Run the test for this feature
-      const command = getBddTestCommand(language, featurePath, stepDefsDir);
+      const command = getBddTestCommand(
+        language,
+        featurePath,
+        group.visibility === "public" ? publicStepDefPaths : hiddenStepDefPaths,
+      );
       if (!command) continue;
 
       const result = await vm.exec(
@@ -233,17 +240,30 @@ async function runTaggedBddTests(
 /**
  * Get the BDD test runner command for a specific feature file.
  */
-function getBddTestCommand(language: string, featurePath: string, stepDefsDir: string): string | null {
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function getBddTestCommand(
+  language: string,
+  featurePath: string,
+  stepDefPaths: string[],
+): string | null {
   switch (language.toLowerCase()) {
     case "typescript":
     case "javascript":
+      {
+      const requireArgs = stepDefPaths
+        .map((path) => `--require ${shellQuote(path)}`)
+        .join(" ");
       return (
         `if npx --yes @cucumber/cucumber cucumber-js --version &>/dev/null; then ` +
-        `  npx --yes @cucumber/cucumber cucumber-js ${featurePath} --require '${stepDefsDir}/*.js' --format json 2>&1; ` +
+        `  npx --yes @cucumber/cucumber cucumber-js ${shellQuote(featurePath)} ${requireArgs} --format json 2>&1; ` +
         `elif npx jest --version &>/dev/null; then ` +
         `  npx jest --testPathPattern='.*' --json 2>&1; ` +
         `else npm test 2>&1; fi`
       );
+      }
     case "python":
       return `if command -v behave &>/dev/null; then behave ${featurePath} --format json 2>&1; else pytest -v 2>&1; fi`;
     case "ruby":

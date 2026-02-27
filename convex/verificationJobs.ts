@@ -38,12 +38,16 @@ export const create = internalMutation({
     verificationId: v.id("verifications"),
     bountyId: v.id("bounties"),
     submissionId: v.id("submissions"),
+    workerHostUsed: v.optional(v.string()),
+    attemptWorkerId: v.optional(v.id("attemptWorkers")),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("verificationJobs", {
       verificationId: args.verificationId,
       bountyId: args.bountyId,
       submissionId: args.submissionId,
+      workerHostUsed: args.workerHostUsed,
+      attemptWorkerId: args.attemptWorkerId,
       status: "queued",
       queuedAt: Date.now(),
     });

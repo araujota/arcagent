@@ -30,6 +30,16 @@ This guide covers deploying the ArcAgent verification worker — from local deve
 - Firecracker microVMs provide per-job isolation with language-specific rootfs images
 - Communication between Convex and the worker is authenticated via `WORKER_SHARED_SECRET` (constant-time comparison)
 
+## Dedicated Attempt VM Mode (No Firecracker)
+
+For onboarding and dry-run flows you can enable per-claim dedicated attempt VMs. In this mode:
+
+- Convex launches a short-lived EC2 instance per claim (via launch template).
+- The instance runs worker in `WORKER_EXECUTION_BACKEND=process`.
+- `WORKSPACE_ISOLATION_MODE=dedicated_attempt_vm` is required for production process backend.
+- Worker auth still uses `WORKER_SHARED_SECRET`, but the value is per-attempt and minted by Convex.
+- Shared worker remains available as rollback with `WORKSPACE_ISOLATION_MODE=shared_worker`.
+
 ## Local Development (Docker Compose)
 
 The project includes a `docker-compose.yml` at the repo root with all services.
@@ -69,6 +79,7 @@ Create a `.env` file at the repo root (loaded by all services via `env_file`). R
 | `WORKER_SHARED_SECRET` | Yes | Must match the value set in Convex env |
 | `REDIS_URL` | No | Overridden to `redis://redis:6379` by Docker Compose |
 | `PORT` | No | Default: `3001` |
+| `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` (default) or `dedicated_attempt_vm` |
 
 ### Firecracker in Docker
 

@@ -14,6 +14,7 @@ import { vsockPool } from "./vm/vsockChannel";
 import { generateWorkerInstanceId, recoverOrphanedSessions } from "./workspace/recovery";
 import { workspaceHeartbeat } from "./workspace/heartbeat";
 import { sessionStore } from "./workspace/sessionStore";
+import { execFileAsync } from "./lib/execFileAsync";
 
 // ---------------------------------------------------------------------------
 // Logger
@@ -51,19 +52,29 @@ async function main(): Promise<void> {
   const port = parseInt(process.env.PORT ?? "3001", 10);
   const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
   const executionBackend = (process.env.WORKER_EXECUTION_BACKEND ?? "firecracker").toLowerCase();
+  const isolationMode = (process.env.WORKSPACE_ISOLATION_MODE ?? "shared_worker").toLowerCase();
   const isProduction = process.env.NODE_ENV === "production";
 
-  if (isProduction && executionBackend !== "firecracker") {
-    logger.error("Invalid production execution backend", {
-      executionBackend,
-      expected: "firecracker",
-    });
-    process.exit(1);
-  }
-
-  if (isProduction && executionBackend === "firecracker" && process.env.FC_HARDEN_EGRESS !== "true") {
-    logger.error("FC_HARDEN_EGRESS must be true in production firecracker mode");
-    process.exit(1);
+  if (isProduction) {
+    if (executionBackend === "firecracker") {
+      if (process.env.FC_HARDEN_EGRESS !== "true") {
+        logger.error("FC_HARDEN_EGRESS must be true in production firecracker mode");
+        process.exit(1);
+      }
+    } else if (executionBackend === "process") {
+      if (isolationMode !== "dedicated_attempt_vm") {
+        logger.error("Process backend in production requires dedicated attempt VM isolation mode", {
+          executionBackend,
+          isolationMode,
+        });
+        process.exit(1);
+      }
+    } else {
+      logger.error("Unsupported production execution backend", {
+        executionBackend,
+      });
+      process.exit(1);
+    }
   }
 
   if (executionBackend === "process") {
@@ -191,6 +202,7 @@ async function main(): Promise<void> {
   const server = app.listen(port, () => {
     logger.info("Worker API server listening", { port });
   });
+  const stopWatchdog = startSystemdWatchdog();
 
   // Graceful shutdown — correct ordering with safety timeout
   let shuttingDown = false;
@@ -212,6 +224,7 @@ async function main(): Promise<void> {
 
     // 2. Stop heartbeat intervals
     workspaceHeartbeat.stopAll();
+    stopWatchdog();
 
     // 3. Drain BullMQ worker FIRST — waits for in-flight jobs to finish
     //    (their finally blocks will destroy verification VMs)
@@ -275,4 +288,47 @@ function hasBinary(binary: string): boolean {
   } catch {
     return false;
   }
+}
+
+function startSystemdWatchdog(): () => void {
+  const notifySocket = process.env.NOTIFY_SOCKET;
+  if (!notifySocket) return () => {};
+
+  const watchdogUsec = parseInt(process.env.WATCHDOG_USEC ?? "0", 10);
+  const watchdogIntervalMs = watchdogUsec > 0
+    ? Math.max(Math.floor(watchdogUsec / 2_000), 1_000)
+    : 0;
+
+  let disabled = false;
+  let timer: NodeJS.Timeout | null = null;
+
+  const notify = async (args: string[]): Promise<void> => {
+    if (disabled) return;
+    try {
+      await execFileAsync("systemd-notify", args, { timeout: 5_000 });
+    } catch (err) {
+      disabled = true;
+      logger.warn("Failed to send systemd notify message; disabling watchdog pings", {
+        error: String(err),
+      });
+    }
+  };
+
+  void notify(["--ready", "--status=arcagent-worker online"]);
+
+  if (watchdogIntervalMs > 0) {
+    timer = setInterval(() => {
+      void notify(["WATCHDOG=1"]);
+    }, watchdogIntervalMs);
+    timer.unref();
+    logger.info("Systemd watchdog heartbeat started", { watchdogIntervalMs });
+  }
+
+  return () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    void notify(["STOPPING=1", "--status=arcagent-worker shutting down"]);
+  };
 }

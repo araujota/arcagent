@@ -67,6 +67,10 @@ const TAP_PREFIX = "fc-tap-";
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000; // 2 minutes
 /** Enable vsock-based communication (set to "false" to fall back to SSH). */
 const USE_VSOCK = process.env.FC_USE_VSOCK !== "false";
+/** Vsock guest init path inside rootfs (can be overridden for compatibility). */
+const DEFAULT_VSOCK_INIT_PATH = process.env.FC_VSOCK_INIT_PATH ?? "/usr/local/bin/vsock-agent";
+/** Reject tiny placeholder scripts when validating rootfs vsock agent binaries. */
+const MIN_VSOCK_AGENT_BYTES = parseInt(process.env.FC_MIN_VSOCK_AGENT_BYTES ?? "32768", 10);
 /** SSH key path for SSH fallback (when vsock is disabled). */
 const SSH_KEY_PATH = process.env.FC_SSH_KEY_PATH ?? "/root/.ssh/id_ed25519";
 /** SSH port on guest (when vsock is disabled). */
@@ -96,7 +100,9 @@ export async function createFirecrackerVM(
 
   const vmId = `vm-${uuidv4().slice(0, 8)}`;
   const tapDevice = `${TAP_PREFIX}${vmId.slice(3)}`;
-  const guestIp = allocateGuestIp(vmId);
+  const network = allocateVmNetwork(vmId);
+  const guestIp = network.guestIp;
+  const gatewayIp = network.gatewayIp;
   const vsockSocketPath = `/tmp/fc-vsock-${vmId}.sock`;
 
   logger.info("Creating Firecracker microVM", {
@@ -107,6 +113,13 @@ export async function createFirecrackerVM(
     rootfsImage: opts.rootfsImage,
     useVsock: USE_VSOCK,
   });
+
+  let dnsResolver: DnsResolverHandle | null = null;
+  let egressProxy: EgressProxyHandle | null = null;
+  let overlayPath = "";
+  let encryptedOverlay: EncryptedOverlayHandle | null = null;
+  let vmSshKeyPath: string | undefined;
+  let configPath: string | undefined;
 
   try {
 
@@ -124,22 +137,19 @@ export async function createFirecrackerVM(
     });
   });
 
-  await execFileAsync("ip", ["addr", "add", `${guestIp}/30`, "dev", tapDevice]);
+  await execFileAsync("ip", ["addr", "add", `${gatewayIp}/30`, "dev", tapDevice]);
   await execFileAsync("ip", ["link", "set", tapDevice, "up"]);
 
   // SECURITY (P2-1): Apply iptables egress filtering on the TAP device.
   await applyEgressFiltering(tapDevice);
 
   // Hardened egress: DNS resolver + SNI proxy + rate limiting (if enabled)
-  let dnsResolver: DnsResolverHandle | null = null;
-  let egressProxy: EgressProxyHandle | null = null;
   const vmConfig = getVMConfig(opts.rootfsImage.replace(/\.ext4$/, "").replace(/-\d+$/, ""));
   const allowedDomains = buildAllowedDomains(vmConfig.allowedDomains);
   const hardenEgress = process.env.FC_HARDEN_EGRESS !== "false"
     && (process.env.FC_HARDEN_EGRESS === "true" || process.env.NODE_ENV === "production");
 
   if (hardenEgress && allowedDomains.length > 0) {
-    const gatewayIp = "10.0.0.1";
     try {
       dnsResolver = await startDnsResolver(vmId, gatewayIp, allowedDomains);
       await applyDnsRedirect(tapDevice, gatewayIp);
@@ -148,17 +158,26 @@ export async function createFirecrackerVM(
       await applyRateLimiting(tapDevice);
       logger.info("Hardened egress applied", { vmId, domains: allowedDomains.length });
     } catch (err) {
-      logger.warn("Hardened egress setup failed, using basic filtering", {
+      logger.warn("Hardened egress setup failed, cleaning partial state and using basic filtering", {
         vmId,
         error: String(err),
       });
+      if (egressProxy) {
+        await removeProxyRedirect(tapDevice, egressProxy.port).catch(() => {});
+        await stopEgressProxy(egressProxy).catch(() => {});
+        egressProxy = null;
+      }
+      await removeRateLimiting(tapDevice).catch(() => {});
+      if (dnsResolver) {
+        await removeDnsRedirect(tapDevice, gatewayIp).catch(() => {});
+        await stopDnsResolver(dnsResolver).catch(() => {});
+        dnsResolver = null;
+      }
     }
   }
 
   // 2. Prepare ephemeral overlay of rootfs (with encryption if available)
   const rootfsPath = `${ROOTFS_DIR}/${opts.rootfsImage}`;
-  let overlayPath: string;
-  let encryptedOverlay: EncryptedOverlayHandle | null = null;
 
   if (USE_VSOCK) {
     // Use encrypted overlay — protects repo code from host-level access
@@ -181,7 +200,6 @@ export async function createFirecrackerVM(
   }
 
   // 2a. Generate per-VM SSH keypair (only if not using vsock)
-  let vmSshKeyPath: string | undefined;
   if (!USE_VSOCK) {
     vmSshKeyPath = `/tmp/fc-ssh-${vmId}`;
     await execFileAsync("ssh-keygen", [
@@ -189,7 +207,10 @@ export async function createFirecrackerVM(
     ]);
   }
 
-  // 3. Build Firecracker config (with vsock device if enabled)
+  // 3. Validate vsock init binary and build Firecracker config
+  const vsockInitPath = USE_VSOCK ? await resolveVsockInitPath(rootfsPath) : undefined;
+
+  // Build Firecracker config (with vsock device if enabled)
   const config = buildVMConfig({
     vmId,
     kernelImage: KERNEL_IMAGE,
@@ -198,10 +219,12 @@ export async function createFirecrackerVM(
     memSizeMib: opts.memSizeMib,
     tapDevice,
     guestIp,
+    gatewayIp,
     vsockSocketPath: USE_VSOCK ? vsockSocketPath : undefined,
+    vsockInitPath,
   });
 
-  const configPath = `/tmp/fc-config-${vmId}.json`;
+  configPath = `/tmp/fc-config-${vmId}.json`;
   const { writeFile, chmod } = await import("node:fs/promises");
   await writeFile(configPath, JSON.stringify(config, null, 2));
 
@@ -320,7 +343,33 @@ export async function createFirecrackerVM(
   return handle;
 
   } catch (err) {
-    // Release the allocated IP to prevent leaks on partial VM creation failure
+    // Best-effort cleanup for partial VM creation failures.
+    if (egressProxy) {
+      await removeProxyRedirect(tapDevice, egressProxy.port).catch(() => {});
+      await stopEgressProxy(egressProxy).catch(() => {});
+    }
+    await removeRateLimiting(tapDevice).catch(() => {});
+    if (dnsResolver) {
+      await removeDnsRedirect(tapDevice, gatewayIp).catch(() => {});
+      await stopDnsResolver(dnsResolver).catch(() => {});
+    }
+    await removeEgressFiltering(tapDevice).catch(() => {});
+    await execFileAsync("ip", ["tuntap", "del", tapDevice, "mode", "tap"]).catch(() => {});
+
+    const { unlink } = await import("node:fs/promises");
+    if (encryptedOverlay) {
+      await destroyEncryptedOverlay(encryptedOverlay).catch(() => {});
+    } else if (overlayPath) {
+      await unlink(overlayPath).catch(() => {});
+    }
+    if (configPath) {
+      await unlink(configPath).catch(() => {});
+    }
+    if (vmSshKeyPath) {
+      await unlink(vmSshKeyPath).catch(() => {});
+      await unlink(`${vmSshKeyPath}.pub`).catch(() => {});
+    }
+
     releaseGuestIp(guestIp);
     throw err;
   }
@@ -485,6 +534,69 @@ interface VMHandleInternal extends VMHandle {
   __egressProxy?: EgressProxyHandle;
 }
 
+const rootfsVsockInitCache = new Map<string, string>();
+let warnedMissingDebugfs = false;
+
+async function resolveVsockInitPath(rootfsPath: string): Promise<string> {
+  if (process.env.FC_VALIDATE_VSOCK_ROOTFS === "false") {
+    return DEFAULT_VSOCK_INIT_PATH;
+  }
+
+  const cached = rootfsVsockInitCache.get(rootfsPath);
+  if (cached) return cached;
+
+  const candidates = Array.from(
+    new Set([DEFAULT_VSOCK_INIT_PATH, "/usr/local/bin/vsock-agent", "/usr/local/bin/guest-agent"]),
+  );
+
+  for (const path of candidates) {
+    const stats = await statPathInExt4(rootfsPath, path);
+    if (!stats.exists) continue;
+    if (stats.size < MIN_VSOCK_AGENT_BYTES) {
+      logger.warn("Rootfs contains suspiciously small vsock init candidate; rejecting", {
+        rootfsPath,
+        path,
+        sizeBytes: stats.size,
+        minBytes: MIN_VSOCK_AGENT_BYTES,
+      });
+      continue;
+    }
+    rootfsVsockInitCache.set(rootfsPath, path);
+    return path;
+  }
+
+  throw new Error(
+    `Rootfs ${rootfsPath} has no valid vsock init binary; expected one of: ${candidates.join(", ")}`,
+  );
+}
+
+async function statPathInExt4(
+  rootfsPath: string,
+  guestPath: string,
+): Promise<{ exists: boolean; size: number }> {
+  try {
+    const { stdout } = await execFileAsync("debugfs", ["-R", `stat ${guestPath}`, rootfsPath], {
+      timeout: 5_000,
+    });
+    const sizeMatch = stdout.match(/Size:\s+(\d+)/);
+    return {
+      exists: true,
+      size: sizeMatch ? parseInt(sizeMatch[1], 10) : 0,
+    };
+  } catch (err) {
+    const message = String(err);
+    if (!warnedMissingDebugfs && /debugfs/.test(message) && /ENOENT|not found/i.test(message)) {
+      warnedMissingDebugfs = true;
+      logger.warn("debugfs not available; skipping rootfs vsock binary validation", {
+        rootfsPath,
+      });
+      rootfsVsockInitCache.set(rootfsPath, DEFAULT_VSOCK_INIT_PATH);
+      return { exists: true, size: MIN_VSOCK_AGENT_BYTES };
+    }
+    return { exists: false, size: 0 };
+  }
+}
+
 /**
  * SECURITY (P2-1): Apply iptables FORWARD rules on TAP device.
  * Only allows DNS (53) + HTTPS (443) egress; drops all else.
@@ -606,37 +718,48 @@ async function waitForSSH(
   throw new Error(`SSH not reachable for VM ${vmId} after ${maxRetries} retries`);
 }
 
-/**
- * Track allocated guest IPs to prevent collisions across concurrent VMs.
- */
-const allocatedIps = new Set<string>();
+interface VmNetworkAllocation {
+  guestIp: string;
+  gatewayIp: string;
+}
 
 /**
- * Allocate a guest IP for a VM, ensuring no collision with running VMs.
- * Falls back to linear scan if hash-preferred IP is taken.
+ * Track allocated guest IPs and /30 subnets to prevent collisions.
  */
-function allocateGuestIp(vmId: string): string {
+const allocatedIps = new Set<string>();
+const allocatedSubnetIndexes = new Set<number>();
+const guestIpToSubnetIndex = new Map<string, number>();
+const MAX_VM_SUBNETS = 63; // 10.0.0.0/24 split into 63 usable /30 subnets (excludes .252/30)
+
+/**
+ * Allocate a unique /30 subnet per VM:
+ *   subnet base = N * 4
+ *   gateway     = base + 1
+ *   guest       = base + 2
+ */
+function allocateVmNetwork(vmId: string): VmNetworkAllocation {
   let hash = 0;
   for (const ch of vmId) {
     hash = (hash * 31 + ch.charCodeAt(0)) & 0xffffffff;
   }
-  // Try hash-preferred octet first
-  const preferred = (Math.abs(hash) % 252) + 2;
-  const preferredIp = `10.0.0.${preferred}`;
-  if (!allocatedIps.has(preferredIp)) {
-    allocatedIps.add(preferredIp);
-    return preferredIp;
+
+  const preferredIndex = Math.abs(hash) % MAX_VM_SUBNETS;
+  for (let i = 0; i < MAX_VM_SUBNETS; i++) {
+    const subnetIndex = (preferredIndex + i) % MAX_VM_SUBNETS;
+    if (allocatedSubnetIndexes.has(subnetIndex)) continue;
+
+    const baseOctet = subnetIndex * 4;
+    const gatewayIp = `10.0.0.${baseOctet + 1}`;
+    const guestIp = `10.0.0.${baseOctet + 2}`;
+
+    allocatedSubnetIndexes.add(subnetIndex);
+    allocatedIps.add(guestIp);
+    guestIpToSubnetIndex.set(guestIp, subnetIndex);
+
+    return { guestIp, gatewayIp };
   }
-  // Linear scan for next available
-  for (let i = 0; i < 252; i++) {
-    const octet = ((preferred - 2 + i) % 252) + 2;
-    const ip = `10.0.0.${octet}`;
-    if (!allocatedIps.has(ip)) {
-      allocatedIps.add(ip);
-      return ip;
-    }
-  }
-  throw new Error("No available guest IPs — all 252 addresses in use");
+
+  throw new Error(`No available VM /30 subnets — all ${MAX_VM_SUBNETS} subnets in use`);
 }
 
 /**
@@ -644,11 +767,23 @@ function allocateGuestIp(vmId: string): string {
  */
 export function releaseGuestIp(ip: string): void {
   allocatedIps.delete(ip);
+  const subnetIndex = guestIpToSubnetIndex.get(ip);
+  if (subnetIndex !== undefined) {
+    guestIpToSubnetIndex.delete(ip);
+    allocatedSubnetIndexes.delete(subnetIndex);
+  }
 }
 
 /** Exported for testing. */
 export function _getAllocatedIps(): Set<string> {
   return allocatedIps;
+}
+
+/** Exported for testing. */
+export function _resetIpAllocationsForTests(): void {
+  allocatedIps.clear();
+  allocatedSubnetIndexes.clear();
+  guestIpToSubnetIndex.clear();
 }
 
 /**
@@ -662,14 +797,25 @@ function buildVMConfig(opts: {
   memSizeMib: number;
   tapDevice: string;
   guestIp: string;
+  gatewayIp: string;
   vsockSocketPath?: string;
+  vsockInitPath?: string;
 }): Record<string, unknown> {
+  const bootArgs: string[] = [
+    "console=ttyS0",
+    "reboot=k",
+    "panic=1",
+    "pci=off",
+    `ip=${opts.guestIp}::${opts.gatewayIp}:255.255.255.252::eth0:off`,
+  ];
+  if (opts.vsockSocketPath && opts.vsockInitPath) {
+    bootArgs.push(`init=${opts.vsockInitPath}`);
+  }
+
   const config: Record<string, unknown> = {
     "boot-source": {
       kernel_image_path: opts.kernelImage,
-      boot_args:
-        "console=ttyS0 reboot=k panic=1 pci=off " +
-        `ip=${opts.guestIp}::10.0.0.1:255.255.255.252::eth0:off`,
+      boot_args: bootArgs.join(" "),
     },
     "drives": [
       {

@@ -23,14 +23,15 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -s /bin/bash -u 1001 agent && \
+RUN useradd -m -s /bin/bash -u 1000 agent && \
     mkdir -p /workspace && \
     chown agent:agent /workspace
 
 RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
 
-COPY guest-agent.sh /usr/local/bin/guest-agent
-RUN chmod 755 /usr/local/bin/guest-agent
+COPY vsock-agent /usr/local/bin/vsock-agent
+RUN chmod 755 /usr/local/bin/vsock-agent && \
+    ln -sf /usr/local/bin/vsock-agent /usr/local/bin/guest-agent
 
 COPY guest-agent-init.sh /etc/init.d/guest-agent
 RUN chmod 755 /etc/init.d/guest-agent

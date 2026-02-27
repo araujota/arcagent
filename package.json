@@ -23,6 +23,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
     "@aws-sdk/client-ec2": "^3.991.0",
+    "@aws-sdk/client-route-53": "^3.999.0",
     "@clerk/nextjs": "^6.37.3",
     "@hookform/resolvers": "^5.2.2",
     "@tanstack/react-table": "^8.21.3",

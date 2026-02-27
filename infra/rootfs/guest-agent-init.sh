@@ -7,9 +7,9 @@
 ### END INIT INFO
 case "$1" in
   start)
-    /usr/local/bin/guest-agent &
+    /usr/local/bin/vsock-agent &
     ;;
   stop)
-    killall guest-agent 2>/dev/null
+    killall vsock-agent 2>/dev/null
     ;;
 esac

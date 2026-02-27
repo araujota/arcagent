@@ -9,7 +9,7 @@
  * additional defense against exfiltration.
  */
 
-import { writeFile, unlink } from "node:fs/promises";
+import { readFile, writeFile, unlink } from "node:fs/promises";
 import { logger } from "../index";
 import { execFileAsync } from "../lib/execFileAsync";
 
@@ -30,6 +30,7 @@ export interface EgressProxyHandle {
 
 /** Base port for per-VM Squid instances. Port = BASE + hash(vmId) % 1000. */
 const PROXY_PORT_BASE = 13000;
+const PROXY_START_TIMEOUT_MS = 8_000;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -62,7 +63,7 @@ export async function startEgressProxy(
 
   const config = `
 # Auto-generated Squid config for ${vmId}
-http_port ${port} transparent ssl-bump cert=/etc/squid/ssl_cert/myCA.pem generate-host-certificates=on dynamic_cert_mem_cache_size=4MB
+http_port ${port} transparent ssl-bump cert=/etc/squid/ssl_cert/myCA-combined.pem generate-host-certificates=on dynamic_cert_mem_cache_size=4MB
 pid_filename ${pidFile}
 
 # SNI-based ACLs
@@ -93,17 +94,11 @@ dns_nameservers 127.0.0.1
 
   await writeFile(configPath, config);
 
-  try {
-    await execFileAsync("squid", ["-f", configPath, "-N", "-d", "1"], {
-      timeout: 5_000,
-    });
-    logger.info("Egress proxy started", { vmId, port, domains: allowedDomains.length });
-  } catch (err) {
-    logger.warn("Failed to start egress proxy (squid may not be installed)", {
-      vmId,
-      error: String(err),
-    });
-  }
+  await execFileAsync("squid", ["-k", "parse", "-f", configPath], { timeout: 5_000 });
+  await execFileAsync("squid", ["-f", configPath], { timeout: 5_000 });
+  await waitForPidFile(pidFile, PROXY_START_TIMEOUT_MS);
+
+  logger.info("Egress proxy started", { vmId, port, domains: allowedDomains.length });
 
   return { vmId, configPath, pidFile, port };
 }
@@ -113,7 +108,6 @@ dns_nameservers 127.0.0.1
  */
 export async function stopEgressProxy(handle: EgressProxyHandle): Promise<void> {
   try {
-    const { readFile } = await import("node:fs/promises");
     const pid = (await readFile(handle.pidFile, "utf-8")).trim();
     if (pid) {
       process.kill(parseInt(pid, 10), "SIGTERM");
@@ -143,9 +137,7 @@ export async function applyProxyRedirect(
     "-i", tapDevice,
     "-p", "tcp", "--dport", "443",
     "-j", "REDIRECT", "--to-port", String(proxyPort),
-  ]).catch((err) => {
-    logger.warn("Failed to add proxy redirect", { error: String(err) });
-  });
+  ]);
 }
 
 /**
@@ -171,9 +163,7 @@ export async function applyRateLimiting(tapDevice: string): Promise<void> {
   await execFileAsync("tc", [
     "qdisc", "add", "dev", tapDevice, "root", "tbf",
     "rate", "10mbit", "burst", "32kbit", "latency", "400ms",
-  ]).catch((err) => {
-    logger.warn("Failed to apply tc rate limit", { tapDevice, error: String(err) });
-  });
+  ]);
 
   // connlimit: max 50 concurrent outbound connections
   await execFileAsync("iptables", [
@@ -182,9 +172,7 @@ export async function applyRateLimiting(tapDevice: string): Promise<void> {
     "-p", "tcp", "--syn",
     "-m", "connlimit", "--connlimit-above", "50",
     "-j", "DROP",
-  ]).catch((err) => {
-    logger.warn("Failed to apply connlimit", { tapDevice, error: String(err) });
-  });
+  ]);
 }
 
 /**
@@ -218,4 +206,18 @@ function allocateProxyPort(vmId: string): number {
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function waitForPidFile(pidFile: string, timeoutMs: number): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const pidText = (await readFile(pidFile, "utf8")).trim();
+      if (pidText) return;
+    } catch {
+      // keep polling
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for proxy pid file: ${pidFile}`);
 }

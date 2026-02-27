@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, chmod, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -7,6 +8,8 @@ import type { VsockRequest, VsockResponse } from "./vsockChannel";
 import { logger } from "../index";
 import { execFileAsync } from "../lib/execFileAsync";
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
+const DEFAULT_EXECUTION_USER = process.env.PROCESS_BACKEND_EXEC_USER ?? "agent";
+const DEFAULT_PATH = process.env.PROCESS_BACKEND_PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 interface ProcessSession {
   cwd: string;
@@ -18,6 +21,8 @@ export interface ProcessVMHandle extends VMHandle {
   __workspaceDir: string;
   __sessions: Map<string, ProcessSession>;
   __startedAt: number;
+  __executionUser: string;
+  __dropPrivileges: boolean;
 }
 
 function shellEscape(value: string): string {
@@ -38,20 +43,75 @@ function normalizeVmPath(path: string, workspaceDir: string): string {
   return resolve(workspaceDir, path);
 }
 
+function hasBinary(binary: string): boolean {
+  try {
+    execFileSync("bash", ["-lc", `command -v ${binary} >/dev/null 2>&1`], {
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function buildScrubbedEnv(workspaceDir: string, executionUser: string): Record<string, string> {
+  return {
+    PATH: DEFAULT_PATH,
+    HOME: process.env.PROCESS_BACKEND_HOME ?? workspaceDir,
+    USER: executionUser,
+    LOGNAME: executionUser,
+    SHELL: "/bin/bash",
+    LANG: "C.UTF-8",
+    LC_ALL: "C.UTF-8",
+    TERM: process.env.TERM ?? "xterm-256color",
+    ARCAGENT_WORKSPACE_DIR: workspaceDir,
+  };
+}
+
 async function runCommand(
   command: string,
   cwd: string,
   timeoutMs: number,
   workspaceDir: string,
+  executionUser: string,
+  dropPrivileges: boolean,
 ): Promise<ExecResult> {
   const rewritten = rewriteWorkspacePaths(command, workspaceDir);
   const shellCmd = `cd ${shellEscape(cwd)} && ${rewritten}`;
+  const scrubbedEnv = buildScrubbedEnv(workspaceDir, executionUser);
 
   try {
-    const { stdout, stderr } = await execFileAsync("bash", ["-lc", shellCmd], {
-      timeout: timeoutMs,
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    let stdout = "";
+    let stderr = "";
+
+    if (dropPrivileges) {
+      if (!hasBinary("runuser")) {
+        throw new Error("runuser binary is required to execute process backend commands as an unprivileged user");
+      }
+      const envArgs = [
+        "env",
+        "-i",
+        ...Object.entries(scrubbedEnv).map(([key, value]) => `${key}=${value}`),
+        "bash",
+        "-lc",
+        shellCmd,
+      ];
+      const result = await execFileAsync("runuser", ["-u", executionUser, "--", ...envArgs], {
+        timeout: timeoutMs,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      stdout = result.stdout;
+      stderr = result.stderr;
+    } else {
+      const result = await execFileAsync("bash", ["-lc", shellCmd], {
+        timeout: timeoutMs,
+        maxBuffer: 10 * 1024 * 1024,
+        env: scrubbedEnv,
+      });
+      stdout = result.stdout;
+      stderr = result.stderr;
+    }
+
     return { stdout, stderr, exitCode: 0 };
   } catch (err) {
     const error = err as {
@@ -114,6 +174,8 @@ async function handleSessionRequest(
     session.cwd,
     request.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS,
     handle.__workspaceDir,
+    handle.__executionUser,
+    handle.__dropPrivileges,
   );
 
   let stdout = result.stdout;
@@ -181,11 +243,24 @@ export async function createProcessVM(opts: FirecrackerVMOptions): Promise<VMHan
   const rootDir = await mkdtemp(`${tmpdir()}/arcagent-${vmId}-`);
   const workspaceDir = `${rootDir}/workspace`;
   await mkdir(workspaceDir, { recursive: true });
+  const executionUser = DEFAULT_EXECUTION_USER;
+  const dropPrivileges = typeof process.getuid === "function" && process.getuid() === 0;
+
+  if (dropPrivileges) {
+    await execFileAsync("id", ["-u", executionUser]).catch(() => {
+      throw new Error(`Process backend execution user '${executionUser}' does not exist`);
+    });
+    await execFileAsync("chown", ["-R", `${executionUser}:${executionUser}`, rootDir]).catch(() => {
+      throw new Error(`Failed to chown process backend workspace to '${executionUser}'`);
+    });
+  }
 
   logger.info("Creating process execution environment", {
     vmId,
     jobId: opts.jobId,
     rootDir,
+    executionUser,
+    dropPrivileges,
   });
 
   const handle: ProcessVMHandle = {
@@ -197,9 +272,18 @@ export async function createProcessVM(opts: FirecrackerVMOptions): Promise<VMHan
     __workspaceDir: workspaceDir,
     __sessions: new Map<string, ProcessSession>(),
     __startedAt: Date.now(),
+    __executionUser: executionUser,
+    __dropPrivileges: dropPrivileges,
 
     async exec(command: string, timeoutMs = DEFAULT_EXEC_TIMEOUT_MS): Promise<ExecResult> {
-      return runCommand(command, workspaceDir, timeoutMs, workspaceDir);
+      return runCommand(
+        command,
+        workspaceDir,
+        timeoutMs,
+        workspaceDir,
+        executionUser,
+        dropPrivileges,
+      );
     },
 
     async execWithStdin(
@@ -209,7 +293,14 @@ export async function createProcessVM(opts: FirecrackerVMOptions): Promise<VMHan
     ): Promise<ExecResult> {
       const rewritten = rewriteWorkspacePaths(command, workspaceDir);
       const stdinEscaped = shellEscape(stdin);
-      return runCommand(`${rewritten} <<< ${stdinEscaped}`, workspaceDir, timeoutMs, workspaceDir);
+      return runCommand(
+        `${rewritten} <<< ${stdinEscaped}`,
+        workspaceDir,
+        timeoutMs,
+        workspaceDir,
+        executionUser,
+        dropPrivileges,
+      );
     },
 
     async writeFile(path: string, content: Buffer, mode?: string, owner?: string): Promise<void> {
