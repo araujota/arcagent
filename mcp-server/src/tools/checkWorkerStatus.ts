@@ -51,6 +51,21 @@ export function registerCheckWorkerStatus(server: McpServer): void {
         };
       }
 
+      if (!ws.workerHost || !/^https?:\/\//i.test(ws.workerHost)) {
+        const lines = [
+          "Worker host is not available for this workspace yet.",
+          `- Workspace status: ${ws.status}`,
+        ];
+        if (ws.errorMessage) {
+          lines.push(`- Last error: ${ws.errorMessage}`);
+        }
+        lines.push("Use `workspace_status` and `workspace_startup_log` for detailed diagnostics.");
+        return {
+          content: [{ type: "text" as const, text: lines.join("\n") }],
+          isError: true,
+        };
+      }
+
       const baseUrl = ws.workerHost.replace(/\/+$/, "");
       const url = `${baseUrl}/api/health`;
 

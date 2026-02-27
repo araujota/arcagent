@@ -55,6 +55,24 @@ describe("check_worker_status tool", () => {
     expect(result.content[0].text).toContain("Workspace is not ready yet");
   });
 
+  it("returns actionable diagnostics when workerHost is missing", async () => {
+    mockGetWorkspaceForAgent.mockResolvedValueOnce({
+      found: true,
+      workspaceId: "ws_1",
+      workerHost: "",
+      status: "error",
+      errorMessage: "Worker API error: 500 - boom",
+      expiresAt: Date.now() + 60_000,
+    });
+
+    const result = await runWithAuth(testUser, () => handler({ bountyId: "bounty_1" }));
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Worker host is not available");
+    expect(result.content[0].text).toContain("Workspace status: error");
+    expect(result.content[0].text).toContain("Worker API error: 500 - boom");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it("pings worker /api/health and returns status details", async () => {
     mockGetWorkspaceForAgent.mockResolvedValueOnce({
       found: true,

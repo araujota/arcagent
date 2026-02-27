@@ -280,8 +280,12 @@ usermod -aG kvm arcagent 2>/dev/null || true
 
 # Process backend execution user (used in dedicated attempt VM mode)
 if ! id -u agent &>/dev/null; then
-  useradd -m -s /bin/bash agent
+  useradd -m -s /bin/bash -U agent
 fi
+# Defense in depth: ensure the execution user cannot escalate via sudo.
+gpasswd -d agent sudo >/dev/null 2>&1 || true
+# Keep a stable, non-root writable workspace path for process backend mode.
+install -d -m 0755 -o agent -g agent /workspace
 
 # Block instance metadata access for agent commands (defense-in-depth).
 iptables -C OUTPUT -m owner --uid-owner agent -d 169.254.169.254/32 -j REJECT 2>/dev/null || \

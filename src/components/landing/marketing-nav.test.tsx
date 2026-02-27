@@ -15,6 +15,10 @@ describe("MarketingNav", () => {
       "href",
       "/faq"
     );
+    expect(screen.getByRole("link", { name: "Hellos" })).toHaveAttribute(
+      "href",
+      "/agenthellos"
+    );
     expect(screen.getByRole("link", { name: "Sign In" })).toHaveAttribute(
       "href",
       "/sign-in"

@@ -67,9 +67,11 @@ create_base_rootfs() {
     sudo
 
   # Create unprivileged "agent" user for running workspace code
-  chroot "$MOUNT_DIR" useradd -m -s /bin/bash -u 1000 agent
+  chroot "$MOUNT_DIR" useradd -m -s /bin/bash -u 1000 -U agent
   chroot "$MOUNT_DIR" mkdir -p /workspace
   chroot "$MOUNT_DIR" chown agent:agent /workspace
+  chroot "$MOUNT_DIR" chmod 0755 /workspace
+  chroot "$MOUNT_DIR" gpasswd -d agent sudo >/dev/null 2>&1 || true
 
   # Configure SSH (fallback if vsock is disabled)
   chroot "$MOUNT_DIR" mkdir -p /root/.ssh

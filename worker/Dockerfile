@@ -36,6 +36,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
+# Ensure process-backend commands can always drop to a non-root execution user.
+RUN if ! id -u agent >/dev/null 2>&1; then \
+      useradd --create-home --shell /bin/bash -U agent; \
+    fi && \
+    install -d -m 0755 -o agent -g agent /workspace
+
 # Copy Firecracker binaries
 COPY --from=firecracker /usr/local/bin/firecracker /usr/local/bin/firecracker
 COPY --from=firecracker /usr/local/bin/jailer /usr/local/bin/jailer

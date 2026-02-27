@@ -73,6 +73,7 @@ describe("e2e: redis + sonar/snyk gates + mcp result relay", () => {
   let binDir = "";
   let tempRoot = "";
   const originalPath = process.env.PATH ?? "";
+  const originalProcessBackendPath = process.env.PROCESS_BACKEND_PATH ?? "";
   let queue: Awaited<ReturnType<typeof import("../../../worker/src/queue/jobQueue").createVerificationQueue>>["queue"];
   let worker: Awaited<ReturnType<typeof import("../../../worker/src/queue/jobQueue").createVerificationQueue>>["worker"];
   let queueEvents: Awaited<ReturnType<typeof import("../../../worker/src/queue/jobQueue").createVerificationQueue>>["queueEvents"];
@@ -173,6 +174,7 @@ exit 0
     await chmod(join(binDir, "sonar-scanner"), 0o755);
 
     process.env.PATH = `${binDir}:${originalPath}`;
+    process.env.PROCESS_BACKEND_PATH = `${binDir}:${originalPath}`;
 
     // 4) Create a git repo the worker can clone.
     gitRepoDir = await mkdtemp(join(tmpdir(), "arcagent-e2e-repo-"));
@@ -389,6 +391,7 @@ exit 0
     }
 
     process.env.PATH = originalPath;
+    process.env.PROCESS_BACKEND_PATH = originalProcessBackendPath;
   }, 120_000);
 
   it("runs verification through redis-backed worker and posts gate payload including snyk/sonarqube", () => {

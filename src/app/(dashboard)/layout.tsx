@@ -63,6 +63,12 @@ export default function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const pathname = usePathname();
+
+  if (pathname === "/agenthellos") {
+    return <main className="flex-1 p-6">{children}</main>;
+  }
+
   return (
     <>
       <AuthLoading>
