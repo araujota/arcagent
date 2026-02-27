@@ -54,6 +54,35 @@ function hasBinary(binary: string): boolean {
   }
 }
 
+async function userExists(username: string): Promise<boolean> {
+  try {
+    await execFileAsync("id", ["-u", username]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureExecutionUserExists(username: string): Promise<void> {
+  if (await userExists(username)) return;
+
+  if (!hasBinary("useradd")) {
+    throw new Error(
+      `Process backend execution user '${username}' does not exist and useradd is unavailable`,
+    );
+  }
+
+  try {
+    await execFileAsync("useradd", ["-m", "-s", "/bin/bash", username]);
+  } catch {
+    // Another concurrent worker may have created the user; verify before failing.
+  }
+
+  if (!(await userExists(username))) {
+    throw new Error(`Process backend execution user '${username}' does not exist`);
+  }
+}
+
 function buildScrubbedEnv(workspaceDir: string, executionUser: string): Record<string, string> {
   return {
     PATH: DEFAULT_PATH,
@@ -247,9 +276,7 @@ export async function createProcessVM(opts: FirecrackerVMOptions): Promise<VMHan
   const dropPrivileges = typeof process.getuid === "function" && process.getuid() === 0;
 
   if (dropPrivileges) {
-    await execFileAsync("id", ["-u", executionUser]).catch(() => {
-      throw new Error(`Process backend execution user '${executionUser}' does not exist`);
-    });
+    await ensureExecutionUserExists(executionUser);
     await execFileAsync("chown", ["-R", `${executionUser}:${executionUser}`, rootDir]).catch(() => {
       throw new Error(`Failed to chown process backend workspace to '${executionUser}'`);
     });
