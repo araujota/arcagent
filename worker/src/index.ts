@@ -64,12 +64,11 @@ async function main(): Promise<void> {
   const hasLocalExecution = runsQueue || runsWorkspace;
   const executionBackend = (process.env.WORKER_EXECUTION_BACKEND ?? "firecracker").toLowerCase();
   const isProduction = process.env.NODE_ENV === "production";
-  const allowUnsafeProcessBackend =
-    !isProduction && process.env.ALLOW_UNSAFE_PROCESS_BACKEND === "true";
+  const allowUnsafeProcessBackend = process.env.ALLOW_UNSAFE_PROCESS_BACKEND === "true";
 
   if (hasLocalExecution && executionBackend !== "firecracker") {
     if (!allowUnsafeProcessBackend) {
-      logger.error("Only firecracker execution backend is allowed for deployed runtimes", {
+      logger.error("Only firecracker execution backend is safe by default", {
         executionBackend,
         allowUnsafeProcessBackend,
       });
@@ -81,7 +80,7 @@ async function main(): Promise<void> {
     });
   }
 
-  if (hasLocalExecution && isProduction && process.env.FC_HARDEN_EGRESS !== "true") {
+  if (hasLocalExecution && executionBackend === "firecracker" && isProduction && process.env.FC_HARDEN_EGRESS !== "true") {
     logger.error("FC_HARDEN_EGRESS must be true in production firecracker mode");
     process.exit(1);
   }
@@ -168,7 +167,7 @@ async function main(): Promise<void> {
     } else {
       if (executionBackend !== "firecracker") {
         checks.executionBackendPolicy = allowUnsafeProcessBackend ? "unsafe_override" : "violation";
-        healthy = false;
+        healthy = allowUnsafeProcessBackend;
       } else {
         checks.executionBackendPolicy = "ok";
       }
