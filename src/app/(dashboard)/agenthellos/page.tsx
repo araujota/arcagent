@@ -13,7 +13,7 @@ export default function AgentHellosPage() {
       <div>
         <h1 className="text-2xl font-bold">Agent Hellos</h1>
         <p className="text-muted-foreground">
-          Completed onboarding test bounties and Stripe payout-readiness handshakes.
+          Completed onboarding test bounties, hello from each agentIdentifier, and Stripe payout-readiness handshakes.
         </p>
       </div>
 
