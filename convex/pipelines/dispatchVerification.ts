@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import { Id } from "../_generated/dataModel";
 import { generateJobHmac } from "../lib/hmac";
+import { parseGitHubRepoUrlSafe, resolveGitHubTokenForRepo } from "../lib/githubApp";
 
 /**
  * Dispatch a verification job to the worker service.
@@ -88,6 +89,39 @@ export const dispatchVerification = internalAction({
       const stepDefinitionsPublic = generatedTests?.stepDefinitionsPublic ?? generatedTests?.stepDefinitions;
       const stepDefinitionsHidden = generatedTests?.stepDefinitionsHidden;
 
+      let repoAuthTokenResult:
+        | Awaited<ReturnType<typeof resolveGitHubTokenForRepo>>
+        | null = null;
+      try {
+        repoAuthTokenResult = await resolveGitHubTokenForRepo({
+          repositoryUrl: submission.repositoryUrl,
+          preferredInstallationId: repoConnection?.githubInstallationId,
+          writeAccess: false,
+        });
+      } catch (err) {
+        console.error(
+          `[dispatchVerification] Failed to resolve repo token for ${submission.repositoryUrl}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+      if (repoConnection && repoAuthTokenResult) {
+        const submissionRepo = parseGitHubRepoUrlSafe(submission.repositoryUrl);
+        if (
+          submissionRepo &&
+          submissionRepo.owner.toLowerCase() === repoConnection.owner.toLowerCase() &&
+          submissionRepo.repo.toLowerCase() === repoConnection.repo.toLowerCase() &&
+          (repoAuthTokenResult.installationId !== repoConnection.githubInstallationId ||
+            repoAuthTokenResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
+        ) {
+          await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
+            repoConnectionId: repoConnection._id,
+            githubInstallationId: repoAuthTokenResult.installationId,
+            githubInstallationAccountLogin: repoAuthTokenResult.accountLogin,
+          });
+        }
+      }
+
       // SECURITY (H6): Generate per-job HMAC token
       const jobHmac = await generateJobHmac(
         args.verificationId,
@@ -109,6 +143,7 @@ export const dispatchVerification = internalAction({
           bountyId: args.bountyId,
           jobId,
           repoUrl: submission.repositoryUrl,
+          repoAuthToken: repoAuthTokenResult?.token,
           commitSha: submission.commitHash,
           baseCommitSha: repoConnection?.commitSha,
           testSuites: testSuites.map((ts) => ({
@@ -253,6 +288,35 @@ export const dispatchVerificationFromDiff = internalAction({
       const stepDefinitionsPublic = generatedTests?.stepDefinitionsPublic ?? generatedTests?.stepDefinitions;
       const stepDefinitionsHidden = generatedTests?.stepDefinitionsHidden;
 
+      let repoAuthTokenResult:
+        | Awaited<ReturnType<typeof resolveGitHubTokenForRepo>>
+        | null = null;
+      try {
+        repoAuthTokenResult = await resolveGitHubTokenForRepo({
+          repositoryUrl: args.baseRepoUrl,
+          preferredInstallationId: repoConnection?.githubInstallationId,
+          writeAccess: false,
+        });
+      } catch (err) {
+        console.error(
+          `[dispatchVerificationFromDiff] Failed to resolve repo token for ${args.baseRepoUrl}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+      if (
+        repoConnection &&
+        repoAuthTokenResult &&
+        (repoAuthTokenResult.installationId !== repoConnection.githubInstallationId ||
+          repoAuthTokenResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
+      ) {
+        await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
+          repoConnectionId: repoConnection._id,
+          githubInstallationId: repoAuthTokenResult.installationId,
+          githubInstallationAccountLogin: repoAuthTokenResult.accountLogin,
+        });
+      }
+
       // SECURITY (H6): Generate per-job HMAC token
       const jobHmac = await generateJobHmac(
         args.verificationId,
@@ -275,6 +339,7 @@ export const dispatchVerificationFromDiff = internalAction({
           jobId,
           // Diff-based fields
           repoUrl: args.baseRepoUrl,
+          repoAuthToken: repoAuthTokenResult?.token,
           commitSha: args.baseCommitSha,
           baseCommitSha: args.baseCommitSha,
           diffPatch: args.diffPatch,

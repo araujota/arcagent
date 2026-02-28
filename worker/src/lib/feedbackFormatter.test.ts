@@ -153,14 +153,15 @@ describe("generateFeedback", () => {
       }),
     ];
     const feedback = generateFeedback(gates, 1);
-    expect(feedback.testResults).toHaveLength(1);
-    expect(feedback.testResults[0]!.scenarioName).toBe("Login works");
-    expect(feedback.actionItems.some((a) => a.includes("hidden scenario(s) failed"))).toBe(true);
+    expect(feedback.testResults).toHaveLength(2);
+    expect(feedback.testResults.some((t) => t.scenarioName === "Login works")).toBe(true);
+    expect(feedback.testResults.some((t) => t.scenarioName === "Logout works")).toBe(true);
+    expect(feedback.actionItems.some((a) => a.includes("Logout works"))).toBe(true);
     expect(feedback.hiddenFailureMechanisms).toHaveLength(1);
     expect(feedback.hiddenFailureMechanisms[0]?.key).toBe("assertion_mismatch");
   });
 
-  it("summarizes hidden failures by mechanism without exposing hidden scenario names", () => {
+  it("summarizes hidden failures by mechanism", () => {
     const gates: GateResult[] = [
       makeGate({
         gate: "test",
@@ -201,9 +202,5 @@ describe("generateFeedback", () => {
     expect(mechanisms.find((m) => m.key === "module_or_path_error")?.count).toBe(1);
     expect(mechanisms.find((m) => m.key === "timeout_or_hang")?.count).toBe(1);
     expect(mechanisms.find((m) => m.key === "unknown_edge_case")?.count).toBe(1);
-
-    const serialized = JSON.stringify(mechanisms);
-    expect(serialized).not.toContain("Hidden contract case");
-    expect(serialized).not.toContain("Secret Feature");
   });
 });

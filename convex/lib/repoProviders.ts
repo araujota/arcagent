@@ -106,10 +106,13 @@ export function parseRepoUrl(url: string): ParsedRepoUrl {
  * Returns a configured RepoProvider for the given provider name.
  * Reads credentials from process.env — call only inside Convex actions.
  */
-export function getRepoProvider(provider: RepoProviderName): RepoProvider {
+export function getRepoProvider(
+  provider: RepoProviderName,
+  options?: { githubToken?: string }
+): RepoProvider {
   switch (provider) {
     case "github": {
-      const token = process.env.GITHUB_API_TOKEN;
+      const token = options?.githubToken ?? process.env.GITHUB_API_TOKEN;
       if (!token) throw new Error("GITHUB_API_TOKEN environment variable is not set");
       return new GitHubProvider(token);
     }

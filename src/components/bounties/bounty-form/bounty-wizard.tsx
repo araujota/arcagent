@@ -19,14 +19,25 @@ const WIZARD_STORAGE_KEY = "arcagent_bounty_wizard_draft";
 
 const STEPS = ["Basics", "Tests", "Config", "Review"] as const;
 
+interface GitHubPermissionStatus {
+  provider: "github" | "gitlab" | "bitbucket" | null;
+  appConfigured: boolean;
+  hasInstallation: boolean;
+  installUrl: string | null;
+  installationId?: number;
+}
+
 export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
   const router = useRouter();
   const createBounty = useMutation(api.bounties.create);
   const createTestSuite = useMutation(api.testSuites.create);
   const connectRepo = useAction(api.bounties.connectRepo);
+  const getGitHubPermissionStatus = useAction(api.repoConnections.getGitHubPermissionStatus);
   const [currentStep, setCurrentStep] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isConnectingRepo, setIsConnectingRepo] = useState(false);
+  const [isCheckingGithubPermission, setIsCheckingGithubPermission] = useState(false);
+  const [githubPermissionStatus, setGithubPermissionStatus] = useState<GitHubPermissionStatus | null>(null);
   const [createdBountyId, setCreatedBountyId] = useState<Id<"bounties"> | null>(null);
 
   const [basics, setBasics] = useState<BasicsData>({
@@ -49,6 +60,9 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
   });
 
   const [isCertified, setIsCertified] = useState(false);
+  const isGitHubRepoUrl = /^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+/.test(
+    config.repositoryUrl.trim(),
+  );
 
   // Restore saved wizard state from localStorage on mount
   useEffect(() => {
@@ -81,6 +95,10 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
   useEffect(() => {
     saveWizardState();
   }, [saveWizardState]);
+
+  useEffect(() => {
+    setGithubPermissionStatus(null);
+  }, [config.repositoryUrl]);
 
   const clearWizardState = () => {
     try { localStorage.removeItem(WIZARD_STORAGE_KEY); } catch { /* ignore */ }
@@ -165,6 +183,17 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
   const handleAIGenerate = async () => {
     setIsSubmitting(true);
     try {
+      if (config.repositoryUrl && isGitHubRepoUrl) {
+        const permission = (await getGitHubPermissionStatus({
+          repositoryUrl: config.repositoryUrl,
+        })) as GitHubPermissionStatus;
+        setGithubPermissionStatus(permission);
+        if (permission.appConfigured && !permission.hasInstallation) {
+          toast.error("Install the Arcagent GitHub App for this repository before indexing.");
+          return;
+        }
+      }
+
       const tags = config.tags
         ? [...new Set(config.tags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean))]
         : undefined;
@@ -218,6 +247,24 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
     }
   };
 
+  const handleCheckGithubPermission = async () => {
+    if (!config.repositoryUrl || !isGitHubRepoUrl) return;
+    setIsCheckingGithubPermission(true);
+    try {
+      const permission = (await getGitHubPermissionStatus({
+        repositoryUrl: config.repositoryUrl,
+      })) as GitHubPermissionStatus;
+      setGithubPermissionStatus(permission);
+      if (permission.appConfigured && permission.hasInstallation) {
+        toast.success("GitHub App access is configured for this repository.");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to check GitHub app permissions");
+    } finally {
+      setIsCheckingGithubPermission(false);
+    }
+  };
+
   return (
     <div className="max-w-3xl mx-auto">
       {/* Step indicator */}
@@ -260,6 +307,57 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
           )}
           {currentStep === 2 && (
             <StepConfig data={config} onChange={setConfig} reward={basics.reward} />
+          )}
+          {currentStep === 2 && isGitHubRepoUrl && (
+            <div className="mt-4 rounded-md border p-3 space-y-2">
+              <p className="text-sm font-medium">GitHub Permission</p>
+              <p className="text-xs text-muted-foreground">
+                Arcagent uses a GitHub App installation token scoped to this repo for indexing,
+                workspace cloning, and auto-PR publishing.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCheckGithubPermission}
+                  disabled={isCheckingGithubPermission}
+                >
+                  {isCheckingGithubPermission ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : null}
+                  Check GitHub Access
+                </Button>
+                {githubPermissionStatus?.appConfigured &&
+                  !githubPermissionStatus.hasInstallation &&
+                  githubPermissionStatus.installUrl && (
+                    <Button asChild size="sm">
+                      <a
+                        href={githubPermissionStatus.installUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Install GitHub App
+                      </a>
+                    </Button>
+                  )}
+              </div>
+              {githubPermissionStatus?.appConfigured && githubPermissionStatus.hasInstallation && (
+                <p className="text-xs text-green-700">
+                  Installation detected. Repo-scoped credentials will be minted automatically.
+                </p>
+              )}
+              {githubPermissionStatus?.appConfigured && !githubPermissionStatus.hasInstallation && (
+                <p className="text-xs text-amber-700">
+                  No GitHub App installation found for this repository yet.
+                </p>
+              )}
+              {githubPermissionStatus && !githubPermissionStatus.appConfigured && (
+                <p className="text-xs text-muted-foreground">
+                  GitHub App is not configured in this environment. Falling back to legacy token settings.
+                </p>
+              )}
+            </div>
           )}
           {currentStep === 3 && (
             <StepReview

@@ -25,7 +25,9 @@ This guide covers deploying the ArcAgent verification worker — from local deve
 
 **Key points:**
 - The worker is independently deployed — it runs on your own infrastructure, not alongside Convex
-- Requires **Linux with KVM support** (bare-metal EC2 for production)
+- Supports split roles: `WORKER_ROLE=api` (regular service) and `WORKER_ROLE=executor` (Firecracker host)
+- `api` role can run on standard EC2 (no KVM requirement)
+- `executor` role requires **Linux with KVM support** (`.metal` or nested-virtualization-capable EC2)
 - Requires **Redis** for the BullMQ job queue
 - Firecracker microVMs provide per-job isolation with language-specific rootfs images
 - Communication between Convex and the worker is authenticated via `WORKER_SHARED_SECRET` (constant-time comparison)
@@ -67,6 +69,7 @@ Create a `.env` file at the repo root (loaded by all services via `env_file`). R
 | `CONVEX_URL` | Yes | Convex deployment URL (e.g. `https://your-app.convex.cloud`) |
 | `CONVEX_HTTP_ACTIONS_URL` | Recommended | Convex HTTP actions URL (e.g. `https://your-app.convex.site`) |
 | `WORKER_SHARED_SECRET` | Yes | Must match the value set in Convex env |
+| `WORKER_ROLE` | No | Runtime role (`all`, `api`, `executor`) |
 | `REDIS_URL` | No | Overridden to `redis://redis:6379` by Docker Compose |
 | `PORT` | No | Default: `3001` |
 | `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` (default) |
@@ -95,7 +98,7 @@ This generates `worker/.env.generated` (gitignored, mode `0600`) and overlays it
 
 ## Production Deployment to AWS (Terraform)
 
-The `infra/aws/` directory contains complete Terraform configuration for deploying worker instances on bare-metal EC2.
+The `infra/aws/` directory contains Terraform configuration for deploying worker hosts on AWS.
 
 ### Prerequisites
 
@@ -108,7 +111,7 @@ The `infra/aws/` directory contains complete Terraform configuration for deployi
 
 Terraform provisions:
 - **VPC** (`10.1.0.0/16`) with public subnets — uses `10.1.x.x` to avoid collision with Firecracker's internal `10.0.0.0/24` TAP subnet
-- **Bare-metal EC2 instances** (`c6i.metal` by default) with KVM support
+- **EC2 worker hosts** (choose by role/capacity; KVM required only for executor role)
 - **Elastic IPs** for stable worker addressing
 - **Security group** — port 3001 open for Convex/MCP inbound, SSH restricted to specified CIDRs
 - **IAM role** with CloudWatch Logs, SSM, and ECR read access
@@ -128,9 +131,10 @@ Edit `terraform.tfvars` with your values:
 aws_region   = "us-east-1"
 environment  = "production"
 
-# Must be .metal for KVM/Firecracker support
-instance_type = "c6i.metal"
+# Use standard EC2 for api role; use KVM-capable EC2 for executor role
+instance_type = "c8i.large"
 worker_count  = 1
+worker_role   = "api" # all | api | executor
 ssh_key_name  = "your-key-pair-name"
 
 # Restrict SSH to your IP
@@ -196,10 +200,12 @@ ssh -i <key.pem> ubuntu@<eip> 'sudo bash /opt/arcagent/deploy.sh /tmp/worker-bui
 
 The `deploy.sh` script (created by `setup-worker.sh`) stops the service, extracts the archive, runs `npm ci --production`, and restarts the service.
 
-#### 5. Set WORKER_API_URL in Convex
+#### 5. Set worker endpoints in Convex
 
 ```bash
 npx convex env set WORKER_API_URL "http://<eip>:3001"
+# Required for workspace/execution flows in split-role setup:
+# npx convex env set WORKER_EXECUTOR_URL "http://<executor-eip>:3001"
 ```
 
 Ensure `WORKER_SHARED_SECRET` is also set in Convex to the same value as in `terraform.tfvars`.
@@ -258,7 +264,7 @@ Each language has a fixed resource profile defined in `worker/src/vm/vmConfig.ts
 | Swift | 4 | 2048 | 3 min | `swift-6.ext4` |
 | Kotlin | 4 | 2048 | 3 min | `kotlin-jvm21.ext4` |
 
-A `c6i.metal` instance has 128 vCPUs and 256 GiB RAM — plan your `worker_concurrency` and `max_dev_vms` accordingly.
+For executor sizing, plan around aggregate guest VM resources (`worker/src/vm/vmConfig.ts`) and `WORKER_CONCURRENCY`.
 
 ## Updating / Redeploying
 
@@ -325,7 +331,7 @@ sudo systemctl stop arcagent-worker
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `KVM not available` or `/dev/kvm: No such file` | Instance is not `.metal` or KVM module not loaded | Use a `.metal` instance type. Verify with `ls -la /dev/kvm` |
+| `KVM not available` or `/dev/kvm: No such file` | Host lacks KVM support | Use a KVM-capable host for `WORKER_ROLE=executor` (e.g. `.metal` or nested-virtualization-enabled EC2). Verify with `ls -la /dev/kvm` |
 | `Redis connection refused` | Redis not running | `sudo systemctl start redis-server` and verify with `redis-cli ping` |
 | `Rootfs image not found` | `build-rootfs.sh` hasn't run | `sudo bash /opt/arcagent/scripts/build-rootfs.sh` |
 | `Firecracker binary not found` | `install-firecracker.sh` hasn't run | `sudo bash /opt/arcagent/scripts/install-firecracker.sh 1.7.0` |
@@ -372,6 +378,9 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 | `CONVEX_URL` | Yes | — | Convex deployment URL |
 | `CONVEX_HTTP_ACTIONS_URL` | No | derived from `CONVEX_URL` | Convex HTTP actions URL for `/api/*` callbacks |
 | `WORKER_SHARED_SECRET` | Yes | — | Shared secret (must match Convex env) |
+| `WORKER_ROLE` | No | `api` | Runtime role (standard: `api`; legacy: `all`/`executor`) |
+| `ALLOW_LEGACY_EXECUTOR_ROLE` | No | `false` | Permit worker startup in legacy executor roles |
+| `WORKER_EXECUTION_BACKEND` | No | `firecracker` | Execution backend (`firecracker` required for deployed executor role) |
 | `REDIS_URL` | Yes | `redis://localhost:6379` | Redis connection URL |
 | `PORT` | No | `3001` | Server port |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, `error` |
@@ -398,8 +407,9 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 |----------|----------|---------|-------------|
 | `aws_region` | No | `us-east-1` | AWS region |
 | `environment` | No | `production` | Environment name |
-| `instance_type` | No | `c6i.metal` | EC2 instance type (must be `.metal`) |
+| `instance_type` | No | `c8i.large` | EC2 instance type (KVM only required for `WORKER_ROLE=executor`) |
 | `worker_count` | No | `1` | Number of worker instances |
+| `worker_role` | No | `api` | Worker runtime role (`all`, `api`, `executor`) |
 | `ssh_key_name` | Yes | — | EC2 key pair name |
 | `ssh_allowed_cidrs` | No | `[]` | CIDRs allowed to SSH (empty = no SSH) |
 | `worker_shared_secret` | Yes | — | Shared secret (sensitive) |
@@ -425,6 +435,7 @@ These must be set in the Convex dashboard (or via `npx convex env set`):
 | Variable | Description |
 |----------|-------------|
 | `WORKER_API_URL` | Worker URL from `terraform output worker_host_urls` (e.g. `http://<eip>:3001`) |
+| `WORKER_EXECUTOR_URL` | Executor URL for workspace provisioning/execution |
 | `WORKER_SHARED_SECRET` | Same value as in `terraform.tfvars` |
 
 ## Provisioning Scripts Reference

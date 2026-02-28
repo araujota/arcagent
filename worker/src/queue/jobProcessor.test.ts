@@ -162,7 +162,7 @@ describe("processVerificationJob", () => {
     const job = mockJob();
     await processVerificationJob(job);
 
-    expect(mockSanitize).toHaveBeenCalledWith("https://github.com/test/repo", "repoUrl", "repoUrl");
+    expect(mockSanitize).toHaveBeenCalledWith("https://github.com/test/repo", "repoCloneUrl", "repoUrl");
     expect(mockSanitize).toHaveBeenCalledWith("abc1234", "commitSha", "commitSha");
   });
 

@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { getCurrentUser, requireAuth } from "./lib/utils";
 import { calculatePlatformFee, PLATFORM_FEE_RATE } from "./lib/fees";
+import { resolveGitHubTokenForRepo } from "./lib/githubApp";
 
 type HiddenFailureMechanismKey =
   | "assertion_mismatch"
@@ -205,8 +206,8 @@ export const getFullStatus = internalQuery({
 });
 
 /**
- * Agent-facing query that redacts hidden test internals.
- * Public scenario execution remains verbose while hidden output is summarized.
+ * Agent-facing query for verification status.
+ * Hidden Gherkin remains private, but hidden test failure feedback is returned.
  */
 export const getAgentStatus = internalQuery({
   args: { verificationId: v.id("verifications") },
@@ -235,16 +236,14 @@ export const getAgentStatus = internalQuery({
         .first(),
     ]);
 
-    const publicSteps = steps
-      .filter((s) => (s.visibility ?? "public") === "public")
-      .map((s) => ({
+    const allVisibleSteps = steps.map((s) => ({
         scenarioName: s.scenarioName,
         featureName: s.featureName,
         status: s.status,
         executionTimeMs: s.executionTimeMs,
         output: s.output,
         stepNumber: s.stepNumber,
-        visibility: "public" as const,
+        visibility: (s.visibility ?? "public") as "public" | "hidden",
       }));
     const hiddenSteps = steps.filter((s) => (s.visibility ?? "public") === "hidden");
     const hiddenFailureMechanisms = summarizeHiddenFailureMechanisms(
@@ -264,7 +263,7 @@ export const getAgentStatus = internalQuery({
         issues: g.issues,
         details: g.detailsJson ? safeParseJson(g.detailsJson) : undefined,
       })),
-      steps: publicSteps,
+      steps: allVisibleSteps,
       hiddenSummary: {
         total: hiddenSteps.length,
         passed: hiddenSteps.filter((s) => s.status === "pass").length,
@@ -580,14 +579,141 @@ export const triggerPayoutOnVerificationPass = internalAction({
       });
       if (!bounty) throw new Error("Bounty not found");
 
+      const submission = await ctx.runQuery(
+        internal.submissions.getByIdInternal,
+        { submissionId: args.submissionId },
+      );
+      if (!submission) throw new Error("Submission not found");
+
+      let autoPrUrl: string | null = null;
+      try {
+        const workerUrl = process.env.WORKER_API_URL;
+        const workerSecret = process.env.WORKER_SHARED_SECRET;
+        const workspace = await ctx.runQuery(internal.devWorkspaces.getActiveByAgentAndBounty, {
+          agentId: submission.agentId,
+          bountyId: args.bountyId,
+        });
+
+        if (workerUrl && workerSecret && workspace?.workerHost) {
+          const diffResponse = await fetch(`${workspace.workerHost}/api/workspace/diff`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${workerSecret}`,
+            },
+            body: JSON.stringify({
+              workspaceId: workspace.workspaceId,
+            }),
+          });
+
+          if (diffResponse.ok) {
+            const diffPayload = await diffResponse.json() as {
+              diffPatch?: string;
+              hasChanges?: boolean;
+            };
+
+            if (diffPayload.hasChanges && diffPayload.diffPatch) {
+              const repoConnection = await ctx.runQuery(
+                internal.repoConnections.getByBountyIdInternal,
+                { bountyId: args.bountyId },
+              );
+              const repoAuthTokenResult = await resolveGitHubTokenForRepo({
+                repositoryUrl: workspace.repositoryUrl,
+                preferredInstallationId: repoConnection?.githubInstallationId,
+                writeAccess: true,
+              });
+              if (
+                repoConnection &&
+                repoAuthTokenResult &&
+                (repoAuthTokenResult.installationId !== repoConnection.githubInstallationId ||
+                  repoAuthTokenResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
+              ) {
+                await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
+                  repoConnectionId: repoConnection._id,
+                  githubInstallationId: repoAuthTokenResult.installationId,
+                  githubInstallationAccountLogin: repoAuthTokenResult.accountLogin,
+                });
+              }
+              const baseBranch = repoConnection?.defaultBranch ?? "main";
+              const featureBranchName = `arcagent/verified-${String(args.verificationId).slice(-8)}`;
+              const prTitle = `[arcagent] ${bounty.title}`;
+              const prBody = [
+                "Automated PR created from a passed verification run.",
+                "",
+                `- Bounty ID: ${args.bountyId}`,
+                `- Submission ID: ${args.submissionId}`,
+                `- Verification ID: ${args.verificationId}`,
+              ].join("\n");
+
+              const publishResponse = await fetch(`${workerUrl}/api/verify/publish-pr`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${workerSecret}`,
+                },
+                body: JSON.stringify({
+                  verificationId: args.verificationId,
+                  submissionId: args.submissionId,
+                  bountyId: args.bountyId,
+                  repoUrl: workspace.repositoryUrl,
+                  repoAuthToken: repoAuthTokenResult?.token,
+                  baseCommitSha: workspace.baseCommitSha,
+                  baseBranch,
+                  featureBranchName,
+                  diffPatch: diffPayload.diffPatch,
+                  prTitle,
+                  prBody,
+                }),
+              });
+
+              if (publishResponse.ok) {
+                const publishPayload = await publishResponse.json() as {
+                  pullRequestUrl?: string | null;
+                  featureBranchName?: string;
+                  featureBranchRepo?: string;
+                };
+                autoPrUrl = publishPayload.pullRequestUrl ?? null;
+                if (publishPayload.featureBranchName && publishPayload.featureBranchRepo) {
+                  const activeClaim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
+                    bountyId: args.bountyId,
+                  });
+                  if (activeClaim) {
+                    await ctx.runMutation(internal.bountyClaims.updateBranchInfo, {
+                      claimId: activeClaim._id,
+                      featureBranchName: publishPayload.featureBranchName,
+                      featureBranchRepo: publishPayload.featureBranchRepo,
+                    });
+                  }
+                }
+                if (autoPrUrl) {
+                  console.log(`[autopr] Created PR ${autoPrUrl} for verification ${args.verificationId}`);
+                } else {
+                  console.log(`[autopr] PR publish completed without URL for verification ${args.verificationId}`);
+                }
+              } else {
+                const reason = await publishResponse.text().catch(() => "");
+                console.error(
+                  `[autopr] Failed for verification ${args.verificationId}: ${publishResponse.status} ${reason.slice(0, 300)}`,
+                );
+              }
+            }
+          } else {
+            const reason = await diffResponse.text().catch(() => "");
+            console.error(
+              `[autopr] Failed to fetch workspace diff for verification ${args.verificationId}: ${diffResponse.status} ${reason.slice(0, 300)}`,
+            );
+          }
+        }
+      } catch (err) {
+        console.error(
+          `[autopr] Error for verification ${args.verificationId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+
       // Test bounties complete the normal lifecycle but never move money.
       if (bounty.isTestBounty) {
-        const submission = await ctx.runQuery(
-          internal.submissions.getByIdInternal,
-          { submissionId: args.submissionId }
-        );
-        if (!submission) throw new Error("Submission not found");
-
         await ctx.runMutation(internal.bounties.updateStatusInternal, {
           bountyId: args.bountyId,
           status: "completed",
@@ -611,7 +737,9 @@ export const triggerPayoutOnVerificationPass = internalAction({
           verificationId: args.verificationId,
           agentId: submission.agentId,
           agentIdentifier: bounty.testBountyAgentIdentifier ?? String(submission.agentId),
-          message: `hello from ${bounty.testBountyAgentIdentifier ?? String(submission.agentId)}`,
+          message: autoPrUrl
+            ? `hello from ${bounty.testBountyAgentIdentifier ?? String(submission.agentId)} (PR: ${autoPrUrl})`
+            : `hello from ${bounty.testBountyAgentIdentifier ?? String(submission.agentId)}`,
         });
 
         await ctx.runAction(internal.stripe.checkPayoutReadiness, {
@@ -642,13 +770,6 @@ export const triggerPayoutOnVerificationPass = internalAction({
         console.log(`[payout] Payment already exists for bounty ${args.bountyId}, skipping`);
         return;
       }
-
-      // Get the solver's user ID from the submission
-      const submission = await ctx.runQuery(
-        internal.submissions.getByIdInternal,
-        { submissionId: args.submissionId }
-      );
-      if (!submission) throw new Error("Submission not found");
 
       // Calculate fee breakdown for payment record
       const grossCents = Math.round(bounty.reward * 100);

@@ -55,9 +55,39 @@ export interface ProvisionOptions {
   bountyId: string;
   agentId: string;
   repoUrl: string;
+  repoAuthToken?: string;
   commitSha: string;
   language: string;
   expiresAt: number;
+}
+
+function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } | null {
+  const match = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/.]+)(?:\.git)?$/i);
+  if (!match) return null;
+  return { owner: match[1], repo: match[2] };
+}
+
+function buildAuthenticatedCloneRepoUrl(
+  repoUrl: string,
+  repoAuthToken?: string,
+): { url: string; tokenForRedaction?: string } {
+  if (!repoAuthToken) return { url: repoUrl };
+  if (!/^[A-Za-z0-9_-]+$/.test(repoAuthToken)) {
+    throw new Error("Invalid repoAuthToken format");
+  }
+
+  const parsed = parseGitHubRepo(repoUrl);
+  if (!parsed) return { url: repoUrl };
+
+  return {
+    url: `https://x-access-token:${repoAuthToken}@github.com/${parsed.owner}/${parsed.repo}.git`,
+    tokenForRedaction: repoAuthToken,
+  };
+}
+
+function redactToken(value: string, token?: string): string {
+  if (!token) return value;
+  return value.split(token).join("<redacted>");
 }
 
 // ---------------------------------------------------------------------------
@@ -227,13 +257,15 @@ export async function provisionWorkspace(
     session.vmHandle = vm;
 
     // Clone repo (as root for initial setup)
-    const safeRepoUrl = sanitizeShellArg(opts.repoUrl, "repoUrl", "repoUrl");
+    const cloneRepo = buildAuthenticatedCloneRepoUrl(opts.repoUrl, opts.repoAuthToken);
+    const safeRepoUrl = sanitizeShellArg(cloneRepo.url, "repoCloneUrl", "repoUrl");
     const safeCommitSha = sanitizeShellArg(opts.commitSha, "commitSha", "commitSha");
 
     const cloneCmd = `git clone ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`;
     const cloneResult = await vm.exec(cloneCmd, 300_000); // 5 min for large repos
     if (cloneResult.exitCode !== 0) {
-      throw new Error(`Failed to clone repo: ${cloneResult.stderr.slice(0, 500)}`);
+      const combined = `${cloneResult.stderr}\n${cloneResult.stdout}`.trim();
+      throw new Error(`Failed to clone repo: ${redactToken(combined, cloneRepo.tokenForRedaction).slice(0, 500)}`);
     }
 
     // Set ownership to agent user

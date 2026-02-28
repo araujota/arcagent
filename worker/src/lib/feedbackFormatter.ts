@@ -109,26 +109,26 @@ export function generateFeedback(
     issues: g.details?.normalizedIssues as GateIssue[] ?? [],
   }));
 
-  // Collect only public test results for agent-visible structured feedback.
-  // Hidden scenarios remain confidential and are represented via aggregate guidance.
+  // Collect all test results (public + hidden). Hidden Gherkin remains
+  // unreadable to agents, but verification feedback should be explicit.
   const testResults: TestFeedback[] = [];
   let hiddenFailures = 0;
   const hiddenFailureOutputs: string[] = [];
   for (const g of gateResults) {
     if (g.steps) {
       for (const step of g.steps) {
+        const visibility = step.visibility ?? "public";
         if (step.visibility === "hidden") {
           if (step.status === "fail" || step.status === "error") {
             hiddenFailures += 1;
             if (step.output) hiddenFailureOutputs.push(step.output);
           }
-          continue;
         }
         testResults.push({
           scenarioName: step.scenarioName,
           featureName: step.featureName,
           status: step.status,
-          visibility: "public",
+          visibility,
           output: step.output,
         });
       }
@@ -232,21 +232,6 @@ function buildActionItems(
         text: `[test] ... and ${failedTests.length - 20} more failed scenarios`,
       });
     }
-  }
-
-  if (hiddenFailures > 0) {
-    const priority = CATEGORY_PRIORITY["test"] ?? 99;
-    const topMechanisms = hiddenFailureMechanisms.slice(0, 3);
-    const mechanismSummary = topMechanisms
-      .map((m) => `${m.label} (${m.count})`)
-      .join(", ");
-    const mechanismText = mechanismSummary
-      ? ` Likely mechanisms: ${mechanismSummary}.`
-      : "";
-    items.push({
-      priority,
-      text: `[test] ${hiddenFailures} hidden scenario(s) failed.${mechanismText} Fix public failures first, then harden edge-case handling, input validation, and error paths.`,
-    });
   }
 
   // Sort by priority

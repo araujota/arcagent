@@ -17,6 +17,36 @@ import { withTimeout } from "../lib/timeout";
 import { postVerificationResult } from "../convex/client";
 import { generateFeedback, VerificationFeedback } from "../lib/feedbackFormatter";
 
+function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } | null {
+  const match = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/.]+)(?:\.git)?$/i);
+  if (!match) return null;
+  return { owner: match[1], repo: match[2] };
+}
+
+function buildAuthenticatedCloneRepoUrl(
+  repoUrl: string,
+  repoAuthToken?: string,
+): { url: string; tokenForRedaction?: string } {
+  if (!repoAuthToken) return { url: repoUrl };
+
+  if (!/^[A-Za-z0-9_-]+$/.test(repoAuthToken)) {
+    throw new Error("Invalid repoAuthToken format");
+  }
+
+  const parsed = parseGitHubRepo(repoUrl);
+  if (!parsed) return { url: repoUrl };
+
+  return {
+    url: `https://x-access-token:${repoAuthToken}@github.com/${parsed.owner}/${parsed.repo}.git`,
+    tokenForRedaction: repoAuthToken,
+  };
+}
+
+function redactToken(value: string, token?: string): string {
+  if (!token) return value;
+  return value.split(token).join("<redacted>");
+}
+
 /**
  * Main entry-point invoked by the BullMQ worker for every verification job.
  *
@@ -39,7 +69,8 @@ export async function processVerificationJob(
 
   try {
     // 0. Validate all shell-interpolated inputs upfront
-    const safeRepoUrl = sanitizeShellArg(data.repoUrl, "repoUrl", "repoUrl");
+    const cloneRepo = buildAuthenticatedCloneRepoUrl(data.repoUrl, data.repoAuthToken);
+    const safeRepoUrl = sanitizeShellArg(cloneRepo.url, "repoCloneUrl", "repoUrl");
     const safeCommitSha = sanitizeShellArg(data.commitSha, "commitSha", "commitSha");
     if (data.baseCommitSha) {
       validateShellArg(data.baseCommitSha, "commitSha", "baseCommitSha");
@@ -74,7 +105,12 @@ export async function processVerificationJob(
       : `git clone --depth 1 ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`;
 
     // Root phase: clone and set ownership to unprivileged agent user
-    await vm.exec(cloneCmd);
+    try {
+      await vm.exec(cloneCmd);
+    } catch (cloneErr) {
+      const rawMessage = cloneErr instanceof Error ? cloneErr.message : String(cloneErr);
+      throw new Error(`Failed to clone repo: ${redactToken(rawMessage, cloneRepo.tokenForRedaction).slice(0, 500)}`);
+    }
     await vm.exec("chown -R agent:agent /workspace 2>/dev/null || true");
 
     await job.updateProgress(20);
@@ -206,7 +242,8 @@ export async function processVerificationFromDiff(
     }
 
     // 0. Validate base repo inputs
-    const safeRepoUrl = sanitizeShellArg(data.repoUrl, "repoUrl", "repoUrl");
+    const cloneRepo = buildAuthenticatedCloneRepoUrl(data.repoUrl, data.repoAuthToken);
+    const safeRepoUrl = sanitizeShellArg(cloneRepo.url, "repoCloneUrl", "repoUrl");
     const safeCommitSha = sanitizeShellArg(data.commitSha, "commitSha", "commitSha");
 
     // 1. Language detection
@@ -229,7 +266,12 @@ export async function processVerificationFromDiff(
 
     // 3. Clone original repo at base commit
     const cloneCmd = `git clone ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`;
-    await vm.exec(cloneCmd);
+    try {
+      await vm.exec(cloneCmd);
+    } catch (cloneErr) {
+      const rawMessage = cloneErr instanceof Error ? cloneErr.message : String(cloneErr);
+      throw new Error(`Failed to clone repo: ${redactToken(rawMessage, cloneRepo.tokenForRedaction).slice(0, 500)}`);
+    }
     await vm.exec("chown -R agent:agent /workspace 2>/dev/null || true");
 
     await job.updateProgress(20);

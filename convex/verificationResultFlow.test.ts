@@ -294,7 +294,7 @@ describe("verification result processing", () => {
     expect(gates[0].detailsJson).toBe(JSON.stringify({ highCount: 1, criticalCount: 0 }));
   });
 
-  it("agent status redacts hidden steps but returns hidden failure mechanisms", async () => {
+  it("agent status includes hidden scenario feedback while keeping hidden suites unreadable", async () => {
     const t = convexTest(schema);
     const ids = await t.run(async (ctx) => {
       const creatorId = await seedUser(ctx);
@@ -348,8 +348,9 @@ describe("verification result processing", () => {
     });
 
     expect(status).not.toBeNull();
-    expect(status!.steps).toHaveLength(1);
-    expect(status!.steps[0]!.scenarioName).toBe("Public flow works");
+    expect(status!.steps).toHaveLength(3);
+    expect(status!.steps.some((s: any) => s.scenarioName === "Public flow works")).toBe(true);
+    expect(status!.steps.some((s: any) => s.scenarioName === "Hidden SQL edge case")).toBe(true);
     expect(status!.hiddenSummary?.failed).toBe(2);
 
     const mechanisms = status!.hiddenFailureMechanisms ?? [];
@@ -358,7 +359,7 @@ describe("verification result processing", () => {
     expect(mechanisms.some((m: any) => m.key === "timeout_or_hang")).toBe(true);
 
     const serialized = JSON.stringify(status);
-    expect(serialized).not.toContain("Hidden SQL edge case");
-    expect(serialized).not.toContain("Hidden Feature");
+    expect(serialized).toContain("Hidden SQL edge case");
+    expect(serialized).toContain("Hidden Feature");
   });
 });

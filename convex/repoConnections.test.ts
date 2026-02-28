@@ -16,6 +16,8 @@ describe("repoConnections.createInternal", () => {
     const connId = await t.mutation(internal.repoConnections.createInternal, {
       bountyId,
       repositoryUrl: "https://github.com/test/repo",
+      githubInstallationId: 12345,
+      githubInstallationAccountLogin: "test-org",
     });
 
     const conn = await t.run(async (ctx) => ctx.db.get(connId));
@@ -23,6 +25,22 @@ describe("repoConnections.createInternal", () => {
     expect(conn!.status).toBe("pending");
     expect(conn!.repositoryUrl).toBe("https://github.com/test/repo");
     expect(conn!.provider).toBe("github");
+    expect(conn!.githubInstallationId).toBe(12345);
+  });
+
+  it("rejects GitHub repo connections without an installation id", async () => {
+    const t = convexTest(schema);
+    const bountyId = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      return await seedBounty(ctx, creatorId);
+    });
+
+    await expect(
+      t.mutation(internal.repoConnections.createInternal, {
+        bountyId,
+        repositoryUrl: "https://github.com/test/repo",
+      }),
+    ).rejects.toThrow(/GitHub App installation is required/);
   });
 
   it("detects GitLab provider from URL", async () => {

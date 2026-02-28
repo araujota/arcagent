@@ -1,8 +1,15 @@
-import { query, mutation, internalMutation, internalQuery, internalAction } from "./_generated/server";
+import { query, mutation, internalMutation, internalQuery, internalAction, action } from "./_generated/server";
 import { v } from "convex/values";
 import { getCurrentUser, requireAuth, requireBountyAccess } from "./lib/utils";
 import { internal } from "./_generated/api";
-import { detectProvider, getRepoProvider, repoProviderValidator } from "./lib/repoProviders";
+import { detectProvider, getRepoProvider, repoProviderValidator, type RepoProvider } from "./lib/repoProviders";
+import {
+  findGitHubInstallationForRepo,
+  getGitHubAppInstallUrl,
+  isGitHubAppConfigured,
+  parseGitHubRepoUrlSafe,
+  resolveGitHubTokenForRepo,
+} from "./lib/githubApp";
 
 export const getByBountyId = query({
   args: { bountyId: v.id("bounties") },
@@ -41,6 +48,8 @@ export const create = mutation({
   args: {
     bountyId: v.id("bounties"),
     repositoryUrl: v.string(),
+    githubInstallationId: v.optional(v.number()),
+    githubInstallationAccountLogin: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
@@ -57,6 +66,11 @@ export const create = mutation({
     if (!detectedProvider) {
       throw new Error(
         "Unsupported repository URL. Please use a GitHub, GitLab, or Bitbucket URL."
+      );
+    }
+    if (detectedProvider === "github" && !args.githubInstallationId) {
+      throw new Error(
+        "GitHub App installation is required for this repository. Install the Arcagent GitHub App on the repo or org, then try again."
       );
     }
 
@@ -79,6 +93,8 @@ export const create = mutation({
       defaultBranch: "main",
       commitSha: "",
       status: "pending",
+      githubInstallationId: args.githubInstallationId,
+      githubInstallationAccountLogin: args.githubInstallationAccountLogin,
     });
 
     // Update bounty with repo connection reference
@@ -92,9 +108,16 @@ export const createInternal = internalMutation({
   args: {
     bountyId: v.id("bounties"),
     repositoryUrl: v.string(),
+    githubInstallationId: v.optional(v.number()),
+    githubInstallationAccountLogin: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const provider = detectProvider(args.repositoryUrl) ?? "github";
+    if (provider === "github" && !args.githubInstallationId) {
+      throw new Error(
+        "GitHub App installation is required for this repository. Install the Arcagent GitHub App on the repo or org, then try again."
+      );
+    }
     const id = await ctx.db.insert("repoConnections", {
       bountyId: args.bountyId,
       repositoryUrl: args.repositoryUrl,
@@ -104,6 +127,8 @@ export const createInternal = internalMutation({
       defaultBranch: "main",
       commitSha: "",
       status: "pending",
+      githubInstallationId: args.githubInstallationId,
+      githubInstallationAccountLogin: args.githubInstallationAccountLogin,
     });
 
     await ctx.db.patch(args.bountyId, { repoConnectionId: id });
@@ -152,6 +177,20 @@ export const updateMetadata = internalMutation({
       updates.provider = args.provider;
     }
     await ctx.db.patch(args.repoConnectionId, updates);
+  },
+});
+
+export const updateGitHubInstallation = internalMutation({
+  args: {
+    repoConnectionId: v.id("repoConnections"),
+    githubInstallationId: v.optional(v.number()),
+    githubInstallationAccountLogin: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.repoConnectionId, {
+      githubInstallationId: args.githubInstallationId,
+      githubInstallationAccountLogin: args.githubInstallationAccountLogin,
+    });
   },
 });
 
@@ -311,7 +350,42 @@ export const checkForUpdates = internalAction({
       const branch = conn.trackedBranch || conn.defaultBranch;
 
       try {
-        const provider = getRepoProvider(providerName);
+        let provider: RepoProvider;
+        if (providerName === "github") {
+          const repoUrl = `https://github.com/${conn.owner}/${conn.repo}`;
+          const tokenResult = await resolveGitHubTokenForRepo({
+            repositoryUrl: repoUrl,
+            preferredInstallationId: conn.githubInstallationId,
+            writeAccess: false,
+          });
+          if (tokenResult) {
+            provider = getRepoProvider("github", { githubToken: tokenResult.token });
+            if (
+              tokenResult.installationId !== conn.githubInstallationId ||
+              tokenResult.accountLogin !== conn.githubInstallationAccountLogin
+            ) {
+              await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
+                repoConnectionId: conn._id,
+                githubInstallationId: tokenResult.installationId,
+                githubInstallationAccountLogin: tokenResult.accountLogin,
+              });
+            }
+          } else if (isGitHubAppConfigured()) {
+            const installation = await findGitHubInstallationForRepo(conn.owner, conn.repo);
+            if (installation) {
+              await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
+                repoConnectionId: conn._id,
+                githubInstallationId: installation.installationId,
+                githubInstallationAccountLogin: installation.accountLogin,
+              });
+            }
+          }
+          provider = getRepoProvider("github", {
+            githubToken: tokenResult?.token,
+          });
+        } else {
+          provider = getRepoProvider(providerName);
+        }
         const headSha = await provider.fetchHeadCommitId(
           conn.owner,
           conn.repo,
@@ -344,6 +418,75 @@ export const listReady = internalQuery({
       .query("repoConnections")
       .withIndex("by_status", (q) => q.eq("status", "ready"))
       .collect();
+  },
+});
+
+export const getByOwnerRepo = internalQuery({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("repoConnections")
+      .withIndex("by_owner_and_repo", (q) => q.eq("owner", args.owner).eq("repo", args.repo))
+      .first();
+  },
+});
+
+/**
+ * Return GitHub App authorization status for a repository URL.
+ * Used by the web UI to show a native GitHub install/authorize step.
+ */
+export const getGitHubPermissionStatus = action({
+  args: {
+    repositoryUrl: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Authentication required");
+    }
+
+    const provider = detectProvider(args.repositoryUrl);
+    if (provider !== "github") {
+      return {
+        provider,
+        appConfigured: false,
+        hasInstallation: false,
+        installUrl: null,
+      };
+    }
+
+    const appConfigured = isGitHubAppConfigured();
+    const installUrl = getGitHubAppInstallUrl();
+    if (!appConfigured) {
+      return {
+        provider,
+        appConfigured: false,
+        hasInstallation: false,
+        installUrl,
+      };
+    }
+
+    const parsed = parseGitHubRepoUrlSafe(args.repositoryUrl);
+    if (!parsed) {
+      return {
+        provider,
+        appConfigured: true,
+        hasInstallation: false,
+        installUrl,
+      };
+    }
+
+    const installation = await findGitHubInstallationForRepo(parsed.owner, parsed.repo);
+    return {
+      provider,
+      appConfigured: true,
+      hasInstallation: Boolean(installation),
+      installationId: installation?.installationId,
+      installUrl,
+    };
   },
 });
 

@@ -106,6 +106,7 @@ export function createWorkspaceRoutes(): Router {
         bountyId,
         agentId,
         repoUrl,
+        repoAuthToken,
         commitSha,
         language,
         expiresAt,
@@ -115,6 +116,7 @@ export function createWorkspaceRoutes(): Router {
         bountyId: string;
         agentId: string;
         repoUrl: string;
+        repoAuthToken?: string;
         commitSha: string;
         language: string;
         expiresAt: number;
@@ -131,6 +133,7 @@ export function createWorkspaceRoutes(): Router {
         bountyId,
         agentId,
         repoUrl,
+        repoAuthToken,
         commitSha,
         language: language ?? "typescript",
         expiresAt: expiresAt ?? Date.now() + 4 * 60 * 60 * 1000,
