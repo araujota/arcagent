@@ -78,7 +78,7 @@ interface PublishPrRequestBody {
 }
 
 function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } | null {
-  const match = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/.]+)(?:\.git)?$/i);
+  const match = repoUrl.match(/^(?:https?:\/\/github\.com\/|git@github\.com:)([^/]+)\/([^/]+?)(?:\.git)?$/i);
   if (!match) return null;
   return { owner: match[1], repo: match[2] };
 }
@@ -243,6 +243,7 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
     if (!body.diffPatch) missing.push("diffPatch");
     if (!body.prTitle) missing.push("prTitle");
     if (!body.prBody) missing.push("prBody");
+    if (!body.repoAuthToken) missing.push("repoAuthToken");
 
     if (missing.length > 0) {
       res.status(400).json({ error: `Missing required fields: ${missing.join(", ")}` });
@@ -256,9 +257,9 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
       return;
     }
 
-    const githubToken = body.repoAuthToken ?? process.env.GITHUB_BOT_TOKEN;
+    const githubToken = body.repoAuthToken;
     if (!githubToken) {
-      res.status(503).json({ error: "No repoAuthToken provided and GITHUB_BOT_TOKEN is not configured" });
+      res.status(400).json({ error: "Missing required fields: repoAuthToken" });
       return;
     }
 

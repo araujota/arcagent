@@ -27,13 +27,13 @@ variable "worker_count" {
 }
 
 variable "worker_role" {
-  description = "Worker runtime role: all, api, or executor"
+  description = "Worker runtime role (api)"
   type        = string
   default     = "api"
 
   validation {
-    condition     = contains(["all", "api", "executor"], var.worker_role)
-    error_message = "worker_role must be one of: all, api, executor."
+    condition     = var.worker_role == "api"
+    error_message = "worker_role must be set to \"api\"."
   }
 }
 

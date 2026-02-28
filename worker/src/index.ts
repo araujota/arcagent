@@ -52,29 +52,22 @@ async function main(): Promise<void> {
   const port = parseInt(process.env.PORT ?? "3001", 10);
   const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
   const workerRoleRaw = (process.env.WORKER_ROLE ?? "api").toLowerCase();
-  if (!["all", "api", "executor"].includes(workerRoleRaw)) {
-    logger.error("Invalid WORKER_ROLE. Expected one of: all, api, executor", {
+  if (workerRoleRaw !== "api") {
+    logger.error("Invalid WORKER_ROLE for hard API-only deployment. Set WORKER_ROLE=api.", {
       workerRole: workerRoleRaw,
     });
     process.exit(1);
   }
-  const workerRole = workerRoleRaw as "all" | "api" | "executor";
-  const allowLegacyExecutorRole = process.env.ALLOW_LEGACY_EXECUTOR_ROLE === "true";
-  if (workerRole !== "api" && !allowLegacyExecutorRole) {
-    logger.error("Local executor roles are disabled. Use WORKER_ROLE=api (set ALLOW_LEGACY_EXECUTOR_ROLE=true to override).", {
-      workerRole,
-      allowLegacyExecutorRole,
-    });
-    process.exit(1);
-  }
-  const runsApi = workerRole === "all" || workerRole === "api";
-  const runsExecutor = workerRole === "all" || workerRole === "executor";
+  const workerRole = "api";
+  const runsQueue = false;
+  const runsWorkspace = true;
+  const hasLocalExecution = runsQueue || runsWorkspace;
   const executionBackend = (process.env.WORKER_EXECUTION_BACKEND ?? "firecracker").toLowerCase();
   const isProduction = process.env.NODE_ENV === "production";
   const allowUnsafeProcessBackend =
     !isProduction && process.env.ALLOW_UNSAFE_PROCESS_BACKEND === "true";
 
-  if (runsExecutor && executionBackend !== "firecracker") {
+  if (hasLocalExecution && executionBackend !== "firecracker") {
     if (!allowUnsafeProcessBackend) {
       logger.error("Only firecracker execution backend is allowed for deployed runtimes", {
         executionBackend,
@@ -88,12 +81,12 @@ async function main(): Promise<void> {
     });
   }
 
-  if (runsExecutor && isProduction && process.env.FC_HARDEN_EGRESS !== "true") {
+  if (hasLocalExecution && isProduction && process.env.FC_HARDEN_EGRESS !== "true") {
     logger.error("FC_HARDEN_EGRESS must be true in production firecracker mode");
     process.exit(1);
   }
 
-  if (runsExecutor && executionBackend === "process") {
+  if (hasLocalExecution && executionBackend === "process") {
     const requiredTools: string[] = [];
     if (process.env.SNYK_TOKEN) requiredTools.push("snyk");
     if (process.env.SONARQUBE_URL && process.env.SONARQUBE_TOKEN) requiredTools.push("sonar-scanner");
@@ -108,12 +101,12 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
   // Startup cleanup — remove orphaned resources from prior unclean shutdowns
   // -------------------------------------------------------------------------
-  if (runsExecutor && executionBackend === "firecracker") {
+  if (hasLocalExecution && executionBackend === "firecracker") {
     await cleanupStaleCryptDevices();
     await cleanupStaleResources();
   }
 
-  if (runsExecutor) {
+  if (hasLocalExecution) {
     // Initialize crash recovery: generate instance ID, recover orphans, start heartbeat
     const instanceId = generateWorkerInstanceId();
     setWorkerInstanceId(instanceId);
@@ -125,13 +118,13 @@ async function main(): Promise<void> {
 
   // Initialise the BullMQ queue & worker
   const { queue, worker, queueEvents } = await createVerificationQueueWithMode(redisUrl, {
-    processJobs: runsExecutor,
+    processJobs: runsQueue,
   });
 
   logger.info("BullMQ queue and worker initialised", {
     workerRole,
-    runsApi,
-    runsExecutor,
+    runsQueue,
+    runsWorkspace,
     redisUrl: redisUrl.replace(/\/\/.*@/, "//<redacted>@"),
   });
   logger.info("Execution backend lock state", {
@@ -159,7 +152,8 @@ async function main(): Promise<void> {
     }
 
     checks.workerRole = workerRole;
-    checks.localExecution = runsExecutor ? "enabled" : "disabled";
+    checks.localExecution = hasLocalExecution ? "enabled" : "disabled";
+    checks.workspaceMode = runsWorkspace ? "local" : "external_only";
     checks.executionBackend = executionBackend;
     checks.firecrackerLocked = executionBackend === "firecracker" ? "true" : "false";
     checks.executionIsolation = executionBackend === "firecracker" ? "microvm_rootfs" : "unsafe_process";
@@ -167,7 +161,7 @@ async function main(): Promise<void> {
     checks.snykCli = hasBinary("snyk") ? "ok" : "missing";
     checks.sonarScanner = hasBinary("sonar-scanner") ? "ok" : "missing";
 
-    if (!runsExecutor) {
+    if (!hasLocalExecution) {
       checks.executionBackendPolicy = "external_executor_required";
       checks.firecrackerLocked = "not_applicable";
       checks.executionIsolation = "external_executor";
@@ -260,21 +254,16 @@ async function main(): Promise<void> {
   const routes = createRoutes(queue);
   app.use("/api", routes);
 
-  if (runsExecutor) {
-    // Mount workspace routes (dev VM lifecycle)
-    const workspaceRoutes = createWorkspaceRoutes();
-    app.use("/api", workspaceRoutes);
-  } else {
-    logger.info("Workspace routes disabled for this worker role", { workerRole });
-  }
+  const workspaceRoutes = createWorkspaceRoutes();
+  app.use("/api", workspaceRoutes);
 
-  // Start idle workspace checker (executor role only)
-  if (runsExecutor) {
+  // API-only mode: no local workspace checker.
+  if (runsWorkspace) {
     startIdleChecker();
   }
 
   // Initialize warm VM pool (background, non-blocking)
-  if (runsExecutor && executionBackend === "firecracker") {
+  if (runsWorkspace && executionBackend === "firecracker") {
     vmPool.initialize().catch((err) => {
       logger.warn("Warm VM pool initialization failed", { error: String(err) });
     });
@@ -304,7 +293,7 @@ async function main(): Promise<void> {
     server.close();
 
     // 2. Stop heartbeat intervals
-    if (runsExecutor) {
+    if (runsWorkspace) {
       workspaceHeartbeat.stopAll();
     }
     stopWatchdog();
@@ -318,12 +307,12 @@ async function main(): Promise<void> {
     }
 
     // 4. Now destroy workspace sessions (dev VMs)
-    if (runsExecutor) {
+    if (runsWorkspace) {
       await destroyAllSessions();
     }
 
     // 5. Drain warm pool and close vsock connections
-    if (runsExecutor) {
+    if (runsWorkspace) {
       await vmPool.drainAll();
       vsockPool.destroyAll();
     }

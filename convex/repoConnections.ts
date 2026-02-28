@@ -358,31 +358,24 @@ export const checkForUpdates = internalAction({
             preferredInstallationId: conn.githubInstallationId,
             writeAccess: false,
           });
-          if (tokenResult) {
-            provider = getRepoProvider("github", { githubToken: tokenResult.token });
-            if (
-              tokenResult.installationId !== conn.githubInstallationId ||
-              tokenResult.accountLogin !== conn.githubInstallationAccountLogin
-            ) {
-              await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
-                repoConnectionId: conn._id,
-                githubInstallationId: tokenResult.installationId,
-                githubInstallationAccountLogin: tokenResult.accountLogin,
-              });
-            }
-          } else if (isGitHubAppConfigured()) {
-            const installation = await findGitHubInstallationForRepo(conn.owner, conn.repo);
-            if (installation) {
-              await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
-                repoConnectionId: conn._id,
-                githubInstallationId: installation.installationId,
-                githubInstallationAccountLogin: installation.accountLogin,
-              });
-            }
+
+          if (!tokenResult?.token) {
+            throw new Error(
+              "GitHub installation token is required for repository update checks. Install/repair the GitHub App for this repository.",
+            );
           }
-          provider = getRepoProvider("github", {
-            githubToken: tokenResult?.token,
-          });
+
+          provider = getRepoProvider("github", { githubToken: tokenResult.token });
+          if (
+            tokenResult.installationId !== conn.githubInstallationId ||
+            tokenResult.accountLogin !== conn.githubInstallationAccountLogin
+          ) {
+            await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
+              repoConnectionId: conn._id,
+              githubInstallationId: tokenResult.installationId,
+              githubInstallationAccountLogin: tokenResult.accountLogin,
+            });
+          }
         } else {
           provider = getRepoProvider(providerName);
         }

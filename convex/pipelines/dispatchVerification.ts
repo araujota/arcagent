@@ -1,9 +1,13 @@
 import { internalAction } from "../_generated/server";
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
-import { Id } from "../_generated/dataModel";
 import { generateJobHmac } from "../lib/hmac";
-import { parseGitHubRepoUrlSafe, resolveGitHubTokenForRepo } from "../lib/githubApp";
+import {
+  parseGitHubRepoUrlSafe,
+  requiresGitHubInstallationToken,
+  resolveGitHubTokenForRepo,
+} from "../lib/githubApp";
+import { fetchWithRetry } from "../lib/httpRetry";
 
 /**
  * Dispatch a verification job to the worker service.
@@ -105,6 +109,11 @@ export const dispatchVerification = internalAction({
           }`,
         );
       }
+      if (requiresGitHubInstallationToken(submission.repositoryUrl) && !repoAuthTokenResult?.token) {
+        throw new Error(
+          "GitHub installation token is required for verification clone. Install/repair the GitHub App for this repository.",
+        );
+      }
       if (repoConnection && repoAuthTokenResult) {
         const submissionRepo = parseGitHubRepoUrlSafe(submission.repositoryUrl);
         if (
@@ -131,7 +140,7 @@ export const dispatchVerification = internalAction({
 
       // Dispatch to worker
       const convexHttpActionsUrl = process.env.CONVEX_HTTP_ACTIONS_URL ?? process.env.CONVEX_URL;
-      const response = await fetch(`${workerUrl}/api/verify`, {
+      const response = await fetchWithRetry(`${workerUrl}/api/verify`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -304,6 +313,11 @@ export const dispatchVerificationFromDiff = internalAction({
           }`,
         );
       }
+      if (requiresGitHubInstallationToken(args.baseRepoUrl) && !repoAuthTokenResult?.token) {
+        throw new Error(
+          "GitHub installation token is required for verification clone. Install/repair the GitHub App for this repository.",
+        );
+      }
       if (
         repoConnection &&
         repoAuthTokenResult &&
@@ -326,7 +340,7 @@ export const dispatchVerificationFromDiff = internalAction({
 
       // Dispatch to worker with diff payload
       const convexHttpActionsUrl = process.env.CONVEX_HTTP_ACTIONS_URL ?? process.env.CONVEX_URL;
-      const response = await fetch(`${workerUrl}/api/verify`, {
+      const response = await fetchWithRetry(`${workerUrl}/api/verify`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

@@ -74,6 +74,7 @@ function mockJob(overrides: Partial<VerificationJobData> = {}): Job<Verification
       submissionId: "sub_456",
       bountyId: "bounty_789",
       repoUrl: "https://github.com/test/repo",
+      repoAuthToken: "ghs_mocktoken",
       commitSha: "abc1234",
       timeoutSeconds: 600,
       convexUrl: "https://test.convex.cloud",
@@ -162,8 +163,18 @@ describe("processVerificationJob", () => {
     const job = mockJob();
     await processVerificationJob(job);
 
-    expect(mockSanitize).toHaveBeenCalledWith("https://github.com/test/repo", "repoCloneUrl", "repoUrl");
+    expect(mockSanitize).toHaveBeenCalledWith(
+      "https://x-access-token:ghs_mocktoken@github.com/test/repo.git",
+      "repoCloneUrl",
+      "repoUrl",
+    );
     expect(mockSanitize).toHaveBeenCalledWith("abc1234", "commitSha", "commitSha");
+  });
+
+  it("requires repoAuthToken for GitHub repository clones", async () => {
+    const job = mockJob({ repoAuthToken: undefined });
+    await expect(processVerificationJob(job)).rejects.toThrow("Missing repoAuthToken for GitHub repository clone");
+    expect(mockCreateVM).not.toHaveBeenCalled();
   });
 
   it("baseCommitSha present → deep clone (no --depth 1)", async () => {

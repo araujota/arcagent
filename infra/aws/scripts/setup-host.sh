@@ -3,7 +3,8 @@
 # ArcAgent Worker — Host Setup (runs as user-data on first boot)
 # ---------------------------------------------------------------------------
 # Installs dependencies and starts the worker service via systemd.
-# Firecracker host setup is applied only when WORKER_ROLE runs executor duties.
+# In API-only deployments, the worker itself provisions and owns workspace VMs,
+# so host-side Firecracker setup is required.
 #
 # This script is idempotent — safe to re-run.
 # ---------------------------------------------------------------------------
@@ -44,10 +45,12 @@ SONARQUBE_URL="${sonarqube_url}"
 SONARQUBE_TOKEN="${sonarqube_token}"
 SNYK_TOKEN="${snyk_token}"
 
-RUNS_EXECUTOR="false"
-if [ "$WORKER_ROLE" = "all" ] || [ "$WORKER_ROLE" = "executor" ]; then
-  RUNS_EXECUTOR="true"
+if [ "$WORKER_ROLE" != "api" ]; then
+  echo "ERROR: Unsupported WORKER_ROLE '$WORKER_ROLE'. API-only deployment requires WORKER_ROLE=api."
+  exit 1
 fi
+
+RUNS_EXECUTOR="true"
 echo "Worker role: $WORKER_ROLE (runs_executor=$RUNS_EXECUTOR)"
 
 if [ -z "$CONVEX_HTTP_ACTIONS_URL" ]; then
@@ -151,8 +154,6 @@ if [ "$RUNS_EXECUTOR" = "true" ]; then
   # 4. Firecracker install is executed after script sync in step 8
   # ---------------------------------------------------------------------------
   echo ">>> Firecracker install deferred until provisioning scripts are synced."
-else
-  echo ">>> API role selected: skipping KVM and Firecracker host network setup."
 fi
 
 # ---------------------------------------------------------------------------
@@ -338,8 +339,6 @@ if [ "$RUNS_EXECUTOR" = "true" ]; then
   # Install Firecracker + Jailer once install-firecracker.sh is available.
   echo ">>> Installing Firecracker v$FIRECRACKER_VERSION..."
   bash /opt/arcagent/scripts/install-firecracker.sh "$FIRECRACKER_VERSION"
-else
-  echo ">>> API role selected: skipping Firecracker binary installation."
 fi
 
 # Optional: deploy worker build artifact from S3
@@ -497,8 +496,6 @@ fi
     }
     [ -f "$KERNEL_PATH" ] && chown arcagent:arcagent "$KERNEL_PATH"
   fi
-else
-  echo ">>> API role selected: skipping rootfs hydration and kernel download."
 fi
 
 # ---------------------------------------------------------------------------
@@ -554,7 +551,6 @@ WORKSPACE_IDLE_TIMEOUT_MS=$WORKSPACE_IDLE_TIMEOUT_MS
 # Firecracker / VM configuration
 # -------------------------------------------------------
 WORKER_ROLE=$WORKER_ROLE
-ALLOW_LEGACY_EXECUTOR_ROLE=$([ "$WORKER_ROLE" = "api" ] && echo "false" || echo "true")
 WORKER_EXECUTION_BACKEND=firecracker
 WORKSPACE_ISOLATION_MODE=shared_worker
 FC_USE_VSOCK=true

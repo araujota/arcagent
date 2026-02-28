@@ -18,7 +18,7 @@ import { postVerificationResult } from "../convex/client";
 import { generateFeedback, VerificationFeedback } from "../lib/feedbackFormatter";
 
 function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } | null {
-  const match = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/.]+)(?:\.git)?$/i);
+  const match = repoUrl.match(/^(?:https?:\/\/github\.com\/|git@github\.com:)([^/]+)\/([^/]+?)(?:\.git)?$/i);
   if (!match) return null;
   return { owner: match[1], repo: match[2] };
 }
@@ -27,13 +27,17 @@ function buildAuthenticatedCloneRepoUrl(
   repoUrl: string,
   repoAuthToken?: string,
 ): { url: string; tokenForRedaction?: string } {
+  const parsed = parseGitHubRepo(repoUrl);
+  if (parsed && !repoAuthToken) {
+    throw new Error("Missing repoAuthToken for GitHub repository clone");
+  }
+
   if (!repoAuthToken) return { url: repoUrl };
 
   if (!/^[A-Za-z0-9_-]+$/.test(repoAuthToken)) {
     throw new Error("Invalid repoAuthToken format");
   }
 
-  const parsed = parseGitHubRepo(repoUrl);
   if (!parsed) return { url: repoUrl };
 
   return {

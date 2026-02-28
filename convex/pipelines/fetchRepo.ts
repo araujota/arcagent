@@ -58,8 +58,14 @@ export const fetchRepo = internalAction({
           writeAccess: false,
         });
 
+        if (!tokenResult?.token) {
+          throw new Error(
+            "GitHub installation token is required for repository indexing. Install/repair the GitHub App for this repository.",
+          );
+        }
+
         provider = getRepoProvider("github", {
-          githubToken: tokenResult?.token,
+          githubToken: tokenResult.token,
         });
         const parsed = provider.parseUrl(args.repositoryUrl);
         owner = parsed.owner;

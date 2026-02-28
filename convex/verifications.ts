@@ -3,7 +3,8 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { getCurrentUser, requireAuth } from "./lib/utils";
 import { calculatePlatformFee, PLATFORM_FEE_RATE } from "./lib/fees";
-import { resolveGitHubTokenForRepo } from "./lib/githubApp";
+import { requiresGitHubInstallationToken, resolveGitHubTokenForRepo } from "./lib/githubApp";
+import { fetchWithRetry } from "./lib/httpRetry";
 
 type HiddenFailureMechanismKey =
   | "assertion_mismatch"
@@ -595,7 +596,7 @@ export const triggerPayoutOnVerificationPass = internalAction({
         });
 
         if (workerUrl && workerSecret && workspace?.workerHost) {
-          const diffResponse = await fetch(`${workspace.workerHost}/api/workspace/diff`, {
+          const diffResponse = await fetchWithRetry(`${workspace.workerHost}/api/workspace/diff`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -622,6 +623,11 @@ export const triggerPayoutOnVerificationPass = internalAction({
                 preferredInstallationId: repoConnection?.githubInstallationId,
                 writeAccess: true,
               });
+              if (requiresGitHubInstallationToken(workspace.repositoryUrl) && !repoAuthTokenResult?.token) {
+                throw new Error(
+                  "GitHub installation token is required for auto-PR publish. Install/repair the GitHub App for this repository.",
+                );
+              }
               if (
                 repoConnection &&
                 repoAuthTokenResult &&
@@ -645,7 +651,7 @@ export const triggerPayoutOnVerificationPass = internalAction({
                 `- Verification ID: ${args.verificationId}`,
               ].join("\n");
 
-              const publishResponse = await fetch(`${workerUrl}/api/verify/publish-pr`, {
+              const publishResponse = await fetchWithRetry(`${workerUrl}/api/verify/publish-pr`, {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",

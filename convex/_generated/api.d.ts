@@ -39,6 +39,7 @@ import type * as lib_githubApp from "../lib/githubApp.js";
 import type * as lib_gitlab from "../lib/gitlab.js";
 import type * as lib_hmac from "../lib/hmac.js";
 import type * as lib_htmlToMarkdown from "../lib/htmlToMarkdown.js";
+import type * as lib_httpRetry from "../lib/httpRetry.js";
 import type * as lib_languageDetector from "../lib/languageDetector.js";
 import type * as lib_llm from "../lib/llm.js";
 import type * as lib_repoMapper from "../lib/repoMapper.js";
@@ -130,6 +131,7 @@ declare const fullApi: ApiFromModules<{
   "lib/gitlab": typeof lib_gitlab;
   "lib/hmac": typeof lib_hmac;
   "lib/htmlToMarkdown": typeof lib_htmlToMarkdown;
+  "lib/httpRetry": typeof lib_httpRetry;
   "lib/languageDetector": typeof lib_languageDetector;
   "lib/llm": typeof lib_llm;
   "lib/repoMapper": typeof lib_repoMapper;

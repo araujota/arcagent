@@ -1,7 +1,8 @@
 import { internalMutation, internalQuery, internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { resolveGitHubTokenForRepo } from "./lib/githubApp";
+import { requiresGitHubInstallationToken, resolveGitHubTokenForRepo } from "./lib/githubApp";
+import { fetchWithRetry } from "./lib/httpRetry";
 
 // ---------------------------------------------------------------------------
 // Mutations
@@ -193,13 +194,14 @@ export const provisionWorkspace = internalAction({
   },
   handler: async (ctx, args) => {
     try {
-      const workerUrl = process.env.WORKER_EXECUTOR_URL;
+      const workerUrl = process.env.WORKER_API_URL;
       const workerSecret = process.env.WORKER_SHARED_SECRET;
       if (!workerUrl || !workerSecret) {
         await ctx.runMutation(internal.devWorkspaces.updateStatus, {
           workspaceId: args.workspaceId,
           status: "error",
-          errorMessage: "Worker executor not configured (WORKER_EXECUTOR_URL + WORKER_SHARED_SECRET required)",
+          errorMessage:
+            "WORKER_API_URL and WORKER_SHARED_SECRET must be configured for workspace provisioning",
         });
         return;
       }
@@ -235,7 +237,13 @@ export const provisionWorkspace = internalAction({
         );
       }
 
-      const response = await fetch(`${workerUrl}/api/workspace/provision`, {
+      if (requiresGitHubInstallationToken(args.repositoryUrl) && !repoAuthToken) {
+        throw new Error(
+          "GitHub installation token is required for workspace provisioning. Install/repair the GitHub App for this repository.",
+        );
+      }
+
+      const response = await fetchWithRetry(`${workerUrl}/api/workspace/provision`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

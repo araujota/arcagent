@@ -485,7 +485,7 @@ export const cleanupBranch = internalAction({
     }
 
     const repoUrl = `https://github.com/${owner}/${repo}`;
-    let botToken = process.env.GITHUB_BOT_TOKEN;
+    let botToken: string | undefined;
     try {
       const repoConnection = await ctx.runQuery(internal.repoConnections.getByOwnerRepo, {
         owner,
@@ -518,9 +518,7 @@ export const cleanupBranch = internalAction({
     }
 
     if (!botToken) {
-      console.warn(
-        "[cleanupBranch] No GitHub installation token or GITHUB_BOT_TOKEN available, skipping branch cleanup",
-      );
+      console.warn("[cleanupBranch] No GitHub installation token available, skipping branch cleanup");
       return;
     }
 

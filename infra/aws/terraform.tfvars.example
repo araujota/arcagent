@@ -8,10 +8,10 @@
 aws_region   = "us-east-1"
 environment  = "production"
 
-# EC2 sizing. KVM-capable hosts are required only for worker_role=executor (or all).
+# EC2 sizing.
 instance_type = "c8i.large"
 worker_count  = 1
-worker_role   = "api" # all | api | executor
+worker_role   = "api"
 ssh_key_name  = "your-key-pair-name"
 
 # Restrict SSH access to your IP (leave empty to disable SSH)

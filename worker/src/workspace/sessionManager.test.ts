@@ -99,6 +99,7 @@ function makeProvisionOpts(overrides?: Partial<ProvisionOptions>): ProvisionOpti
     bountyId: "bounty-xyz",
     agentId: "agent-007",
     repoUrl: "https://github.com/test-org/test-repo",
+    repoAuthToken: "ghs_mocktoken",
     commitSha: "abc1234def5678",
     language: "typescript",
     expiresAt: Date.now() + 3_600_000, // 1 hour from now
@@ -126,6 +127,15 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe("provisionWorkspace", () => {
+  it("requires repoAuthToken for GitHub workspace clones", async () => {
+    const mockVM = createMockVMHandle();
+    vi.mocked(createFirecrackerVM).mockResolvedValue(mockVM);
+    const opts = makeProvisionOpts({ repoAuthToken: undefined });
+    await expect(provisionWorkspace(opts)).rejects.toThrow("Missing repoAuthToken for GitHub repository clone");
+    expect(createFirecrackerVM).toHaveBeenCalledOnce();
+    expect(destroyFirecrackerVM).toHaveBeenCalledWith(mockVM);
+  });
+
   it("provisions workspace and returns ready session", async () => {
     const mockVM = createMockVMHandle();
     vi.mocked(createFirecrackerVM).mockResolvedValue(mockVM);

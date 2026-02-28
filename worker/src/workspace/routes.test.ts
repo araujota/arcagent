@@ -12,6 +12,9 @@ import {
   touchActivity,
 } from "./sessionManager";
 import { isBlockedCommand, validateWorkspacePath } from "./validation";
+import { sessionStore } from "./sessionStore";
+
+const sessionStoreGetMock = vi.spyOn(sessionStore, "get");
 
 // ---------------------------------------------------------------------------
 // Mock logger (imported by routes.ts via ../index)
@@ -106,6 +109,8 @@ function makeReadySession(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   // Restore default mock implementations after clearAllMocks
+  process.env.WORKER_ROLE = "api";
+  sessionStoreGetMock.mockResolvedValue(null);
   vi.mocked(isBlockedCommand).mockReturnValue(false);
   vi.mocked(validateWorkspacePath).mockImplementation(
     (p: string) => `/workspace/${p}`,

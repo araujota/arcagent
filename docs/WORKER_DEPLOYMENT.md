@@ -25,9 +25,8 @@ This guide covers deploying the ArcAgent verification worker — from local deve
 
 **Key points:**
 - The worker is independently deployed — it runs on your own infrastructure, not alongside Convex
-- Supports split roles: `WORKER_ROLE=api` (regular service) and `WORKER_ROLE=executor` (Firecracker host)
-- `api` role can run on standard EC2 (no KVM requirement)
-- `executor` role requires **Linux with KVM support** (`.metal` or nested-virtualization-capable EC2)
+- The worker runs in API-only mode (`WORKER_ROLE=api`) and is a regular service node.
+- Workspace/job execution is performed by this worker instance (or its configured execution backend), so each worker can provision and own multiple workspaces.
 - Requires **Redis** for the BullMQ job queue
 - Firecracker microVMs provide per-job isolation with language-specific rootfs images
 - Communication between Convex and the worker is authenticated via `WORKER_SHARED_SECRET` (constant-time comparison)
@@ -69,22 +68,27 @@ Create a `.env` file at the repo root (loaded by all services via `env_file`). R
 | `CONVEX_URL` | Yes | Convex deployment URL (e.g. `https://your-app.convex.cloud`) |
 | `CONVEX_HTTP_ACTIONS_URL` | Recommended | Convex HTTP actions URL (e.g. `https://your-app.convex.site`) |
 | `WORKER_SHARED_SECRET` | Yes | Must match the value set in Convex env |
-| `WORKER_ROLE` | No | Runtime role (`all`, `api`, `executor`) |
+| `WORKER_ROLE` | No | Runtime role (`api`) |
 | `REDIS_URL` | No | Overridden to `redis://redis:6379` by Docker Compose |
 | `PORT` | No | Default: `3001` |
 | `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` (default) |
 
 ### Firecracker in Docker
 
-The Docker Compose config mounts `/dev/kvm` and `/dev/net/tun` from the host and adds the required capabilities (`SYS_ADMIN`, `NET_ADMIN`, `NET_RAW`, `MKNOD`). **Your host must be Linux with KVM support** — Firecracker cannot run inside Docker on macOS or Windows.
-
-For local development without Firecracker (e.g. on macOS), you can run the worker directly:
+For local development without KVM, run with `WORKER_EXECUTION_BACKEND=process` (non-production only).
+For production-style Firecracker execution, run on Linux hosts with KVM available.
 
 ```bash
+WORKER_EXECUTION_BACKEND=process  # local non-production only
 cd worker && npm run dev
 ```
 
-This starts the Express server with BullMQ but VM operations will fail unless KVM is available.
+```bash
+WORKER_EXECUTION_BACKEND=firecracker
+cd worker && npm run dev
+```
+
+This starts the Express server in API mode and provisions workspaces on this worker when enabled by runtime configuration.
 
 ### Pulling worker envs from Vercel before local deploy
 
@@ -111,7 +115,7 @@ The `infra/aws/` directory contains Terraform configuration for deploying worker
 
 Terraform provisions:
 - **VPC** (`10.1.0.0/16`) with public subnets — uses `10.1.x.x` to avoid collision with Firecracker's internal `10.0.0.0/24` TAP subnet
-- **EC2 worker hosts** (choose by role/capacity; KVM required only for executor role)
+- **EC2 worker hosts** (standard EC2 sizing for API-only workers)
 - **Elastic IPs** for stable worker addressing
 - **Security group** — port 3001 open for Convex/MCP inbound, SSH restricted to specified CIDRs
 - **IAM role** with CloudWatch Logs, SSM, and ECR read access
@@ -131,10 +135,10 @@ Edit `terraform.tfvars` with your values:
 aws_region   = "us-east-1"
 environment  = "production"
 
-# Use standard EC2 for api role; use KVM-capable EC2 for executor role
+# Use standard EC2 for API-only workers; execution environments are separate.
 instance_type = "c8i.large"
 worker_count  = 1
-worker_role   = "api" # all | api | executor
+worker_role   = "api"
 ssh_key_name  = "your-key-pair-name"
 
 # Restrict SSH to your IP
@@ -204,8 +208,6 @@ The `deploy.sh` script (created by `setup-worker.sh`) stops the service, extract
 
 ```bash
 npx convex env set WORKER_API_URL "http://<eip>:3001"
-# Required for workspace/execution flows in split-role setup:
-# npx convex env set WORKER_EXECUTOR_URL "http://<executor-eip>:3001"
 ```
 
 Ensure `WORKER_SHARED_SECRET` is also set in Convex to the same value as in `terraform.tfvars`.
@@ -331,7 +333,7 @@ sudo systemctl stop arcagent-worker
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `KVM not available` or `/dev/kvm: No such file` | Host lacks KVM support | Use a KVM-capable host for `WORKER_ROLE=executor` (e.g. `.metal` or nested-virtualization-enabled EC2). Verify with `ls -la /dev/kvm` |
+| `KVM not available` or `/dev/kvm: No such file` | Host lacks KVM support | Configure `WORKER_EXECUTION_BACKEND=process` in a non-production worker environment, or use an instance with KVM/Firecracker support. |
 | `Redis connection refused` | Redis not running | `sudo systemctl start redis-server` and verify with `redis-cli ping` |
 | `Rootfs image not found` | `build-rootfs.sh` hasn't run | `sudo bash /opt/arcagent/scripts/build-rootfs.sh` |
 | `Firecracker binary not found` | `install-firecracker.sh` hasn't run | `sudo bash /opt/arcagent/scripts/install-firecracker.sh 1.7.0` |
@@ -378,9 +380,8 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 | `CONVEX_URL` | Yes | — | Convex deployment URL |
 | `CONVEX_HTTP_ACTIONS_URL` | No | derived from `CONVEX_URL` | Convex HTTP actions URL for `/api/*` callbacks |
 | `WORKER_SHARED_SECRET` | Yes | — | Shared secret (must match Convex env) |
-| `WORKER_ROLE` | No | `api` | Runtime role (standard: `api`; legacy: `all`/`executor`) |
-| `ALLOW_LEGACY_EXECUTOR_ROLE` | No | `false` | Permit worker startup in legacy executor roles |
-| `WORKER_EXECUTION_BACKEND` | No | `firecracker` | Execution backend (`firecracker` required for deployed executor role) |
+| `WORKER_ROLE` | No | `api` | Runtime role |
+| `WORKER_EXECUTION_BACKEND` | No | `firecracker` | Execution backend for worker-owned workspaces (`firecracker` or `process` for non-production override) |
 | `REDIS_URL` | Yes | `redis://localhost:6379` | Redis connection URL |
 | `PORT` | No | `3001` | Server port |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, `error` |
@@ -407,9 +408,9 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 |----------|----------|---------|-------------|
 | `aws_region` | No | `us-east-1` | AWS region |
 | `environment` | No | `production` | Environment name |
-| `instance_type` | No | `c8i.large` | EC2 instance type (KVM only required for `WORKER_ROLE=executor`) |
+| `instance_type` | No | `c8i.large` | EC2 instance type for API-only worker hosts |
 | `worker_count` | No | `1` | Number of worker instances |
-| `worker_role` | No | `api` | Worker runtime role (`all`, `api`, `executor`) |
+| `worker_role` | No | `api` | Worker runtime role (API-only deployment) |
 | `ssh_key_name` | Yes | — | EC2 key pair name |
 | `ssh_allowed_cidrs` | No | `[]` | CIDRs allowed to SSH (empty = no SSH) |
 | `worker_shared_secret` | Yes | — | Shared secret (sensitive) |
@@ -435,7 +436,6 @@ These must be set in the Convex dashboard (or via `npx convex env set`):
 | Variable | Description |
 |----------|-------------|
 | `WORKER_API_URL` | Worker URL from `terraform output worker_host_urls` (e.g. `http://<eip>:3001`) |
-| `WORKER_EXECUTOR_URL` | Executor URL for workspace provisioning/execution |
 | `WORKER_SHARED_SECRET` | Same value as in `terraform.tfvars` |
 
 ## Provisioning Scripts Reference

@@ -136,7 +136,6 @@ Set via `npx convex env set VARIABLE_NAME "value"` or in the Convex Dashboard un
 | Variable | Required | Description | How to get it |
 |----------|----------|-------------|---------------|
 | `WORKER_API_URL` | Yes | Worker HTTP endpoint for dispatching verification jobs | `http://localhost:3001` locally, or your worker's production URL |
-| `WORKER_EXECUTOR_URL` | Recommended | Worker HTTP endpoint for workspace provisioning/execution | Required for workspace tooling when API and executor are split |
 | `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` (default) | Workspaces execute on the worker host currently assigned to the claim |
 
 ---
@@ -152,8 +151,7 @@ Create `worker/.env`.
 | `CONVEX_URL` | Yes | Convex deployment URL (`.convex.cloud`) | Same as `NEXT_PUBLIC_CONVEX_URL` |
 | `CONVEX_HTTP_ACTIONS_URL` | Recommended | Convex HTTP actions URL (`.convex.site`) used for `/api/*` callbacks | Derive from `CONVEX_URL` by replacing `.cloud` with `.site` |
 | `WORKER_SHARED_SECRET` | Yes | Auth with Convex HTTP endpoints | Must match value set in Convex env |
-| `WORKER_ROLE` | No | Worker runtime role (`api`, legacy: `all`/`executor`) | Default `api` |
-| `ALLOW_LEGACY_EXECUTOR_ROLE` | No | Allow worker process to start in legacy executor modes | Keep `false` (or unset) for standard service nodes |
+| `WORKER_ROLE` | No | Worker runtime role (`api`) | Default `api` |
 | `WORKER_EXECUTION_BACKEND` | No | Execution backend | Must be `firecracker` in deployed runtimes; `process` is blocked unless explicit unsafe local override |
 | `ALLOW_UNSAFE_PROCESS_BACKEND` | No | Local escape hatch for non-KVM development only | Set `true` only for local non-production debugging |
 | `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` | Workspace orchestration mode (`shared_worker` in current runtime) |
@@ -279,8 +277,6 @@ npx convex env set STRIPE_SECRET_KEY "sk_test_..."
 npx convex env set STRIPE_WEBHOOK_SECRET "whsec_..."
 npx convex env set ANTHROPIC_API_KEY "sk-ant-..."
 npx convex env set WORKER_API_URL "http://localhost:3001"
-# Optional split-role deployment: route workspace provision/exec to executor host
-# npx convex env set WORKER_EXECUTOR_URL "http://executor-host:3001"
 
 # 5. Create .env.local (frontend)
 cat >> .env.local <<EOF
