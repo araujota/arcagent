@@ -207,6 +207,32 @@ describe("provisionWorkspace", () => {
     );
   });
 
+  it("prunes stale capacity sessions before enforcing the limit", async () => {
+    const mockVM = createMockVMHandle();
+    vi.mocked(createFirecrackerVM).mockResolvedValue(mockVM);
+
+    const expiredAt = Date.now() - 60_000;
+    for (let i = 0; i < 10; i++) {
+      const opts = makeProvisionOpts({
+        workspaceId: `ws-stale-${i}`,
+        expiresAt: expiredAt,
+      });
+      await provisionWorkspace(opts);
+    }
+
+    const overflowOpts = makeProvisionOpts({
+      workspaceId: "ws-stale-overflow",
+      expiresAt: Date.now() + 3_600_000,
+    });
+
+    await expect(provisionWorkspace(overflowOpts)).resolves.toMatchObject({
+      workspaceId: "ws-stale-overflow",
+    });
+
+    // Old implementation rejects here because stale sessions were counted
+    // and prevented this call. After the capacity-prune fix, it should proceed.
+  });
+
   it("installs dependencies based on language", async () => {
     const mockVM = createMockVMHandle();
     vi.mocked(createFirecrackerVM).mockResolvedValue(mockVM);

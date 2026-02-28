@@ -109,6 +109,110 @@ const PROVISIONING_TIMEOUT_MS = 10 * 60 * 1000; // 10 min — provisioning that 
 const MAX_DIFF_SIZE = 10 * 1024 * 1024; // 10 MiB
 const MAX_CHANGED_FILES = 500;
 
+export interface CapacityStats {
+  maxDevVms: number;
+  totalSessions: number;
+  activeForCapacity: number;
+  byStatus: Record<WorkspaceSession["status"] | "unknown", number>;
+  sessions: Array<{
+    workspaceId: string;
+    status: WorkspaceSession["status"];
+    createdAt: number;
+    readyAt?: number;
+    expiresAt: number;
+    lastActivityAt: number;
+    claimId: string;
+    bountyId: string;
+    agentId: string;
+  }>;
+}
+
+function isProvisionCapacityActive(session: WorkspaceSession, now: number): boolean {
+  if (session.status === "ready") {
+    return session.expiresAt > now;
+  }
+  if (session.status === "provisioning") {
+    return now - session.createdAt <= PROVISIONING_TIMEOUT_MS;
+  }
+  return false;
+}
+
+function getCapacityStats(now: number = Date.now()): CapacityStats {
+  const allSessions = Array.from(sessions.values()).filter(
+    (s) => s.status !== "destroyed",
+  );
+  const byStatus: CapacityStats["byStatus"] = {
+    provisioning: 0,
+    ready: 0,
+    error: 0,
+    destroyed: 0,
+    unknown: 0,
+  };
+
+  for (const session of allSessions) {
+    byStatus[session.status] = (byStatus[session.status] || 0) + 1;
+  }
+
+  return {
+    maxDevVms: MAX_DEV_VMS,
+    totalSessions: allSessions.length,
+    activeForCapacity: allSessions.filter((s) => isProvisionCapacityActive(s, now)).length,
+    byStatus,
+    sessions: allSessions.map((session) => ({
+      workspaceId: session.workspaceId,
+      status: session.status,
+      createdAt: session.createdAt,
+      readyAt: session.readyAt,
+      expiresAt: session.expiresAt,
+      lastActivityAt: session.lastActivityAt,
+      claimId: session.claimId,
+      bountyId: session.bountyId,
+      agentId: session.agentId,
+    })),
+  };
+}
+
+export function getCapacityStatsSnapshot(): CapacityStats {
+  return getCapacityStats();
+}
+
+async function pruneStaleSessionsForCapacity(now: number = Date.now()): Promise<void> {
+  const stale: string[] = [];
+  for (const [workspaceId, session] of sessions) {
+    if (
+      session.status === "ready" &&
+      (session.expiresAt <= now || now - session.lastActivityAt > WORKSPACE_IDLE_TIMEOUT_MS)
+    ) {
+      stale.push(workspaceId);
+      continue;
+    }
+
+    if (
+      session.status === "provisioning" &&
+      now - session.createdAt > PROVISIONING_TIMEOUT_MS
+    ) {
+      stale.push(workspaceId);
+      continue;
+    }
+
+    if (session.status === "error" && now - session.createdAt > ERROR_SESSION_CLEANUP_MS) {
+      stale.push(workspaceId);
+    }
+  }
+
+  for (const workspaceId of stale) {
+    logger.info("Pruning stale session during capacity check", {
+      workspaceId,
+    });
+    await destroyWorkspace(workspaceId, "error_cleanup").catch((err) => {
+      logger.error("Failed to prune stale workspace during capacity check", {
+        workspaceId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Session store
 // ---------------------------------------------------------------------------
@@ -165,12 +269,18 @@ export async function provisionWorkspace(
     return existing;
   }
 
-  // Capacity check — include retry info based on nearest expiry
-  const activeSessions = Array.from(sessions.values()).filter(
-    (s) => s.status !== "destroyed",
+  const now = Date.now();
+  await pruneStaleSessionsForCapacity(now);
+
+  // Capacity check — count only capacity-bearing sessions (ready or active provisioning)
+  const activeSessions = Array.from(sessions.values()).filter((s) =>
+    isProvisionCapacityActive(s, now),
   );
+
+  const capacityStats = getCapacityStats(now);
+  logger.debug("Capacity snapshot before provision", capacityStats);
+
   if (activeSessions.length >= MAX_DEV_VMS) {
-    const now = Date.now();
     // Find the nearest TTL expiry for a retry hint
     const nearestExpiry = activeSessions
       .filter((s) => s.expiresAt > now)
