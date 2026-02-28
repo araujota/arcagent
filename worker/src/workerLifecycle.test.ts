@@ -109,6 +109,7 @@ function createMockJob(overrides?: Record<string, unknown>): Job {
       submissionId: "sub-456",
       bountyId: "bounty-789",
       repoUrl: "https://github.com/test/repo",
+      repoAuthToken: "ghs_mocktoken",
       commitSha: "abc1234",
       timeoutSeconds: 300,
       convexUrl: "https://test.convex.cloud",

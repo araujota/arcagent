@@ -1,6 +1,7 @@
 import { internalMutation, internalQuery, internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import { resolveGitHubTokenForRepo } from "./lib/githubApp";
 
 const DEFAULT_CLAIM_DURATION_HOURS = 4;
 
@@ -477,9 +478,47 @@ export const cleanupBranch = internalAction({
   handler: async (ctx, args) => {
     const retryCount = args.retryCount ?? 0;
     const MAX_RETRIES = 3;
-    const botToken = process.env.GITHUB_BOT_TOKEN;
+    const [owner, repo] = args.featureBranchRepo.split("/");
+    if (!owner || !repo) {
+      console.warn(`[cleanupBranch] Invalid featureBranchRepo format: ${args.featureBranchRepo}`);
+      return;
+    }
+
+    const repoUrl = `https://github.com/${owner}/${repo}`;
+    let botToken: string | undefined;
+    try {
+      const repoConnection = await ctx.runQuery(internal.repoConnections.getByOwnerRepo, {
+        owner,
+        repo,
+      });
+      const tokenResult = await resolveGitHubTokenForRepo({
+        repositoryUrl: repoUrl,
+        preferredInstallationId: repoConnection?.githubInstallationId,
+        writeAccess: true,
+      });
+      if (
+        repoConnection &&
+        tokenResult &&
+        (tokenResult.installationId !== repoConnection.githubInstallationId ||
+          tokenResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
+      ) {
+        await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
+          repoConnectionId: repoConnection._id,
+          githubInstallationId: tokenResult.installationId,
+          githubInstallationAccountLogin: tokenResult.accountLogin,
+        });
+      }
+      botToken = tokenResult?.token ?? botToken;
+    } catch (err) {
+      console.error(
+        `[cleanupBranch] Failed to mint GitHub installation token for ${owner}/${repo}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
     if (!botToken) {
-      console.warn("[cleanupBranch] GITHUB_BOT_TOKEN not configured, skipping branch cleanup");
+      console.warn("[cleanupBranch] No GitHub installation token available, skipping branch cleanup");
       return;
     }
 

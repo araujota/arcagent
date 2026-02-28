@@ -46,6 +46,18 @@ export interface SessionRecord {
   firecrackerPid: number;
   workerInstanceId: string;
   defaultSessionId?: string;
+
+  /** Optional URL of the worker that owns this workspace session. */
+  workerHost?: string;
+}
+
+export interface WorkspaceRouteRecord {
+  workspaceId: string;
+  workerHost: string;
+  vmId?: string;
+  guestIp?: string;
+  status?: string;
+  lastUpdatedAt: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +65,7 @@ export interface SessionRecord {
 // ---------------------------------------------------------------------------
 
 const KEY_PREFIX = "workspace:";
+const WORKSPACE_ROUTE_PREFIX = "workspace-route:";
 const AGENT_INDEX_PREFIX = "workspace:by-agent:";
 const WORKER_HEARTBEAT_PREFIX = "worker:heartbeat:";
 
@@ -101,6 +114,7 @@ function serializeRecord(record: SessionRecord): Record<string, string> {
   if (record.readyAt !== undefined) flat.readyAt = String(record.readyAt);
   if (record.defaultSessionId !== undefined) flat.defaultSessionId = record.defaultSessionId;
   if (record.guestIp !== undefined) flat.guestIp = record.guestIp;
+  if (record.workerHost !== undefined) flat.workerHost = record.workerHost;
 
   return flat;
 }
@@ -136,6 +150,7 @@ function deserializeRecord(
     workerInstanceId: hash.workerInstanceId,
     defaultSessionId: hash.defaultSessionId || undefined,
     guestIp: hash.guestIp || undefined,
+    workerHost: hash.workerHost || undefined,
   };
 }
 
@@ -183,6 +198,54 @@ class SessionStore {
     // Index by agent
     pipeline.sadd(agentIndexKey(record.agentId), record.workspaceId);
     await pipeline.exec();
+  }
+
+  /**
+   * Cache minimal workspace routing metadata for API-only workers.
+   * Stores owner worker host, latest known vmId, and guest IP for traffic
+   * direction without requiring an in-memory local session.
+   */
+  async saveWorkspaceRoute(record: WorkspaceRouteRecord): Promise<void> {
+    const redis = this.getRedis();
+    const key = `${WORKSPACE_ROUTE_PREFIX}${record.workspaceId}`;
+    const payload = {
+      workspaceId: record.workspaceId,
+      workerHost: record.workerHost,
+      vmId: record.vmId || "",
+      guestIp: record.guestIp || "",
+      status: record.status || "ready",
+      lastUpdatedAt: String(record.lastUpdatedAt),
+    };
+    await redis.hset(key, payload);
+    await redis.expire(key, 86400);
+  }
+
+  /**
+   * Resolve cached routing metadata for a workspace.
+   */
+  async getWorkspaceRoute(workspaceId: string): Promise<WorkspaceRouteRecord | null> {
+    const redis = this.getRedis();
+    const hash = await redis.hgetall(`${WORKSPACE_ROUTE_PREFIX}${workspaceId}`);
+    if (!hash || Object.keys(hash).length === 0) return null;
+
+    if (!hash.workspaceId || !hash.workerHost) return null;
+
+    return {
+      workspaceId: hash.workspaceId,
+      workerHost: hash.workerHost,
+      vmId: hash.vmId || undefined,
+      guestIp: hash.guestIp || undefined,
+      status: hash.status,
+      lastUpdatedAt: Number(hash.lastUpdatedAt || 0),
+    };
+  }
+
+  /**
+   * Remove cached routing metadata after workspace destruction.
+   */
+  async deleteWorkspaceRoute(workspaceId: string): Promise<void> {
+    const redis = this.getRedis();
+    await redis.del(`${WORKSPACE_ROUTE_PREFIX}${workspaceId}`);
   }
 
   /**

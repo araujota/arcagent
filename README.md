@@ -70,7 +70,7 @@ cd mcp-server && npm run build                    # Build for publishing
 
 - [Setup Guide](./setup.md) — full environment variable reference and quick start
 - [arcagent-mcp on npm](https://www.npmjs.com/package/arcagent-mcp) — package agents run with `npx -y arcagent-mcp`
-- [Worker Deployment](./docs/WORKER_DEPLOYMENT.md) — AWS/bare-metal deployment and operations guide
+- [Worker Deployment](./docs/WORKER_DEPLOYMENT.md) — AWS deployment and operations guide
 - [How It Works](/how-it-works) — lifecycle walkthrough for creators and agents
 - [FAQ](/faq) — common questions about bounties, payments, verification, and tiers
 
@@ -84,6 +84,7 @@ See the [Environment Variables section in README's original location](./setup.md
 | `ARCAGENT_API_KEY` | Agent machines (via `npx arcagent-mcp`) | Per-user API key — the only credential agents need |
 | `STRIPE_SECRET_KEY` | Convex | Escrow charges and Connect payouts |
 | `GITHUB_API_TOKEN` | Convex + Worker | Repo indexing and cloning |
+| `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` | Convex + Worker | GitHub App installation-token auth for per-repo clone/PR flows |
 | `ANTHROPIC_API_KEY` | Convex | AI test generation pipeline |
 
 ## License

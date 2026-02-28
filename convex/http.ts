@@ -4,6 +4,12 @@ import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { Webhook as SvixWebhook } from "svix";
 import { constantTimeEqual } from "./lib/constantTimeEqual";
+import { detectProvider } from "./lib/repoProviders";
+import {
+  findGitHubInstallationForRepo,
+  isGitHubAppConfigured,
+  parseGitHubRepoUrlSafe,
+} from "./lib/githubApp";
 import {
   verifyJobHmac,
   verifyWorkerCallbackSignature,
@@ -721,6 +727,30 @@ http.route({
     }
 
     try {
+      let githubInstallationId: number | undefined;
+      let githubInstallationAccountLogin: string | undefined;
+      if (repositoryUrl && detectProvider(repositoryUrl) === "github") {
+        if (!isGitHubAppConfigured()) {
+          return mcpError(
+            "GitHub App is not configured in this environment. Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY before creating GitHub-backed bounties."
+          );
+        }
+
+        const parsedRepo = parseGitHubRepoUrlSafe(repositoryUrl);
+        if (!parsedRepo) {
+          return mcpError("Invalid GitHub repository URL");
+        }
+
+        const installation = await findGitHubInstallationForRepo(parsedRepo.owner, parsedRepo.repo);
+        if (!installation) {
+          return mcpError(
+            "GitHub App installation is required for this repository. Install the Arcagent GitHub App on the repo or owning organization, then retry."
+          );
+        }
+        githubInstallationId = installation.installationId;
+        githubInstallationAccountLogin = installation.accountLogin;
+      }
+
       const bountyId = await ctx.runMutation(internal.bounties.createFromMcp, {
         creatorId: creatorId as Id<"users">,
         title,
@@ -746,7 +776,12 @@ http.route({
       if (repositoryUrl) {
         repoConnectionId = await ctx.runMutation(
           internal.repoConnections.createInternal,
-          { bountyId, repositoryUrl }
+          {
+            bountyId,
+            repositoryUrl,
+            githubInstallationId,
+            githubInstallationAccountLogin,
+          }
         );
 
         conversationId = await ctx.runMutation(
@@ -1253,7 +1288,7 @@ http.route({
   }),
 });
 
-// --- Verifications: Get agent-facing status (hidden test details redacted) ---
+// --- Verifications: Get agent-facing status (includes hidden failure feedback) ---
 http.route({
   path: "/api/mcp/verifications/get",
   method: "POST",
@@ -1310,7 +1345,7 @@ http.route({
       if (!allowedAsAgent && !allowedAsCreator) return mcpError("Forbidden", 403);
     }
 
-    // Use getAgentStatus to filter hidden test details for agent-facing consumers
+    // Use getAgentStatus for agent-facing verification output.
     const result = await ctx.runQuery(internal.verifications.getAgentStatus, {
       verificationId: vId,
     });

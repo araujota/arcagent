@@ -1,6 +1,11 @@
 import { internalAction, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import {
+  findGitHubInstallationForRepo,
+  isGitHubAppConfigured,
+  resolveGitHubTokenForRepo,
+} from "./lib/githubApp";
 
 const DEFAULT_REPOSITORY_URL = "https://github.com/araujota/arcagent";
 const DEFAULT_BRANCH = "main";
@@ -102,7 +107,11 @@ async function resolveCommitSha(repositoryUrl: string, branch: string): Promise<
     throw new Error("TEST_BOUNTY_COMMIT_SHA is required for non-GitHub repository URLs");
   }
 
-  const token = process.env.GITHUB_API_TOKEN?.trim();
+  const appToken = await resolveGitHubTokenForRepo({
+    repositoryUrl,
+    writeAccess: false,
+  });
+  const token = appToken?.token ?? process.env.GITHUB_API_TOKEN?.trim();
   const endpoint = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/commits/${encodeURIComponent(branch)}`;
   const maxAttempts = 3;
   const baseRetryDelayMs = 200;
@@ -133,7 +142,7 @@ async function resolveCommitSha(repositoryUrl: string, branch: string): Promise<
       ? new Date(parseInt(rateLimitReset, 10) * 1000).toISOString()
       : null;
     const remediation =
-      "Set TEST_BOUNTY_COMMIT_SHA to a known-good commit or configure GITHUB_API_TOKEN for authenticated GitHub API access.";
+      "Set TEST_BOUNTY_COMMIT_SHA to a known-good commit, install the Arcagent GitHub App on the repository, or configure GITHUB_API_TOKEN for authenticated API access.";
     const details = [
       `status=${response.status}`,
       githubMessage ? `githubMessage=${githubMessage}` : null,
@@ -211,6 +220,8 @@ export const createArtifacts = internalMutation({
     repo: v.string(),
     defaultBranch: v.string(),
     commitSha: v.string(),
+    githubInstallationId: v.number(),
+    githubInstallationAccountLogin: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const bountyId = await ctx.db.insert("bounties", {
@@ -250,6 +261,8 @@ export const createArtifacts = internalMutation({
       lastIndexedAt: Date.now(),
       dockerfilePath: "Dockerfile",
       dockerfileSource: "repo",
+      githubInstallationId: args.githubInstallationId,
+      githubInstallationAccountLogin: args.githubInstallationAccountLogin,
     });
 
     await ctx.db.patch(bountyId, { repoConnectionId });
@@ -310,6 +323,18 @@ export const createAndClaim = internalAction({
     if (!parsed) {
       throw new Error("TEST_BOUNTY_REPOSITORY_URL must be a GitHub repo URL");
     }
+    if (!isGitHubAppConfigured()) {
+      throw new Error(
+        "GitHub App is not configured in this environment. Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY before creating test bounties."
+      );
+    }
+
+    const installation = await findGitHubInstallationForRepo(parsed.owner, parsed.repo);
+    if (!installation) {
+      throw new Error(
+        "GitHub App installation is required for TEST_BOUNTY_REPOSITORY_URL. Install the Arcagent GitHub App on the repo or owning organization."
+      );
+    }
 
     const commitSha = await resolveCommitSha(repositoryUrl, defaultBranch);
     const creatorId = await ctx.runMutation(internal.testBounties.ensureTestCreator, {});
@@ -322,6 +347,8 @@ export const createAndClaim = internalAction({
       repo: parsed.repo,
       defaultBranch,
       commitSha,
+      githubInstallationId: installation.installationId,
+      githubInstallationAccountLogin: installation.accountLogin,
     });
 
     const claimId = await ctx.runMutation(internal.bountyClaims.create, {

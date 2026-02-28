@@ -5,8 +5,8 @@ import { Doc } from "./_generated/dataModel";
 
 /**
  * Redact step definition source code for non-creator callers.
- * Non-creators receive ALL Gherkin (public + hidden) as their spec, but NEVER
- * see step definition source code — not even for public scenarios.
+ * Non-creators receive public Gherkin only and never see hidden scenarios or
+ * step definition source code.
  *
  * The `relationship` parameter reflects the caller's relationship to the
  * specific bounty (creator/admin/agent), NOT a global account role.
@@ -20,10 +20,14 @@ function redactForNonCreator(
       stepDefinitions: _stepDefs,
       stepDefinitionsPublic: _stepDefsPub,
       stepDefinitionsHidden: _stepDefsHid,
+      gherkinHidden: _gherkinHidden,
       llmModel: _model,
       ...safe
     } = test;
-    return safe;
+    return {
+      ...safe,
+      gherkinHidden: "[hidden scenarios redacted]",
+    };
   }
   return test;
 }

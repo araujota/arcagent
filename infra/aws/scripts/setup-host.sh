@@ -2,8 +2,9 @@
 # ---------------------------------------------------------------------------
 # ArcAgent Worker — Host Setup (runs as user-data on first boot)
 # ---------------------------------------------------------------------------
-# Installs all dependencies, configures the host for Firecracker microVMs,
-# and starts the worker service via systemd.
+# Installs dependencies and starts the worker service via systemd.
+# In API-only deployments, the worker itself provisions and owns workspace VMs,
+# so host-side Firecracker setup is required.
 #
 # This script is idempotent — safe to re-run.
 # ---------------------------------------------------------------------------
@@ -22,6 +23,7 @@ ENVIRONMENT="${environment}"
 WORKER_SHARED_SECRET="${worker_shared_secret}"
 CONVEX_URL="${convex_url}"
 CONVEX_HTTP_ACTIONS_URL="${convex_http_actions_url}"
+WORKER_ROLE="${worker_role}"
 MAX_DEV_VMS="${max_dev_vms}"
 WARM_POOL_SIZE="${warm_pool_size}"
 MAX_WARM_VMS="${max_warm_vms}"
@@ -42,6 +44,14 @@ ENABLE_SONARQUBE="${enable_sonarqube}"
 SONARQUBE_URL="${sonarqube_url}"
 SONARQUBE_TOKEN="${sonarqube_token}"
 SNYK_TOKEN="${snyk_token}"
+
+if [ "$WORKER_ROLE" != "api" ]; then
+  echo "ERROR: Unsupported WORKER_ROLE '$WORKER_ROLE'. API-only deployment requires WORKER_ROLE=api."
+  exit 1
+fi
+
+RUNS_EXECUTOR="true"
+echo "Worker role: $WORKER_ROLE (runs_executor=$RUNS_EXECUTOR)"
 
 if [ -z "$CONVEX_HTTP_ACTIONS_URL" ]; then
   CONVEX_HTTP_ACTIONS_URL="$${CONVEX_URL/.convex.cloud/.convex.site}"
@@ -106,43 +116,45 @@ if ! apt-get install -y -qq docker-compose-plugin; then
   apt-get install -y -qq docker-compose
 fi
 
-# ---------------------------------------------------------------------------
-# 2. Enable KVM
-# ---------------------------------------------------------------------------
-echo ">>> Configuring KVM..."
-if [ ! -e /dev/kvm ]; then
-  echo "WARNING: /dev/kvm not found. This instance may not support KVM."
-  echo "Firecracker requires a .metal instance type."
+if [ "$RUNS_EXECUTOR" = "true" ]; then
+  # ---------------------------------------------------------------------------
+  # 2. Enable KVM
+  # ---------------------------------------------------------------------------
+  echo ">>> Configuring KVM..."
+  if [ ! -e /dev/kvm ]; then
+    echo "WARNING: /dev/kvm not found. This instance may not support KVM."
+    echo "Firecracker requires a KVM-capable host (.metal or nested-virtualization-enabled EC2)."
+  fi
+
+  # Ensure kvm group exists and the worker user can access it
+  groupadd -f kvm
+  chmod 666 /dev/kvm 2>/dev/null || true
+
+  # ---------------------------------------------------------------------------
+  # 3. Enable IP forwarding (required for Firecracker TAP networking)
+  # ---------------------------------------------------------------------------
+  echo ">>> Enabling IP forwarding..."
+  sysctl -w net.ipv4.ip_forward=1
+  if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
+    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+  fi
+
+  # Enable NAT masquerading for VM outbound traffic
+  # VMs use 10.0.0.0/24 internally — NAT to the host's interface
+  PRIMARY_IF=$(ip route show default | awk '/default/ {print $5}' | head -1)
+  iptables -t nat -C POSTROUTING -o "$PRIMARY_IF" -s 10.0.0.0/24 -j MASQUERADE 2>/dev/null || \
+    iptables -t nat -A POSTROUTING -o "$PRIMARY_IF" -s 10.0.0.0/24 -j MASQUERADE
+
+  # Persist iptables rules (restored on reboot by iptables-persistent / netfilter-persistent)
+  mkdir -p /etc/iptables
+  iptables-save > /etc/iptables/rules.v4
+  systemctl enable netfilter-persistent 2>/dev/null || true
+
+  # ---------------------------------------------------------------------------
+  # 4. Firecracker install is executed after script sync in step 8
+  # ---------------------------------------------------------------------------
+  echo ">>> Firecracker install deferred until provisioning scripts are synced."
 fi
-
-# Ensure kvm group exists and the worker user can access it
-groupadd -f kvm
-chmod 666 /dev/kvm 2>/dev/null || true
-
-# ---------------------------------------------------------------------------
-# 3. Enable IP forwarding (required for Firecracker TAP networking)
-# ---------------------------------------------------------------------------
-echo ">>> Enabling IP forwarding..."
-sysctl -w net.ipv4.ip_forward=1
-if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
-  echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-fi
-
-# Enable NAT masquerading for VM outbound traffic
-# VMs use 10.0.0.0/24 internally — NAT to the host's interface
-PRIMARY_IF=$(ip route show default | awk '/default/ {print $5}' | head -1)
-iptables -t nat -C POSTROUTING -o "$PRIMARY_IF" -s 10.0.0.0/24 -j MASQUERADE 2>/dev/null || \
-  iptables -t nat -A POSTROUTING -o "$PRIMARY_IF" -s 10.0.0.0/24 -j MASQUERADE
-
-# Persist iptables rules (restored on reboot by iptables-persistent / netfilter-persistent)
-mkdir -p /etc/iptables
-iptables-save > /etc/iptables/rules.v4
-systemctl enable netfilter-persistent 2>/dev/null || true
-
-# ---------------------------------------------------------------------------
-# 4. Firecracker install is executed after script sync in step 8
-# ---------------------------------------------------------------------------
-echo ">>> Firecracker install deferred until provisioning scripts are synced."
 
 # ---------------------------------------------------------------------------
 # 5. Install Node.js
@@ -276,7 +288,9 @@ echo ">>> Setting up worker user and directories..."
 if ! id -u arcagent &>/dev/null; then
   useradd -m -s /bin/bash arcagent
 fi
-usermod -aG kvm arcagent 2>/dev/null || true
+if [ "$RUNS_EXECUTOR" = "true" ]; then
+  usermod -aG kvm arcagent 2>/dev/null || true
+fi
 
 # Process backend execution user (used in dedicated attempt VM mode)
 if ! id -u agent &>/dev/null; then
@@ -290,12 +304,15 @@ install -d -m 0755 -o agent -g agent /workspace
 # Block instance metadata access for agent commands (defense-in-depth).
 iptables -C OUTPUT -m owner --uid-owner agent -d 169.254.169.254/32 -j REJECT 2>/dev/null || \
   iptables -A OUTPUT -m owner --uid-owner agent -d 169.254.169.254/32 -j REJECT
+mkdir -p /etc/iptables
 iptables-save > /etc/iptables/rules.v4
 
-# Firecracker directories
-mkdir -p /var/lib/firecracker/rootfs
-mkdir -p /var/lib/firecracker/kernel
-chown -R arcagent:arcagent /var/lib/firecracker
+if [ "$RUNS_EXECUTOR" = "true" ]; then
+  # Firecracker directories
+  mkdir -p /var/lib/firecracker/rootfs
+  mkdir -p /var/lib/firecracker/kernel
+  chown -R arcagent:arcagent /var/lib/firecracker
+fi
 
 # Worker application directory
 mkdir -p /opt/arcagent
@@ -318,9 +335,11 @@ done
 chown -R root:root /opt/arcagent/scripts
 echo "Provisioning scripts downloaded to /opt/arcagent/scripts."
 
-# Install Firecracker + Jailer once install-firecracker.sh is available.
-echo ">>> Installing Firecracker v$FIRECRACKER_VERSION..."
-bash /opt/arcagent/scripts/install-firecracker.sh "$FIRECRACKER_VERSION"
+if [ "$RUNS_EXECUTOR" = "true" ]; then
+  # Install Firecracker + Jailer once install-firecracker.sh is available.
+  echo ">>> Installing Firecracker v$FIRECRACKER_VERSION..."
+  bash /opt/arcagent/scripts/install-firecracker.sh "$FIRECRACKER_VERSION"
+fi
 
 # Optional: deploy worker build artifact from S3
 if [ -n "$WORKER_ARTIFACT_S3_KEY" ]; then
@@ -342,14 +361,15 @@ else
   echo "No worker artifact key configured (worker_artifact_s3_key)."
 fi
 
-# ---------------------------------------------------------------------------
-# 9. Download pre-built rootfs images from S3
-# ---------------------------------------------------------------------------
-echo ">>> Downloading pre-built rootfs images from s3://$ROOTFS_BUCKET/$ROOTFS_VERSION/..."
-ROOTFS_IMAGES=(base node-20 python-312 rust-stable go-122 java-21)
-ROOTFS_DOWNLOAD_FAILED=false
-BUILT_ROOTFS_IMAGES=()
-MIN_VSOCK_AGENT_BYTES=32768
+if [ "$RUNS_EXECUTOR" = "true" ]; then
+  # ---------------------------------------------------------------------------
+  # 9. Download pre-built rootfs images from S3
+  # ---------------------------------------------------------------------------
+  echo ">>> Downloading pre-built rootfs images from s3://$ROOTFS_BUCKET/$ROOTFS_VERSION/..."
+  ROOTFS_IMAGES=(base node-20 python-312 rust-stable go-122 java-21)
+  ROOTFS_DOWNLOAD_FAILED=false
+  BUILT_ROOTFS_IMAGES=()
+  MIN_VSOCK_AGENT_BYTES=32768
 
 validate_rootfs_image() {
   local ext4_path="$1"
@@ -453,34 +473,35 @@ if [ "$ROOTFS_UPLOAD_ON_BOOT" = "true" ] && [ "$${#BUILT_ROOTFS_IMAGES[@]}" -gt 
   done
 fi
 
-echo "Rootfs images in /var/lib/firecracker/rootfs/:"
-ls -lh /var/lib/firecracker/rootfs/ 2>/dev/null || echo "  (empty)"
+  echo "Rootfs images in /var/lib/firecracker/rootfs/:"
+  ls -lh /var/lib/firecracker/rootfs/ 2>/dev/null || echo "  (empty)"
 
-# ---------------------------------------------------------------------------
-# 10. Download vmlinux kernel
-# ---------------------------------------------------------------------------
-echo ">>> Downloading Firecracker kernel..."
-KERNEL_PATH="/var/lib/firecracker/vmlinux"
-if [ ! -f "$KERNEL_PATH" ]; then
-  # Kernels are hosted in the Firecracker CI S3 bucket, not in GitHub releases.
-  # Use the major.minor version to find the right CI prefix (e.g. 1.10.1 → v1.10).
-  FC_MAJOR_MINOR=$(echo "$FIRECRACKER_VERSION" | cut -d. -f1,2)
-  KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v$${FC_MAJOR_MINOR}/x86_64/vmlinux-6.1.102"
-  echo "  Kernel URL: $KERNEL_URL"
-  curl -fsSL -o "$KERNEL_PATH" "$KERNEL_URL" || {
-    echo "WARNING: Could not download kernel from CI bucket. Trying 5.10 series..."
-    curl -fsSL -o "$KERNEL_PATH" \
-      "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v$${FC_MAJOR_MINOR}/x86_64/vmlinux-5.10.223" || {
-      echo "ERROR: Failed to download vmlinux kernel. Provide it manually at $KERNEL_PATH"
+  # ---------------------------------------------------------------------------
+  # 10. Download vmlinux kernel
+  # ---------------------------------------------------------------------------
+  echo ">>> Downloading Firecracker kernel..."
+  KERNEL_PATH="/var/lib/firecracker/vmlinux"
+  if [ ! -f "$KERNEL_PATH" ]; then
+    # Kernels are hosted in the Firecracker CI S3 bucket, not in GitHub releases.
+    # Use the major.minor version to find the right CI prefix (e.g. 1.10.1 → v1.10).
+    FC_MAJOR_MINOR=$(echo "$FIRECRACKER_VERSION" | cut -d. -f1,2)
+    KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v$${FC_MAJOR_MINOR}/x86_64/vmlinux-6.1.102"
+    echo "  Kernel URL: $KERNEL_URL"
+    curl -fsSL -o "$KERNEL_PATH" "$KERNEL_URL" || {
+      echo "WARNING: Could not download kernel from CI bucket. Trying 5.10 series..."
+      curl -fsSL -o "$KERNEL_PATH" \
+        "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v$${FC_MAJOR_MINOR}/x86_64/vmlinux-5.10.223" || {
+        echo "ERROR: Failed to download vmlinux kernel. Provide it manually at $KERNEL_PATH"
+      }
     }
-  }
-  [ -f "$KERNEL_PATH" ] && chown arcagent:arcagent "$KERNEL_PATH"
+    [ -f "$KERNEL_PATH" ] && chown arcagent:arcagent "$KERNEL_PATH"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
 # 11. Configure Squid (for hardened egress, if enabled)
 # ---------------------------------------------------------------------------
-if [ "$HARDEN_EGRESS" = "true" ]; then
+if [ "$RUNS_EXECUTOR" = "true" ] && [ "$HARDEN_EGRESS" = "true" ]; then
   echo ">>> Configuring Squid for egress filtering..."
   mkdir -p /etc/squid/ssl_cert
   # Generate a self-signed CA for SSL bumping (VMs trust this CA)
@@ -529,6 +550,7 @@ WORKSPACE_IDLE_TIMEOUT_MS=$WORKSPACE_IDLE_TIMEOUT_MS
 # -------------------------------------------------------
 # Firecracker / VM configuration
 # -------------------------------------------------------
+WORKER_ROLE=$WORKER_ROLE
 WORKER_EXECUTION_BACKEND=firecracker
 WORKSPACE_ISOLATION_MODE=shared_worker
 FC_USE_VSOCK=true

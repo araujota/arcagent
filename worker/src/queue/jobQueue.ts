@@ -21,6 +21,7 @@ export interface VerificationJobData {
   submissionId: string;
   bountyId: string;
   repoUrl: string;
+  repoAuthToken?: string;
   commitSha: string;
   /** Base commit SHA from the bounty's repoConnection for diff-scoped analysis. */
   baseCommitSha?: string;
@@ -108,8 +109,19 @@ const QUEUE_NAME = "verification";
  */
 export async function createVerificationQueue(redisUrl: string): Promise<{
   queue: Queue<VerificationJobData>;
-  worker: Worker<VerificationJobData, VerificationResult>;
-  queueEvents: QueueEvents;
+  worker: Worker<VerificationJobData, VerificationResult> | null;
+  queueEvents: QueueEvents | null;
+}> {
+  return createVerificationQueueWithMode(redisUrl, { processJobs: true });
+}
+
+export async function createVerificationQueueWithMode(
+  redisUrl: string,
+  options: { processJobs: boolean },
+): Promise<{
+  queue: Queue<VerificationJobData>;
+  worker: Worker<VerificationJobData, VerificationResult> | null;
+  queueEvents: QueueEvents | null;
 }> {
   const connection = new IORedis(redisUrl, {
     maxRetriesPerRequest: null,  // required by BullMQ
@@ -130,6 +142,13 @@ export async function createVerificationQueue(redisUrl: string): Promise<{
       removeOnFail: { age: 604_800, count: 5000 },      // keep failed jobs 7d or last 5000
     },
   });
+
+  if (!options.processJobs) {
+    logger.info("BullMQ queue initialised in enqueue-only mode", {
+      redisUrl: redisUrl.replace(/\/\/.*@/, "//<redacted>@"),
+    });
+    return { queue, worker: null, queueEvents: null };
+  }
 
   const worker = new Worker<VerificationJobData, VerificationResult>(
     QUEUE_NAME,

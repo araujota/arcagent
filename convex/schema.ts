@@ -241,13 +241,16 @@ export default defineSchema({
     ),
     trackedBranch: v.optional(v.string()),
     webhookId: v.optional(v.string()),
+    githubInstallationId: v.optional(v.number()),
+    githubInstallationAccountLogin: v.optional(v.string()),
     detectedFeatureFiles: v.optional(v.array(v.object({
       filePath: v.string(),
       content: v.string(),
     }))),
   })
     .index("by_bountyId", ["bountyId"])
-    .index("by_status", ["status"]),
+    .index("by_status", ["status"])
+    .index("by_owner_and_repo", ["owner", "repo"]),
 
   repoMaps: defineTable({
     repoConnectionId: v.id("repoConnections"),

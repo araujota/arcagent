@@ -1,6 +1,8 @@
 import { internalMutation, internalQuery, internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import { requiresGitHubInstallationToken, resolveGitHubTokenForRepo } from "./lib/githubApp";
+import { fetchWithRetry } from "./lib/httpRetry";
 
 // ---------------------------------------------------------------------------
 // Mutations
@@ -198,12 +200,50 @@ export const provisionWorkspace = internalAction({
         await ctx.runMutation(internal.devWorkspaces.updateStatus, {
           workspaceId: args.workspaceId,
           status: "error",
-          errorMessage: "Worker not configured (WORKER_API_URL/WORKER_SHARED_SECRET missing)",
+          errorMessage:
+            "WORKER_API_URL and WORKER_SHARED_SECRET must be configured for workspace provisioning",
         });
         return;
       }
 
-      const response = await fetch(`${workerUrl}/api/workspace/provision`, {
+      const repoConnection = await ctx.runQuery(internal.repoConnections.getByBountyIdInternal, {
+        bountyId: args.bountyId,
+      });
+      let repoAuthToken: string | undefined;
+      try {
+        const repoAuthTokenResult = await resolveGitHubTokenForRepo({
+          repositoryUrl: args.repositoryUrl,
+          preferredInstallationId: repoConnection?.githubInstallationId,
+          writeAccess: false,
+        });
+        repoAuthToken = repoAuthTokenResult?.token;
+        if (
+          repoConnection &&
+          repoAuthTokenResult &&
+          (repoAuthTokenResult.installationId !== repoConnection.githubInstallationId ||
+            repoAuthTokenResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
+        ) {
+          await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
+            repoConnectionId: repoConnection._id,
+            githubInstallationId: repoAuthTokenResult.installationId,
+            githubInstallationAccountLogin: repoAuthTokenResult.accountLogin,
+          });
+        }
+      } catch (err) {
+        console.error(
+          `[devWorkspaces] Failed to resolve GitHub installation token: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+
+      if (requiresGitHubInstallationToken(args.repositoryUrl) && !repoAuthToken) {
+        throw new Error(
+          "GitHub installation token is required for workspace provisioning. Install/repair the GitHub App for this repository.",
+        );
+      }
+
+      const response = await fetchWithRetry(`${workerUrl}/api/workspace/provision`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -215,6 +255,7 @@ export const provisionWorkspace = internalAction({
           bountyId: args.bountyId,
           agentId: args.agentId,
           repoUrl: args.repositoryUrl,
+          repoAuthToken,
           commitSha: args.commitSha,
           language: args.language,
           expiresAt: args.expiresAt,
