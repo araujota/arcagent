@@ -108,6 +108,46 @@ const ERROR_SESSION_CLEANUP_MS = 5 * 60 * 1000; // 5 min
 const PROVISIONING_TIMEOUT_MS = 10 * 60 * 1000; // 10 min — provisioning that takes longer is stuck
 const MAX_DIFF_SIZE = 10 * 1024 * 1024; // 10 MiB
 const MAX_CHANGED_FILES = 500;
+const DEFAULT_DIFF_EXCLUDE_GLOBS = [
+  // JS/TS package manager caches
+  ".npm/_cacache/**",
+  ".npm/_logs/**",
+  ".npm/_npx/**",
+  ".npm/_update-notifier-last-checked",
+  "node_modules/**",
+  ".pnpm-store/**",
+  ".yarn/cache/**",
+  // Common build artifacts and local caches
+  ".next/**",
+  "dist/**",
+  "coverage/**",
+  ".cache/**",
+  "tmp/**",
+  // Common Python caches
+  "__pycache__/**",
+  ".pytest_cache/**",
+  ".mypy_cache/**",
+  ".ruff_cache/**",
+];
+const DIFF_EXCLUDE_GLOBS = parseDiffExcludeGlobs(process.env.WORKSPACE_DIFF_EXCLUDE_GLOBS);
+const GIT_PATHSPEC_GLOB_PATTERN = /^[A-Za-z0-9_./*?{}\[\]-]+$/;
+
+function parseDiffExcludeGlobs(raw: string | undefined): string[] {
+  if (raw === undefined) return DEFAULT_DIFF_EXCLUDE_GLOBS;
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  return trimmed
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function sanitizeDiffExcludeGlob(glob: string): string {
+  if (!GIT_PATHSPEC_GLOB_PATTERN.test(glob)) {
+    throw new Error(`Invalid WORKSPACE_DIFF_EXCLUDE_GLOBS entry: ${glob}`);
+  }
+  return `':(glob)${glob}'`;
+}
 
 export interface CapacityStats {
   maxDevVms: number;
@@ -539,33 +579,51 @@ export async function extractDiff(
 
   const vm = session.vmHandle;
 
-  // Single exec call: stage + diff + stat + names using delimiter-separated output
-  // Reduces 4 sequential vsock round-trips to 1
+  // Single exec call: stage + unstage noise + diff + stat + names using delimiter-separated output
+  // Reduces multiple sequential vsock round-trips to 1 while filtering common cache/build artifacts.
+  const excludePathspecArgs = DIFF_EXCLUDE_GLOBS
+    .map((glob) => sanitizeDiffExcludeGlob(glob))
+    .join(" ");
+  const unstageNoiseCmd = excludePathspecArgs.length > 0
+    ? ` && (git reset -q HEAD -- ${excludePathspecArgs} || true)`
+    : "";
   const combinedCmd =
-    `cd /workspace && git add -A && ` +
+    `cd /workspace && git add -A${unstageNoiseCmd} && ` +
     `echo '---DIFF---' && git diff --cached HEAD && ` +
     `echo '---STAT---' && git diff --cached --stat HEAD && ` +
     `echo '---NAMES---' && git diff --cached --name-only HEAD`;
 
   const combinedResult = await vm.exec(combinedCmd, 60_000, "agent");
+  if (combinedResult.exitCode !== 0) {
+    const stderr = combinedResult.stderr.trim();
+    throw new Error(
+      `Failed to extract workspace diff (exit ${combinedResult.exitCode})${
+        stderr ? `: ${stderr}` : ""
+      }`,
+    );
+  }
   const output = combinedResult.stdout;
 
   // Split on delimiter markers
   const diffStart = output.indexOf("---DIFF---\n");
   const statStart = output.indexOf("---STAT---\n");
   const namesStart = output.indexOf("---NAMES---\n");
+  const markersValid =
+    diffStart >= 0 &&
+    statStart > diffStart &&
+    namesStart > statStart;
+  if (!markersValid) {
+    throw new Error(
+      "Failed to parse workspace diff output (missing delimiter markers). " +
+      "The output may be truncated; reduce workspace noise and retry.",
+    );
+  }
 
   // Preserve exact patch bytes (including trailing newline) so `git apply`
   // receives a syntactically valid unified diff.
-  const diffPatch = diffStart >= 0 && statStart >= 0
-    ? output.substring(diffStart + "---DIFF---\n".length, statStart)
-    : "";
-  const diffStat = statStart >= 0 && namesStart >= 0
-    ? output.substring(statStart + "---STAT---\n".length, namesStart).trimEnd()
-    : "";
-  const namesRaw = namesStart >= 0
-    ? output.substring(namesStart + "---NAMES---\n".length).trimEnd()
-    : "";
+  const diffPatch = output.substring(diffStart + "---DIFF---\n".length, statStart);
+  const diffStat = output.substring(statStart + "---STAT---\n".length, namesStart).trimEnd();
+  const namesRaw = output.substring(namesStart + "---NAMES---\n".length).trimEnd();
 
   const changedFiles = namesRaw.split("\n").filter(Boolean);
 

@@ -59,7 +59,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const workerRole = "api";
-  const runsQueue = false;
+  // API workers must consume verification jobs. If this is false, /api/verify
+  // will enqueue work that never leaves BullMQ "wait".
+  const runsQueue = true;
   const runsWorkspace = true;
   const hasLocalExecution = runsQueue || runsWorkspace;
   const executionBackend = (process.env.WORKER_EXECUTION_BACKEND ?? "firecracker").toLowerCase();
@@ -151,6 +153,7 @@ async function main(): Promise<void> {
     }
 
     checks.workerRole = workerRole;
+    checks.verificationQueueConsumer = runsQueue ? "enabled" : "disabled";
     checks.localExecution = hasLocalExecution ? "enabled" : "disabled";
     checks.workspaceMode = runsWorkspace ? "local" : "external_only";
     checks.executionBackend = executionBackend;

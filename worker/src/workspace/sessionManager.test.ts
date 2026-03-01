@@ -306,6 +306,45 @@ describe("extractDiff", () => {
       "Workspace not ready",
     );
   });
+
+  it("throws when combined diff command fails", async () => {
+    const mockVM = createMockVMHandle();
+    vi.mocked(mockVM.exec).mockImplementation(async (command: string): Promise<ExecResult> => {
+      if (command.includes("---DIFF---")) {
+        return {
+          stdout: "",
+          stderr: "fatal: ambiguous argument 'HEAD'",
+          exitCode: 128,
+        };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    vi.mocked(createFirecrackerVM).mockResolvedValue(mockVM);
+
+    const opts = makeProvisionOpts();
+    await provisionWorkspace(opts);
+
+    await expect(extractDiff(opts.workspaceId)).rejects.toThrow(
+      "Failed to extract workspace diff",
+    );
+  });
+
+  it("throws when delimiter markers are missing", async () => {
+    const mockVM = createMockVMHandle();
+    vi.mocked(mockVM.exec).mockResolvedValue({
+      stdout: "unexpected output without markers",
+      stderr: "",
+      exitCode: 0,
+    });
+    vi.mocked(createFirecrackerVM).mockResolvedValue(mockVM);
+
+    const opts = makeProvisionOpts();
+    await provisionWorkspace(opts);
+
+    await expect(extractDiff(opts.workspaceId)).rejects.toThrow(
+      "missing delimiter markers",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

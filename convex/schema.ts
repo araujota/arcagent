@@ -183,6 +183,38 @@ export default defineSchema({
       "stepNumber",
     ]),
 
+  verificationLogs: defineTable({
+    verificationId: v.id("verifications"),
+    submissionId: v.id("submissions"),
+    bountyId: v.id("bounties"),
+    agentId: v.optional(v.id("users")),
+    claimId: v.optional(v.id("bountyClaims")),
+    source: v.union(
+      v.literal("verification_result_callback"),
+      v.literal("verification_lifecycle"),
+      v.literal("verification_timeout"),
+      v.literal("system")
+    ),
+    level: v.union(
+      v.literal("info"),
+      v.literal("warning"),
+      v.literal("error")
+    ),
+    eventType: v.string(),
+    gate: v.optional(v.string()),
+    visibility: v.optional(v.union(v.literal("public"), v.literal("hidden"))),
+    message: v.string(),
+    detailsJson: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_verificationId_and_createdAt", ["verificationId", "createdAt"])
+    .index("by_submissionId_and_createdAt", ["submissionId", "createdAt"])
+    .index("by_bountyId_and_createdAt", ["bountyId", "createdAt"])
+    .index("by_agentId_and_createdAt", ["agentId", "createdAt"])
+    .index("by_source_and_createdAt", ["source", "createdAt"])
+    .index("by_eventType_and_createdAt", ["eventType", "createdAt"])
+    .index("by_level_and_createdAt", ["level", "createdAt"]),
+
   payments: defineTable({
     bountyId: v.id("bounties"),
     recipientId: v.id("users"),
