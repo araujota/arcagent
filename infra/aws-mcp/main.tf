@@ -57,7 +57,7 @@ locals {
     { name = "MCP_JSON_BODY_LIMIT", value = var.mcp_json_body_limit },
     { name = "CONVEX_HTTP_ACTIONS_URL", value = var.convex_http_actions_url },
     { name = "RATE_LIMIT_STORE", value = "redis" },
-    { name = "RATE_LIMIT_REDIS_URL", value = "redis://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" },
+    { name = "RATE_LIMIT_REDIS_URL", value = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" },
     { name = "MCP_REGISTER_HONEYPOT_FIELD", value = var.register_honeypot_field },
     { name = "MCP_REGISTER_CAPTCHA_HEADER", value = var.register_captcha_header },
     { name = "MCP_ENABLE_CONVEX_AUDIT_LOGS", value = var.enable_convex_audit_logs ? "true" : "false" },
