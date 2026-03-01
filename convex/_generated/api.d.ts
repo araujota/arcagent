@@ -28,6 +28,7 @@ import type * as http from "../http.js";
 import type * as investorMetrics from "../investorMetrics.js";
 import type * as lib_adfToMarkdown from "../lib/adfToMarkdown.js";
 import type * as lib_attemptWorkerAuth from "../lib/attemptWorkerAuth.js";
+import type * as lib_bddStepVerifier from "../lib/bddStepVerifier.js";
 import type * as lib_bitbucket from "../lib/bitbucket.js";
 import type * as lib_chunker from "../lib/chunker.js";
 import type * as lib_constantTimeEqual from "../lib/constantTimeEqual.js";
@@ -120,6 +121,7 @@ declare const fullApi: ApiFromModules<{
   investorMetrics: typeof investorMetrics;
   "lib/adfToMarkdown": typeof lib_adfToMarkdown;
   "lib/attemptWorkerAuth": typeof lib_attemptWorkerAuth;
+  "lib/bddStepVerifier": typeof lib_bddStepVerifier;
   "lib/bitbucket": typeof lib_bitbucket;
   "lib/chunker": typeof lib_chunker;
   "lib/constantTimeEqual": typeof lib_constantTimeEqual;

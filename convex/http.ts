@@ -2588,8 +2588,8 @@ http.route({
             agentId: submission.agentId,
             bountyId,
           })
-        : [];
-      const activeClaimId = activeClaim.find((claim) => claim.status === "active")?._id;
+        : null;
+      const activeClaimId = activeClaim?._id;
       const baseLog = {
         verificationId,
         submissionId,
