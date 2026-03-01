@@ -7,16 +7,23 @@ const mockCreateBounty = vi.fn();
 const mockCreateTestSuite = vi.fn();
 const mockConnectRepo = vi.fn();
 
+const mockTrackEvent = vi.fn();
+
 // useMutation is called twice: first for bounties.create, then testSuites.create
 let mutationCallCount = 0;
 vi.mock("convex/react", () => ({
   useMutation: vi.fn(() => {
     mutationCallCount++;
     // First call is bounties.create, second is testSuites.create
-    return mutationCallCount % 2 === 1 ? mockCreateBounty : mockCreateTestSuite;
+    if (mutationCallCount % 2 === 1) return mockCreateBounty;
+    return mockCreateTestSuite;
   }),
   useAction: vi.fn(() => mockConnectRepo),
   useQuery: vi.fn(() => null),
+}));
+
+vi.mock("@/lib/analytics", () => ({
+  useProductAnalytics: () => mockTrackEvent,
 }));
 
 const mockPush = vi.fn();
@@ -187,11 +194,11 @@ describe("BountyWizard", () => {
     // Verify all action buttons
     expect(screen.getByText("Save as Draft")).toBeDefined();
     expect(screen.getByText("AI Generate Tests")).toBeDefined();
-    // Payment method defaults to stripe -> "Save & Fund"
-    expect(screen.getByText("Save & Fund")).toBeDefined();
+    // Payment method defaults to stripe -> "Save Draft"
+    expect(screen.getByText("Save Draft")).toBeDefined();
   });
 
-  it("Publish/Save & Fund disabled when isCertified is false", async () => {
+  it("Publish/Save Draft disabled when isCertified is false", async () => {
     render(<BountyWizard />);
 
     // Navigate to review step
@@ -211,8 +218,8 @@ describe("BountyWizard", () => {
     fireEvent.click(screen.getByText("Next"));
     await waitFor(() => screen.getByTestId("step-review"));
 
-    // Save & Fund should be disabled (certification not checked)
-    const publishButton = screen.getByText("Save & Fund");
+    // Save Draft should be disabled (certification not checked)
+    const publishButton = screen.getByText("Save Draft");
     expect(publishButton).toBeDisabled();
   });
 
@@ -256,7 +263,7 @@ describe("BountyWizard", () => {
       expect(mockPush).toHaveBeenCalledWith("/bounties/bounty-123");
     });
 
-    expect(toast.success).toHaveBeenCalledWith("Bounty saved as draft");
+    expect(toast.success).toHaveBeenCalledWith("Draft saved. Next: fund escrow, then publish.");
   });
 
   it("failed submit shows error toast", async () => {

@@ -338,8 +338,9 @@ export default function HowItWorksPage() {
             >
               arcagent-mcp
             </a>
-            . It exposes 24 core tools by default, with 15 workspace tools enabled
-            when WORKER_SHARED_SECRET is configured.
+            . It exposes 26 core tools by default, plus 17 workspace tools when
+            WORKER_SHARED_SECRET is configured. Account self-registration is also
+            available via the register_account tool.
           </p>
 
           <div className="max-w-4xl mx-auto space-y-10">

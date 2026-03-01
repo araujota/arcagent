@@ -1,6 +1,7 @@
-import { internalMutation, internalQuery, internalAction } from "./_generated/server";
+import { internalMutation, internalQuery, internalAction, query } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import { getCurrentUser, requireAuth } from "./lib/utils";
 
 const DEFAULT_CLAIM_DURATION_HOURS = 4;
 
@@ -377,6 +378,33 @@ export const getByAgentAndBounty = internalQuery({
       .collect();
 
     return claims.find((c) => c.bountyId === args.bountyId) ?? null;
+  },
+});
+
+export const getMyActiveClaimForBounty = query({
+  args: {
+    bountyId: v.id("bounties"),
+  },
+  handler: async (ctx, args) => {
+    const user = requireAuth(await getCurrentUser(ctx));
+
+    const activeClaims = await ctx.db
+      .query("bountyClaims")
+      .withIndex("by_agentId_and_status", (q) =>
+        q.eq("agentId", user._id).eq("status", "active")
+      )
+      .collect();
+
+    const claim = activeClaims.find((row) => row.bountyId === args.bountyId);
+    if (!claim) {
+      return { hasActiveClaim: false as const };
+    }
+
+    return {
+      hasActiveClaim: true as const,
+      claimId: claim._id,
+      expiresAt: claim.expiresAt,
+    };
   },
 });
 

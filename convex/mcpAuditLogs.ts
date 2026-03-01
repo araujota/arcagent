@@ -1,4 +1,4 @@
-import { internalMutation, internalQuery } from "./_generated/server";
+import { internalMutation, internalQuery, mutation } from "./_generated/server";
 import { v } from "convex/values";
 
 const LOG_LEVEL_VALIDATOR = v.union(
@@ -145,5 +145,36 @@ export const searchInternal = internalQuery({
         return true;
       })
       .slice(0, limit);
+  },
+});
+
+export const trackProductEvent = mutation({
+  args: {
+    eventName: v.string(),
+    path: v.optional(v.string()),
+    detailsJson: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    let userId: string | undefined;
+
+    if (identity) {
+      const user = await ctx.db
+        .query("users")
+        .withIndex("by_clerkId", (q) => q.eq("clerkId", identity.subject))
+        .unique();
+      userId = user?._id;
+    }
+
+    return await ctx.db.insert("mcpAuditLogs", {
+      source: "web_ui",
+      level: "info",
+      eventType: args.eventName,
+      message: "Product event",
+      agentId: userId,
+      path: args.path,
+      detailsJson: args.detailsJson,
+      createdAt: Date.now(),
+    });
   },
 });
