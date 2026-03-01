@@ -5,6 +5,8 @@ import { getCurrentUser, requireAuth } from "./lib/utils";
 import { calculatePlatformFee, PLATFORM_FEE_RATE } from "./lib/fees";
 import { requiresGitHubInstallationToken, resolveGitHubTokenForRepo } from "./lib/githubApp";
 import { fetchWithRetry } from "./lib/httpRetry";
+import { buildBountyResolvedEmail, getBountyResolvedEmailConfig } from "./lib/bountyResolvedEmail";
+import { sendResendEmail } from "./lib/waitlistEmail";
 
 type HiddenFailureMechanismKey =
   | "assertion_mismatch"
@@ -976,6 +978,77 @@ export const triggerPayoutOnVerificationPass = internalAction({
           );
         }
       };
+      let autoPrUrl: string | null = null;
+      const sendBountyResolvedEmailIfReady = async () => {
+        if (!autoPrUrl) return;
+
+        const config = getBountyResolvedEmailConfig({
+          RESEND_API_KEY: process.env.RESEND_API_KEY,
+          WAITLIST_FROM_EMAIL: process.env.WAITLIST_FROM_EMAIL,
+        });
+        if (!config) {
+          await recordLifecycleLog(
+            "warning",
+            "creator_email_skipped_missing_resend_config",
+            "Skipped bounty solved email because RESEND_API_KEY and from email are not configured",
+            {
+              hasResendApiKey: Boolean(process.env.RESEND_API_KEY?.trim()),
+              hasWaitlistFromEmail: Boolean(process.env.WAITLIST_FROM_EMAIL?.trim()),
+            },
+          );
+          return;
+        }
+
+        const creator = await ctx.runQuery(internal.users.getByIdInternal, {
+          userId: bounty.creatorId,
+        });
+        if (!creator?.email) {
+          await recordLifecycleLog(
+            "warning",
+            "creator_email_skipped_missing_recipient",
+            "Skipped bounty solved email because bounty creator email was missing",
+            { creatorId: bounty.creatorId },
+          );
+          return;
+        }
+
+        const agent = await ctx.runQuery(internal.users.getByIdInternal, {
+          userId: submission.agentId,
+        });
+        const email = buildBountyResolvedEmail({
+          bountyTitle: bounty.title,
+          pullRequestUrl: autoPrUrl,
+          solverName: agent?.name,
+        });
+
+        try {
+          await sendResendEmail({
+            apiKey: config.resendApiKey,
+            from: config.fromEmail,
+            to: creator.email,
+            subject: email.subject,
+            html: email.html,
+            text: email.text,
+          });
+          await recordLifecycleLog(
+            "info",
+            "creator_email_sent_bounty_resolved",
+            "Sent bounty solved email to creator with PR link",
+            { creatorEmail: creator.email, pullRequestUrl: autoPrUrl },
+          );
+        } catch (emailErr) {
+          const message = emailErr instanceof Error ? emailErr.message : String(emailErr);
+          console.error(
+            `[email] Failed to send bounty solved email for verification ${args.verificationId}: ${message}`,
+          );
+          await recordLifecycleLog(
+            "error",
+            "creator_email_failed_bounty_resolved",
+            message,
+            { creatorEmail: creator.email, pullRequestUrl: autoPrUrl },
+          );
+        }
+      };
 
       if (!verification || verification.status !== "passed") {
         console.log(`[payout] Verification ${args.verificationId} is not passed, skipping`);
@@ -999,7 +1072,6 @@ export const triggerPayoutOnVerificationPass = internalAction({
         },
       );
 
-      let autoPrUrl: string | null = null;
       try {
         const workerUrl = process.env.WORKER_API_URL;
         const workerSecret = process.env.WORKER_SHARED_SECRET;
@@ -1230,6 +1302,7 @@ export const triggerPayoutOnVerificationPass = internalAction({
           "Completed test bounty flow without payout and recorded readiness handshake",
           { autoPrUrl },
         );
+        await sendBountyResolvedEmailIfReady();
 
         console.log(
           `[payout] Test bounty ${args.bountyId} completed without payout; readiness handshake recorded`
@@ -1319,6 +1392,7 @@ export const triggerPayoutOnVerificationPass = internalAction({
         "Released escrow and completed bounty payout flow",
         { recipientId: submission.agentId, paymentId },
       );
+      await sendBountyResolvedEmailIfReady();
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown payout error";
