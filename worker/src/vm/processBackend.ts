@@ -737,14 +737,17 @@ export async function createProcessVM(opts: FirecrackerVMOptions): Promise<VMHan
     __executionUser: executionUser,
     __dropPrivileges: dropPrivileges,
 
-    async exec(command: string, timeoutMs = DEFAULT_EXEC_TIMEOUT_MS): Promise<ExecResult> {
+    async exec(command: string, timeoutMs = DEFAULT_EXEC_TIMEOUT_MS, user?: string): Promise<ExecResult> {
+      const requestedRoot = user === "root";
+      const commandUser = requestedRoot ? "root" : executionUser;
+      const commandDropsPrivileges = requestedRoot ? false : dropPrivileges;
       return runCommand(
         command,
         workspaceDir,
         timeoutMs,
         workspaceDir,
-        executionUser,
-        dropPrivileges,
+        commandUser,
+        commandDropsPrivileges,
       );
     },
 
@@ -752,16 +755,24 @@ export async function createProcessVM(opts: FirecrackerVMOptions): Promise<VMHan
       command: string,
       stdin: string,
       timeoutMs = DEFAULT_EXEC_TIMEOUT_MS,
+      user?: string,
     ): Promise<ExecResult> {
+      const requestedRoot = user === "root";
+      const commandUser = requestedRoot ? "root" : executionUser;
+      const commandDropsPrivileges = requestedRoot ? false : dropPrivileges;
       const rewritten = rewriteWorkspacePaths(command, workspaceDir);
       const stdinEscaped = shellEscape(stdin);
+      // Apply stdin redirection to the entire command chain.
+      // Without grouping, `<<<` binds only to the last simple command (e.g. chown),
+      // which can leave earlier commands like `cat > file` waiting on stdin.
+      const commandWithStdin = `( ${rewritten} ) <<< ${stdinEscaped}`;
       return runCommand(
-        `${rewritten} <<< ${stdinEscaped}`,
+        commandWithStdin,
         workspaceDir,
         timeoutMs,
         workspaceDir,
-        executionUser,
-        dropPrivileges,
+        commandUser,
+        commandDropsPrivileges,
       );
     },
 

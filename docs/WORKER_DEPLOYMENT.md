@@ -25,7 +25,7 @@ This guide covers deploying the ArcAgent verification worker — from local deve
 
 **Key points:**
 - The worker is independently deployed — it runs on your own infrastructure, not alongside Convex
-- The worker runs in API-only mode (`WORKER_ROLE=api`) and is a regular service node.
+- The worker runs in API-only mode (`WORKER_ROLE=api`) and still processes BullMQ verification jobs.
 - Workspace/job execution is performed by this worker instance (or its configured execution backend), so each worker can provision and own multiple workspaces.
 - Requires **Redis** for the BullMQ job queue
 - Firecracker microVMs provide per-job isolation with language-specific rootfs images
@@ -203,6 +203,11 @@ ssh -i <key.pem> ubuntu@<eip> 'sudo bash /opt/arcagent/deploy.sh /tmp/worker-bui
 ```
 
 The `deploy.sh` script (created by `setup-worker.sh`) stops the service, extracts the archive, runs `npm ci --production`, and restarts the service.
+The `deploy.sh` script now stages the release first, pauses queue intake, waits for active verification jobs to drain, performs an atomic directory swap, restarts quickly, health-checks, and resumes queue intake:
+
+```bash
+sudo bash /opt/arcagent/deploy.sh /tmp/worker-build.tar.gz 1800
+```
 
 #### 5. Set worker endpoints in Convex
 

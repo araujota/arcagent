@@ -136,7 +136,7 @@ async function runTaggedBddTests(
         const result = await vm.execWithStdin(
           `cat > ${shellQuote(targetPath)} && chmod 0400 ${shellQuote(targetPath)} && chown root:root ${shellQuote(targetPath)}`,
           normalizedContent,
-          5_000,
+          30_000,
           "root",
         );
         if (result.exitCode !== 0) {
@@ -147,7 +147,7 @@ async function runTaggedBddTests(
         await execOrThrow(
           vm,
           `echo ${shellQuote(b64)} | base64 -d > ${shellQuote(targetPath)} && chmod 0400 ${shellQuote(targetPath)} && chown root:root ${shellQuote(targetPath)}`,
-          5_000,
+          30_000,
           "root",
         );
       }

@@ -1,7 +1,6 @@
 import { internalMutation, internalQuery, internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { resolveGitHubTokenForRepo } from "./lib/githubApp";
 
 const DEFAULT_CLAIM_DURATION_HOURS = 4;
 
@@ -162,14 +161,6 @@ export const release = internalMutation({
     // Revert bounty to active
     await ctx.db.patch(claim.bountyId, { status: "active" });
 
-    // SECURITY (P1-3): Schedule branch cleanup on release
-    if (claim.featureBranchName && claim.featureBranchRepo) {
-      await ctx.scheduler.runAfter(0, internal.bountyClaims.cleanupBranch, {
-        featureBranchRepo: claim.featureBranchRepo,
-        featureBranchName: claim.featureBranchName,
-      });
-    }
-
     // Destroy dev workspace on release
     const ws = await ctx.db
       .query("devWorkspaces")
@@ -294,14 +285,6 @@ export const expireStale = internalMutation({
         // Revert bounty to active
         await ctx.db.patch(claim.bountyId, { status: "active" });
         expiredCount++;
-
-        // SECURITY (P1-3): Schedule branch cleanup
-        if (claim.featureBranchName && claim.featureBranchRepo) {
-          await ctx.scheduler.runAfter(0, internal.bountyClaims.cleanupBranch, {
-            featureBranchRepo: claim.featureBranchRepo,
-            featureBranchName: claim.featureBranchName,
-          });
-        }
 
         // Destroy dev workspace on expiry
         const ws = await ctx.db
@@ -439,14 +422,6 @@ export const markCompleted = internalMutation({
     const claim = await ctx.db.get(args.claimId);
     await ctx.db.patch(args.claimId, { status: "completed" });
 
-    // SECURITY (P1-3): Schedule branch cleanup on completion
-    if (claim?.featureBranchName && claim?.featureBranchRepo) {
-      await ctx.scheduler.runAfter(0, internal.bountyClaims.cleanupBranch, {
-        featureBranchRepo: claim.featureBranchRepo,
-        featureBranchName: claim.featureBranchName,
-      });
-    }
-
     // Destroy dev workspace on completion
     if (claim) {
       const ws = await ctx.db
@@ -466,8 +441,8 @@ export const markCompleted = internalMutation({
 });
 
 /**
- * Clean up a feature branch from the source repository.
- * Called after claim expiry, release, or completion.
+ * Deprecated no-op: branch cleanup is intentionally disabled.
+ * Repository owners can decide when to delete branches.
  */
 export const cleanupBranch = internalAction({
   args: {
@@ -475,99 +450,9 @@ export const cleanupBranch = internalAction({
     featureBranchName: v.string(),
     retryCount: v.optional(v.number()),
   },
-  handler: async (ctx, args) => {
-    const retryCount = args.retryCount ?? 0;
-    const MAX_RETRIES = 3;
-    const [owner, repo] = args.featureBranchRepo.split("/");
-    if (!owner || !repo) {
-      console.warn(`[cleanupBranch] Invalid featureBranchRepo format: ${args.featureBranchRepo}`);
-      return;
-    }
-
-    const repoUrl = `https://github.com/${owner}/${repo}`;
-    let botToken: string | undefined;
-    try {
-      const repoConnection = await ctx.runQuery(internal.repoConnections.getByOwnerRepo, {
-        owner,
-        repo,
-      });
-      const tokenResult = await resolveGitHubTokenForRepo({
-        repositoryUrl: repoUrl,
-        preferredInstallationId: repoConnection?.githubInstallationId,
-        writeAccess: true,
-      });
-      if (
-        repoConnection &&
-        tokenResult &&
-        (tokenResult.installationId !== repoConnection.githubInstallationId ||
-          tokenResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
-      ) {
-        await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
-          repoConnectionId: repoConnection._id,
-          githubInstallationId: tokenResult.installationId,
-          githubInstallationAccountLogin: tokenResult.accountLogin,
-        });
-      }
-      botToken = tokenResult?.token ?? botToken;
-    } catch (err) {
-      console.error(
-        `[cleanupBranch] Failed to mint GitHub installation token for ${owner}/${repo}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-
-    if (!botToken) {
-      console.warn("[cleanupBranch] No GitHub installation token available, skipping branch cleanup");
-      return;
-    }
-
-    try {
-      const res = await fetch(
-        `https://api.github.com/repos/${args.featureBranchRepo}/git/refs/heads/${args.featureBranchName}`,
-        {
-          method: "DELETE",
-          headers: {
-            Accept: "application/vnd.github+json",
-            Authorization: `Bearer ${botToken}`,
-            "X-GitHub-Api-Version": "2022-11-28",
-          },
-        },
-      );
-
-      if (res.ok || res.status === 404 || res.status === 422) {
-        console.log(`[cleanupBranch] Deleted branch ${args.featureBranchName} on ${args.featureBranchRepo}`);
-      } else {
-        const body = await res.text().catch(() => "");
-        console.error(
-          `[cleanupBranch] Failed to delete branch ${args.featureBranchName} on ${args.featureBranchRepo}: ${res.status} ${body.slice(0, 200)}`
-        );
-        // Schedule retry with exponential backoff
-        if (retryCount < MAX_RETRIES) {
-          const delayMs = Math.pow(2, retryCount) * 60_000; // 1min, 2min, 4min
-          await ctx.scheduler.runAfter(delayMs, internal.bountyClaims.cleanupBranch, {
-            featureBranchRepo: args.featureBranchRepo,
-            featureBranchName: args.featureBranchName,
-            retryCount: retryCount + 1,
-          });
-          console.log(`[cleanupBranch] Scheduled retry ${retryCount + 1}/${MAX_RETRIES} in ${delayMs / 1000}s`);
-        }
-      }
-    } catch (err) {
-      console.error(
-        `[cleanupBranch] Error deleting branch ${args.featureBranchName} on ${args.featureBranchRepo}:`,
-        err instanceof Error ? err.message : String(err)
-      );
-      // Schedule retry with exponential backoff
-      if (retryCount < MAX_RETRIES) {
-        const delayMs = Math.pow(2, retryCount) * 60_000;
-        await ctx.scheduler.runAfter(delayMs, internal.bountyClaims.cleanupBranch, {
-          featureBranchRepo: args.featureBranchRepo,
-          featureBranchName: args.featureBranchName,
-          retryCount: retryCount + 1,
-        });
-        console.log(`[cleanupBranch] Scheduled retry ${retryCount + 1}/${MAX_RETRIES} in ${delayMs / 1000}s`);
-      }
-    }
+  handler: async (_ctx, args) => {
+    console.log(
+      `[cleanupBranch] Skipped deletion for ${args.featureBranchRepo}:${args.featureBranchName}; cleanup is disabled by policy.`
+    );
   },
 });

@@ -22,6 +22,150 @@ type HiddenFailureMechanism = {
   guidance: string;
 };
 
+type VerificationLogSource =
+  | "verification_result_callback"
+  | "verification_lifecycle"
+  | "verification_timeout"
+  | "system";
+
+type VerificationLogLevel = "info" | "warning" | "error";
+
+type VerificationLogSearchArgs = {
+  verificationId?: string;
+  submissionId?: string;
+  bountyId?: string;
+  agentId?: string;
+  source?: VerificationLogSource;
+  level?: VerificationLogLevel;
+  eventType?: string;
+  gate?: string;
+  visibility?: "public" | "hidden";
+  limit?: number;
+};
+
+const VERIFICATION_LOG_MAX_LIMIT = 1000;
+const VERIFICATION_LOG_DEFAULT_LIMIT = 200;
+const VERIFICATION_LOG_SCAN_MULTIPLIER = 5;
+const VERIFICATION_LOG_MAX_MESSAGE_LEN = 20_000;
+const VERIFICATION_LOG_MAX_DETAILS_LEN = 120_000;
+
+const VERIFICATION_LOG_SOURCE_VALIDATOR = v.union(
+  v.literal("verification_result_callback"),
+  v.literal("verification_lifecycle"),
+  v.literal("verification_timeout"),
+  v.literal("system"),
+);
+
+const VERIFICATION_LOG_LEVEL_VALIDATOR = v.union(
+  v.literal("info"),
+  v.literal("warning"),
+  v.literal("error"),
+);
+
+function truncateForLog(value: string, maxLen: number): string {
+  if (value.length <= maxLen) return value;
+  return `${value.slice(0, maxLen)}\n... (truncated, ${value.length} chars total)`;
+}
+
+function safeStringify(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeLogLimit(limit?: number): number {
+  if (typeof limit !== "number" || !Number.isFinite(limit)) return VERIFICATION_LOG_DEFAULT_LIMIT;
+  const normalized = Math.floor(limit);
+  if (normalized < 1) return 1;
+  if (normalized > VERIFICATION_LOG_MAX_LIMIT) return VERIFICATION_LOG_MAX_LIMIT;
+  return normalized;
+}
+
+async function queryVerificationLogs(
+  ctx: {
+    db: {
+      query: (table: "verificationLogs") => {
+        withIndex: (index: string, cb: (q: { eq: (field: string, value: unknown) => unknown }) => unknown) => {
+          order: (dir: "asc" | "desc") => { take: (count: number) => Promise<Array<Record<string, unknown>>> };
+        };
+        order: (dir: "asc" | "desc") => { take: (count: number) => Promise<Array<Record<string, unknown>>> };
+      };
+    };
+  },
+  args: VerificationLogSearchArgs,
+): Promise<Array<Record<string, unknown>>> {
+  const limit = normalizeLogLimit(args.limit);
+  const scanLimit = Math.min(limit * VERIFICATION_LOG_SCAN_MULTIPLIER, VERIFICATION_LOG_MAX_LIMIT);
+
+  let rows: Array<Record<string, unknown>>;
+  if (args.verificationId) {
+    rows = await ctx.db
+      .query("verificationLogs")
+      .withIndex("by_verificationId_and_createdAt", (q) => q.eq("verificationId", args.verificationId))
+      .order("desc")
+      .take(scanLimit);
+  } else if (args.submissionId) {
+    rows = await ctx.db
+      .query("verificationLogs")
+      .withIndex("by_submissionId_and_createdAt", (q) => q.eq("submissionId", args.submissionId))
+      .order("desc")
+      .take(scanLimit);
+  } else if (args.bountyId) {
+    rows = await ctx.db
+      .query("verificationLogs")
+      .withIndex("by_bountyId_and_createdAt", (q) => q.eq("bountyId", args.bountyId))
+      .order("desc")
+      .take(scanLimit);
+  } else if (args.agentId) {
+    rows = await ctx.db
+      .query("verificationLogs")
+      .withIndex("by_agentId_and_createdAt", (q) => q.eq("agentId", args.agentId))
+      .order("desc")
+      .take(scanLimit);
+  } else if (args.eventType) {
+    rows = await ctx.db
+      .query("verificationLogs")
+      .withIndex("by_eventType_and_createdAt", (q) => q.eq("eventType", args.eventType))
+      .order("desc")
+      .take(scanLimit);
+  } else if (args.source) {
+    rows = await ctx.db
+      .query("verificationLogs")
+      .withIndex("by_source_and_createdAt", (q) => q.eq("source", args.source))
+      .order("desc")
+      .take(scanLimit);
+  } else if (args.level) {
+    rows = await ctx.db
+      .query("verificationLogs")
+      .withIndex("by_level_and_createdAt", (q) => q.eq("level", args.level))
+      .order("desc")
+      .take(scanLimit);
+  } else {
+    rows = await ctx.db
+      .query("verificationLogs")
+      .order("desc")
+      .take(scanLimit);
+  }
+
+  return rows
+    .filter((row) => {
+      if (args.verificationId && row.verificationId !== args.verificationId) return false;
+      if (args.submissionId && row.submissionId !== args.submissionId) return false;
+      if (args.bountyId && row.bountyId !== args.bountyId) return false;
+      if (args.agentId && row.agentId !== args.agentId) return false;
+      if (args.source && row.source !== args.source) return false;
+      if (args.level && row.level !== args.level) return false;
+      if (args.eventType && row.eventType !== args.eventType) return false;
+      if (args.gate && row.gate !== args.gate) return false;
+      if (args.visibility && row.visibility !== args.visibility) return false;
+      return true;
+    })
+    .slice(0, limit);
+}
+
 /**
  * SECURITY (H8/M8): Require that the caller is the bounty creator,
  * the submitting agent, or an admin to view verification details.
@@ -146,6 +290,152 @@ export const updateResult = internalMutation({
         }
       }
     }
+  },
+});
+
+export const recordLogInternal = internalMutation({
+  args: {
+    verificationId: v.id("verifications"),
+    submissionId: v.id("submissions"),
+    bountyId: v.id("bounties"),
+    agentId: v.optional(v.id("users")),
+    claimId: v.optional(v.id("bountyClaims")),
+    source: VERIFICATION_LOG_SOURCE_VALIDATOR,
+    level: VERIFICATION_LOG_LEVEL_VALIDATOR,
+    eventType: v.string(),
+    gate: v.optional(v.string()),
+    visibility: v.optional(v.union(v.literal("public"), v.literal("hidden"))),
+    message: v.string(),
+    detailsJson: v.optional(v.string()),
+    createdAt: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.insert("verificationLogs", {
+      verificationId: args.verificationId,
+      submissionId: args.submissionId,
+      bountyId: args.bountyId,
+      agentId: args.agentId,
+      claimId: args.claimId,
+      source: args.source,
+      level: args.level,
+      eventType: args.eventType,
+      gate: args.gate,
+      visibility: args.visibility,
+      message: truncateForLog(args.message, VERIFICATION_LOG_MAX_MESSAGE_LEN),
+      detailsJson: args.detailsJson
+        ? truncateForLog(args.detailsJson, VERIFICATION_LOG_MAX_DETAILS_LEN)
+        : undefined,
+      createdAt: args.createdAt ?? Date.now(),
+    });
+  },
+});
+
+export const recordLogsBatchInternal = internalMutation({
+  args: {
+    logs: v.array(v.object({
+      verificationId: v.id("verifications"),
+      submissionId: v.id("submissions"),
+      bountyId: v.id("bounties"),
+      agentId: v.optional(v.id("users")),
+      claimId: v.optional(v.id("bountyClaims")),
+      source: VERIFICATION_LOG_SOURCE_VALIDATOR,
+      level: VERIFICATION_LOG_LEVEL_VALIDATOR,
+      eventType: v.string(),
+      gate: v.optional(v.string()),
+      visibility: v.optional(v.union(v.literal("public"), v.literal("hidden"))),
+      message: v.string(),
+      detailsJson: v.optional(v.string()),
+      createdAt: v.optional(v.number()),
+    })),
+  },
+  handler: async (ctx, args) => {
+    for (const entry of args.logs) {
+      await ctx.db.insert("verificationLogs", {
+        verificationId: entry.verificationId,
+        submissionId: entry.submissionId,
+        bountyId: entry.bountyId,
+        agentId: entry.agentId,
+        claimId: entry.claimId,
+        source: entry.source,
+        level: entry.level,
+        eventType: entry.eventType,
+        gate: entry.gate,
+        visibility: entry.visibility,
+        message: truncateForLog(entry.message, VERIFICATION_LOG_MAX_MESSAGE_LEN),
+        detailsJson: entry.detailsJson
+          ? truncateForLog(entry.detailsJson, VERIFICATION_LOG_MAX_DETAILS_LEN)
+          : undefined,
+        createdAt: entry.createdAt ?? Date.now(),
+      });
+    }
+  },
+});
+
+export const searchLogsInternal = internalQuery({
+  args: {
+    verificationId: v.optional(v.id("verifications")),
+    submissionId: v.optional(v.id("submissions")),
+    bountyId: v.optional(v.id("bounties")),
+    agentId: v.optional(v.id("users")),
+    source: v.optional(VERIFICATION_LOG_SOURCE_VALIDATOR),
+    level: v.optional(VERIFICATION_LOG_LEVEL_VALIDATOR),
+    eventType: v.optional(v.string()),
+    gate: v.optional(v.string()),
+    visibility: v.optional(v.union(v.literal("public"), v.literal("hidden"))),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    return await queryVerificationLogs(ctx, args);
+  },
+});
+
+export const searchLogs = query({
+  args: {
+    verificationId: v.optional(v.id("verifications")),
+    submissionId: v.optional(v.id("submissions")),
+    bountyId: v.optional(v.id("bounties")),
+    agentId: v.optional(v.id("users")),
+    source: v.optional(VERIFICATION_LOG_SOURCE_VALIDATOR),
+    level: v.optional(VERIFICATION_LOG_LEVEL_VALIDATOR),
+    eventType: v.optional(v.string()),
+    gate: v.optional(v.string()),
+    visibility: v.optional(v.union(v.literal("public"), v.literal("hidden"))),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const user = requireAuth(await getCurrentUser(ctx));
+
+    let effectiveBountyId = args.bountyId;
+    let effectiveSubmissionId = args.submissionId;
+
+    if (!effectiveSubmissionId && args.verificationId) {
+      const verification = await ctx.db.get(args.verificationId);
+      if (!verification) return [];
+      effectiveSubmissionId = verification.submissionId;
+      effectiveBountyId = verification.bountyId;
+    }
+
+    if (!effectiveBountyId && effectiveSubmissionId) {
+      const submission = await ctx.db.get(effectiveSubmissionId);
+      if (!submission) return [];
+      effectiveBountyId = submission.bountyId;
+    }
+
+    if (!effectiveBountyId) {
+      if (user.role !== "admin") {
+        throw new Error("Access denied: provide verificationId, submissionId, or bountyId");
+      }
+    } else {
+      await requireBountyAccess(
+        ctx,
+        user._id,
+        user.role,
+        effectiveBountyId,
+        effectiveSubmissionId,
+      );
+    }
+
+    return await queryVerificationLogs(ctx, args);
   },
 });
 
@@ -383,14 +673,42 @@ function classifyHiddenFailureOutput(output: string): HiddenFailureMechanismKey 
 
 async function failVerificationDispatch(
   ctx: {
+    runQuery: (fn: unknown, args: Record<string, unknown>) => Promise<unknown>;
     runMutation: (fn: unknown, args: Record<string, unknown>) => Promise<unknown>;
   },
   args: {
     verificationId: string;
     submissionId: string;
+    bountyId: string;
   },
   reason: string,
 ) {
+  const [submission, activeClaim] = await Promise.all([
+    ctx.runQuery(internal.submissions.getByIdInternal, {
+      submissionId: args.submissionId,
+    }) as Promise<{ agentId?: string } | null>,
+    ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
+      bountyId: args.bountyId,
+    }) as Promise<{ _id: string } | null>,
+  ]);
+
+  await ctx.runMutation(internal.verifications.recordLogInternal, {
+    verificationId: args.verificationId,
+    submissionId: args.submissionId,
+    bountyId: args.bountyId,
+    agentId: submission?.agentId,
+    claimId: activeClaim?._id,
+    source: "verification_lifecycle",
+    level: "error",
+    eventType: "verification_dispatch_failed",
+    message: reason,
+    detailsJson: safeStringify({
+      verificationId: args.verificationId,
+      submissionId: args.submissionId,
+      bountyId: args.bountyId,
+    }),
+  });
+
   await ctx.runMutation(internal.verifications.updateResult, {
     verificationId: args.verificationId,
     status: "failed",
@@ -434,6 +752,28 @@ export const timeoutStale = internalMutation({
 
       // Add a 60s grace period beyond the configured timeout
       if (elapsedMs > timeoutMs + 60_000) {
+        const submission = await ctx.db.get(v.submissionId);
+        const activeClaim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
+          bountyId: v.bountyId,
+        });
+        await ctx.db.insert("verificationLogs", {
+          verificationId: v._id,
+          submissionId: v.submissionId,
+          bountyId: v.bountyId,
+          agentId: submission?.agentId,
+          claimId: activeClaim?._id,
+          source: "verification_timeout",
+          level: "error",
+          eventType: "verification_timed_out_running",
+          message: `Verification timed out after ${Math.round(elapsedMs / 1000)}s (limit: ${v.timeoutSeconds}s)`,
+          detailsJson: JSON.stringify({
+            elapsedMs,
+            timeoutMs,
+            status: v.status,
+          }),
+          createdAt: now,
+        });
+
         await ctx.db.patch(v._id, {
           status: "failed",
           completedAt: now,
@@ -455,6 +795,27 @@ export const timeoutStale = internalMutation({
     for (const v of pending) {
       const age = now - v._creationTime;
       if (age > 10 * 60 * 1000) {
+        const submission = await ctx.db.get(v.submissionId);
+        const activeClaim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
+          bountyId: v.bountyId,
+        });
+        await ctx.db.insert("verificationLogs", {
+          verificationId: v._id,
+          submissionId: v.submissionId,
+          bountyId: v.bountyId,
+          agentId: submission?.agentId,
+          claimId: activeClaim?._id,
+          source: "verification_timeout",
+          level: "error",
+          eventType: "verification_timed_out_pending",
+          message: "Verification stuck in pending state for >10 minutes",
+          detailsJson: JSON.stringify({
+            ageMs: age,
+            status: v.status,
+          }),
+          createdAt: now,
+        });
+
         await ctx.db.patch(v._id, {
           status: "failed",
           completedAt: now,
@@ -497,6 +858,7 @@ export const runVerificationFromDiff = internalAction({
         {
           verificationId: args.verificationId,
           submissionId: args.submissionId,
+          bountyId: args.bountyId,
         },
         message,
       );
@@ -570,11 +932,6 @@ export const triggerPayoutOnVerificationPass = internalAction({
       const verification = await ctx.runQuery(internal.verifications.getByIdInternal, {
         verificationId: args.verificationId,
       });
-      if (!verification || verification.status !== "passed") {
-        console.log(`[payout] Verification ${args.verificationId} is not passed, skipping`);
-        return;
-      }
-
       const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
         bountyId: args.bountyId,
       });
@@ -586,6 +943,62 @@ export const triggerPayoutOnVerificationPass = internalAction({
       );
       if (!submission) throw new Error("Submission not found");
 
+      const activeClaimAtStart = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
+        bountyId: args.bountyId,
+      });
+      const logContext = {
+        verificationId: args.verificationId,
+        submissionId: args.submissionId,
+        bountyId: args.bountyId,
+        agentId: submission.agentId,
+        claimId: activeClaimAtStart?._id,
+      };
+      const recordLifecycleLog = async (
+        level: VerificationLogLevel,
+        eventType: string,
+        message: string,
+        details?: unknown,
+      ) => {
+        try {
+          await ctx.runMutation(internal.verifications.recordLogInternal, {
+            ...logContext,
+            source: "verification_lifecycle",
+            level,
+            eventType,
+            message,
+            detailsJson: safeStringify(details),
+          });
+        } catch (logErr) {
+          console.error(
+            `[verificationLogs] Failed to record ${eventType} for verification ${args.verificationId}: ${
+              logErr instanceof Error ? logErr.message : String(logErr)
+            }`,
+          );
+        }
+      };
+
+      if (!verification || verification.status !== "passed") {
+        console.log(`[payout] Verification ${args.verificationId} is not passed, skipping`);
+        await recordLifecycleLog(
+          "warning",
+          "payout_skipped_verification_not_passed",
+          `Skipped payout flow because verification is not passed (${verification?.status ?? "missing"})`,
+          { verificationStatus: verification?.status ?? null },
+        );
+        return;
+      }
+
+      await recordLifecycleLog(
+        "info",
+        "payout_flow_started",
+        "Started payout/auto-PR flow after passed verification",
+        {
+          bountyPaymentMethod: bounty.paymentMethod,
+          bountyEscrowStatus: bounty.escrowStatus,
+          isTestBounty: bounty.isTestBounty,
+        },
+      );
+
       let autoPrUrl: string | null = null;
       try {
         const workerUrl = process.env.WORKER_API_URL;
@@ -595,7 +1008,19 @@ export const triggerPayoutOnVerificationPass = internalAction({
           bountyId: args.bountyId,
         });
 
-        if (workerUrl && workerSecret && workspace?.workerHost) {
+        if (!workerUrl || !workerSecret || !workspace?.workerHost) {
+          await recordLifecycleLog(
+            "warning",
+            "auto_pr_skipped_missing_worker_context",
+            "Skipped auto-PR publish because worker URL/secret or active workspace host was unavailable",
+            {
+              hasWorkerUrl: Boolean(workerUrl),
+              hasWorkerSecret: Boolean(workerSecret),
+              hasWorkspace: Boolean(workspace),
+              hasWorkspaceHost: Boolean(workspace?.workerHost),
+            },
+          );
+        } else {
           const diffResponse = await fetchWithRetry(`${workspace.workerHost}/api/workspace/diff`, {
             method: "POST",
             headers: {
@@ -614,6 +1039,13 @@ export const triggerPayoutOnVerificationPass = internalAction({
             };
 
             if (diffPayload.hasChanges && diffPayload.diffPatch) {
+              await recordLifecycleLog(
+                "info",
+                "auto_pr_diff_ready",
+                "Workspace diff contained changes and was eligible for auto-PR publish",
+                { workspaceId: workspace.workspaceId, baseCommitSha: workspace.baseCommitSha },
+              );
+
               const repoConnection = await ctx.runQuery(
                 internal.repoConnections.getByBountyIdInternal,
                 { bountyId: args.bountyId },
@@ -696,17 +1128,51 @@ export const triggerPayoutOnVerificationPass = internalAction({
                 } else {
                   console.log(`[autopr] PR publish completed without URL for verification ${args.verificationId}`);
                 }
+                await recordLifecycleLog(
+                  "info",
+                  "auto_pr_publish_succeeded",
+                  autoPrUrl
+                    ? `Auto-PR publish succeeded with URL ${autoPrUrl}`
+                    : "Auto-PR publish succeeded without a pull request URL in response",
+                  {
+                    pullRequestUrl: autoPrUrl,
+                    featureBranchName: publishPayload.featureBranchName,
+                    featureBranchRepo: publishPayload.featureBranchRepo,
+                  },
+                );
               } else {
                 const reason = await publishResponse.text().catch(() => "");
                 console.error(
                   `[autopr] Failed for verification ${args.verificationId}: ${publishResponse.status} ${reason.slice(0, 300)}`,
                 );
+                await recordLifecycleLog(
+                  "error",
+                  "auto_pr_publish_failed_response",
+                  `Auto-PR publish failed with HTTP ${publishResponse.status}`,
+                  { status: publishResponse.status, reason: reason.slice(0, 300) },
+                );
               }
+            } else {
+              await recordLifecycleLog(
+                "warning",
+                "auto_pr_skipped_no_changes",
+                "Skipped auto-PR publish because workspace diff had no staged changes",
+                {
+                  hasChanges: diffPayload.hasChanges ?? false,
+                  hasDiffPatch: Boolean(diffPayload.diffPatch),
+                },
+              );
             }
           } else {
             const reason = await diffResponse.text().catch(() => "");
             console.error(
               `[autopr] Failed to fetch workspace diff for verification ${args.verificationId}: ${diffResponse.status} ${reason.slice(0, 300)}`,
+            );
+            await recordLifecycleLog(
+              "error",
+              "auto_pr_diff_fetch_failed",
+              `Failed to fetch workspace diff for auto-PR (HTTP ${diffResponse.status})`,
+              { status: diffResponse.status, reason: reason.slice(0, 300) },
             );
           }
         }
@@ -715,6 +1181,11 @@ export const triggerPayoutOnVerificationPass = internalAction({
           `[autopr] Error for verification ${args.verificationId}: ${
             err instanceof Error ? err.message : String(err)
           }`,
+        );
+        await recordLifecycleLog(
+          "error",
+          "auto_pr_publish_exception",
+          err instanceof Error ? err.message : String(err),
         );
       }
 
@@ -753,6 +1224,12 @@ export const triggerPayoutOnVerificationPass = internalAction({
           agentId: submission.agentId,
           verificationId: args.verificationId,
         });
+        await recordLifecycleLog(
+          "info",
+          "test_bounty_completed_no_payout",
+          "Completed test bounty flow without payout and recorded readiness handshake",
+          { autoPrUrl },
+        );
 
         console.log(
           `[payout] Test bounty ${args.bountyId} completed without payout; readiness handshake recorded`
@@ -765,6 +1242,12 @@ export const triggerPayoutOnVerificationPass = internalAction({
         console.log(
           `[payout] Skipping payout for bounty ${args.bountyId}: method=${bounty.paymentMethod}, escrow=${bounty.escrowStatus}`
         );
+        await recordLifecycleLog(
+          "info",
+          "payout_skipped_non_stripe_or_unfunded",
+          "Skipped payout because bounty is not stripe-funded",
+          { paymentMethod: bounty.paymentMethod, escrowStatus: bounty.escrowStatus },
+        );
         return;
       }
 
@@ -774,6 +1257,12 @@ export const triggerPayoutOnVerificationPass = internalAction({
       });
       if (existingPayment && existingPayment.status !== "failed") {
         console.log(`[payout] Payment already exists for bounty ${args.bountyId}, skipping`);
+        await recordLifecycleLog(
+          "info",
+          "payout_skipped_existing_payment",
+          "Skipped payout because a non-failed payment record already exists",
+          { existingPaymentId: existingPayment._id, existingPaymentStatus: existingPayment.status },
+        );
         return;
       }
 
@@ -806,7 +1295,7 @@ export const triggerPayoutOnVerificationPass = internalAction({
         status: "completed",
       });
 
-      // Mark the active claim as completed (also triggers branch cleanup via P1-3)
+      // Mark the active claim as completed.
       const activeClaim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
         bountyId: args.bountyId,
       });
@@ -824,12 +1313,45 @@ export const triggerPayoutOnVerificationPass = internalAction({
       console.log(
         `[payout] Escrow released for bounty ${args.bountyId} to user ${submission.agentId}`
       );
+      await recordLifecycleLog(
+        "info",
+        "payout_released_success",
+        "Released escrow and completed bounty payout flow",
+        { recipientId: submission.agentId, paymentId },
+      );
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown payout error";
       console.error(
         `[payout] Failed for bounty ${args.bountyId}: ${errorMessage}`
       );
+      try {
+        const submissionForLog = await ctx.runQuery(
+          internal.submissions.getByIdInternal,
+          { submissionId: args.submissionId },
+        );
+        const activeClaim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
+          bountyId: args.bountyId,
+        });
+        await ctx.runMutation(internal.verifications.recordLogInternal, {
+          verificationId: args.verificationId,
+          submissionId: args.submissionId,
+          bountyId: args.bountyId,
+          agentId: submissionForLog?.agentId,
+          claimId: activeClaim?._id,
+          source: "verification_lifecycle",
+          level: "error",
+          eventType: "payout_flow_failed",
+          message: errorMessage,
+          detailsJson: safeStringify({ errorMessage }),
+        });
+      } catch (logErr) {
+        console.error(
+          `[verificationLogs] Failed to record payout failure for verification ${args.verificationId}: ${
+            logErr instanceof Error ? logErr.message : String(logErr)
+          }`,
+        );
+      }
 
       const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
         bountyId: args.bountyId,
@@ -902,6 +1424,7 @@ export const runVerification = internalAction({
         {
           verificationId: args.verificationId,
           submissionId: args.submissionId,
+          bountyId: args.bountyId,
         },
         message,
       );
