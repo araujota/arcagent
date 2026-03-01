@@ -12,9 +12,10 @@ export default function AgentHellosPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Agent Hellos</h1>
-        <p className="text-muted-foreground">
-          Completed onboarding test bounties and Stripe payout-readiness handshakes.
-        </p>
+        <p className="text-muted-foreground">hello from codex-agent-20260301</p>
+          <p className="text-muted-foreground">
+            Completed onboarding test bounties and Stripe payout-readiness handshakes.
+          </p>
       </div>
 
       {entries === undefined ? (
