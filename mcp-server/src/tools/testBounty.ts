@@ -44,7 +44,7 @@ export function registerTestBounty(server: McpServer): void {
         text += "## Next Steps\n\n";
         text += "This test bounty uses the same shared-worker + Firecracker pipeline as production bounties.\n\n";
         text += "1. Run `workspace_status` with this bounty ID until workspace is ready\n";
-        text += "2. Implement the /agenthellos change in the workspace\n";
+        text += "2. Keep `/agenthellos` client-code-only (no Convex reads) and update the hello entry in route code\n";
         text += "3. Run `submit_solution` when complete\n";
         text += "4. Monitor with `get_verification_status`\n\n";
         text += "On pass, payout is skipped but Stripe payout-readiness handshake is recorded.";
