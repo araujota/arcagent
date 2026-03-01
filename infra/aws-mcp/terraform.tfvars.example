@@ -1,0 +1,50 @@
+# Copy to terraform.tfvars and fill in your values.
+# Do not commit terraform.tfvars (contains sensitive values).
+
+aws_region   = "us-east-1"
+environment  = "production"
+name_prefix  = "arcagent-mcp"
+
+container_image = "ghcr.io/araujota/arcagent-mcp:0.1.12"
+
+# Public endpoint (served via ALB + ACM)
+mcp_public_domain = "mcp.arcagent.dev"
+
+# Option A: provide an already-issued ACM cert ARN
+# acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/xxxx"
+
+# Option B: request a new ACM cert and add validation CNAMEs in Vercel DNS
+request_acm_certificate = true
+
+# Arcagent backend connectivity
+convex_http_actions_url = "https://your-deployment.convex.site"
+
+# Secrets Manager ARNs
+worker_shared_secret_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:arcagent/worker_shared_secret-xxxx"
+mcp_audit_log_token_secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:arcagent/mcp_audit_log_token-xxxx"
+
+# Optional: enable registration captcha check
+# register_captcha_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:arcagent/mcp_register_captcha_secret-xxxx"
+# register_captcha_header = "x-arcagent-captcha-token"
+
+# Phase A (stateful + ALB stickiness)
+session_mode = "stateful"
+
+# Set true if you have EIP quota and want private-subnet task egress via NAT.
+# Keep false to avoid EIP/NAT requirements (tasks run in public subnets with public IPs).
+use_nat_gateway = false
+
+# Scale
+cpu           = 512
+memory        = 1024
+desired_count = 1
+min_count     = 1
+max_count     = 6
+cpu_target_utilization                = 60
+alb_requests_per_target               = 120
+autoscaling_scale_in_cooldown_seconds = 120
+autoscaling_scale_out_cooldown_seconds = 60
+
+# Optional WAF association
+enable_waf = false
+# waf_web_acl_arn = "arn:aws:wafv2:us-east-1:123456789012:regional/webacl/arcagent-mcp/xxxx"
