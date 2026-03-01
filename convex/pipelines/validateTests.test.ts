@@ -116,7 +116,11 @@ Feature: Login Edge Cases
     Then the request is rejected`;
 
 const VALID_STEP_DEFS = JSON.stringify([
-  { path: "tests/steps/login_steps.ts", content: "import { Given } from '@cucumber/cucumber';\nGiven('a registered user', () => {});" },
+  {
+    path: "tests/steps/login_steps.ts",
+    content:
+      "import { Given, When, Then, And, But } from '@cucumber/cucumber';\nGiven(/.*/, () => {});\nWhen(/.*/, () => {});\nThen(/.*/, () => {});\nAnd(/.*/, () => {});\nBut(/.*/, () => {});",
+  },
   { path: "tests/support/world.ts", content: "export class World { user: any; }" },
 ]);
 
@@ -203,6 +207,24 @@ Feature: Test
       stepDefinitions: stepDefs,
     });
     expect(result.issues.some((i) => i.includes("is empty"))).toBe(true);
+  });
+
+  it("reports malformed slash-based cucumber expressions", () => {
+    const stepDefs = JSON.stringify([
+      {
+        path: "tests/steps/hidden.steps.js",
+        content:
+          "const { Then } = require('@cucumber/cucumber');\nThen('the sidebar includes a navigation link to /agenthellos', () => {});",
+      },
+    ]);
+    const result = runStaticValidation({
+      gherkinPublic: "",
+      gherkinHidden: `Feature: Hidden\n  Scenario: S\n    Then the sidebar includes a navigation link to /agenthellos`,
+      stepDefinitions: stepDefs,
+    });
+    expect(
+      result.issues.some((i) => i.includes('invalid "/" alternative boundary'))
+    ).toBe(true);
   });
 
   it("reports no issues for valid JSON step defs with content", () => {

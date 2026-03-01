@@ -92,6 +92,9 @@ describe("testBounties.createAndClaim", () => {
     expect(state.generated?.status).toBe("published");
     expect(state.generated?.stepDefinitionsPublic).toContain("agenthellos.public.steps.js");
     expect(state.generated?.stepDefinitionsHidden).toContain("agenthellos.hidden.steps.js");
+    const hiddenStepDefs = JSON.parse(state.generated?.stepDefinitionsHidden ?? "[]") as Array<{ content?: string }>;
+    expect(hiddenStepDefs[0]?.content).toContain("Then(/the sidebar includes a navigation link to \\/agenthellos/");
+    expect(hiddenStepDefs[0]?.content).toContain("Given('the agenthellos route exists'");
     expect(state.repoConn?.status).toBe("ready");
     expect(state.repoConn?.commitSha).toBe(process.env.TEST_BOUNTY_COMMIT_SHA);
   });

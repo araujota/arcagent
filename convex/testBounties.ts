@@ -6,6 +6,7 @@ import {
   isGitHubAppConfigured,
   resolveGitHubTokenForRepo,
 } from "./lib/githubApp";
+import { verifyBddStepCoverage } from "./lib/bddStepVerifier";
 
 const DEFAULT_REPOSITORY_URL = "https://github.com/araujota/arcagent";
 const DEFAULT_BRANCH = "main";
@@ -76,9 +77,13 @@ const HIDDEN_STEP_DEFS = JSON.stringify([
       "  assert.ok(fs.existsSync(SIDEBAR), `Missing sidebar: ${SIDEBAR}`);",
       "});",
       "",
-      "Then('the sidebar includes a navigation link to /agenthellos', function () {",
+      "Then(/the sidebar includes a navigation link to \\/agenthellos/, function () {",
       "  const content = fs.readFileSync(SIDEBAR, 'utf-8');",
       "  assert.match(content, /\\/agenthellos/, 'Expected /agenthellos navigation link');",
+      "});",
+      "",
+      "Given('the agenthellos route exists', function () {",
+      "  assert.ok(fs.existsSync(PAGE), `Missing route: ${PAGE}`);",
       "});",
       "",
       "Then('the agenthellos page is client only', function () {",
@@ -224,6 +229,22 @@ export const createArtifacts = internalMutation({
     githubInstallationAccountLogin: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const staticTemplateVerification = verifyBddStepCoverage({
+      gherkinPublic: PUBLIC_GHERKIN,
+      gherkinHidden: HIDDEN_GHERKIN,
+      stepDefinitionPayloads: [
+        { label: "public", serialized: PUBLIC_STEP_DEFS },
+        { label: "hidden", serialized: HIDDEN_STEP_DEFS },
+      ],
+    });
+    if (!staticTemplateVerification.valid) {
+      throw new Error(
+        `Test bounty Gherkin/step templates failed verification: ${staticTemplateVerification.issues
+          .slice(0, 5)
+          .join("; ")}`,
+      );
+    }
+
     const bountyId = await ctx.db.insert("bounties", {
       title: `Test Bounty: Agent Hello (${args.agentIdentifier})`,
       description:

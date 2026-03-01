@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import { createLLMClient } from "../lib/llm";
 import { validateGherkin, extractScenarioNames } from "../lib/gherkinValidator";
+import { verifyBddStepCoverage } from "../lib/bddStepVerifier";
 
 // ---------------------------------------------------------------------------
 // Extracted pure helpers (testable without Convex runtime)
@@ -30,6 +31,8 @@ export interface RunStaticValidationArgs {
   gherkinPublic: string;
   gherkinHidden: string;
   stepDefinitions: string;
+  stepDefinitionsPublic?: string;
+  stepDefinitionsHidden?: string;
 }
 
 const MIN_PUBLIC_SCENARIOS = 8;
@@ -94,7 +97,7 @@ export function runStaticValidation(
     warnings.push(`Line ${warning.line}: ${warning.message}`);
   }
 
-  // 2. Check step definition coverage
+  // 2. Check scenario inventory
   const publicScenarios = extractScenarioNames(args.gherkinPublic);
   const hiddenScenarios = extractScenarioNames(args.gherkinHidden);
   const allScenarios = [...publicScenarios, ...hiddenScenarios];
@@ -103,21 +106,28 @@ export function runStaticValidation(
     issues.push("No scenarios found in generated Gherkin");
   }
 
-  // 3. Basic step definition syntax check
-  let stepDefFiles: Array<{ path: string; content: string }> = [];
-  try {
-    stepDefFiles = JSON.parse(args.stepDefinitions);
-  } catch {
-    if (args.stepDefinitions.trim().length === 0) {
-      issues.push("No step definitions generated");
-    }
+  // 3. Step definition coverage + expression validity checks.
+  // This protects against malformed Cucumber expressions and unmatched
+  // Given/When/Then lines before tests are ever published.
+  const noStepDefsProvided =
+    (!args.stepDefinitions || args.stepDefinitions.trim().length === 0) &&
+    (!args.stepDefinitionsPublic || args.stepDefinitionsPublic.trim().length === 0) &&
+    (!args.stepDefinitionsHidden || args.stepDefinitionsHidden.trim().length === 0);
+  if (noStepDefsProvided) {
+    issues.push("No step definitions generated");
   }
 
-  for (const file of stepDefFiles) {
-    if (!file.content || file.content.trim().length === 0) {
-      issues.push(`Step definition file ${file.path} is empty`);
-    }
-  }
+  const stepCoverage = verifyBddStepCoverage({
+    gherkinPublic: args.gherkinPublic,
+    gherkinHidden: args.gherkinHidden,
+    stepDefinitionPayloads: [
+      { label: "combined", serialized: args.stepDefinitions },
+      { label: "public", serialized: args.stepDefinitionsPublic },
+      { label: "hidden", serialized: args.stepDefinitionsHidden },
+    ],
+  });
+  issues.push(...stepCoverage.issues);
+  warnings.push(...stepCoverage.warnings);
 
   if (publicScenarios.length < MIN_PUBLIC_SCENARIOS) {
     issues.push(
@@ -177,7 +187,7 @@ export function runStaticValidation(
     stats: {
       publicScenarios: publicScenarios.length,
       hiddenScenarios: hiddenScenarios.length,
-      stepDefFiles: stepDefFiles.length,
+      stepDefFiles: stepCoverage.stats.stepDefinitionFiles,
       publicGherkinStats: publicValidation.stats,
       hiddenGherkinStats: hiddenValidation.stats,
     },
@@ -200,6 +210,8 @@ export const validateTests = internalAction({
     gherkinPublic: v.string(),
     gherkinHidden: v.string(),
     stepDefinitions: v.string(),
+    stepDefinitionsPublic: v.optional(v.string()),
+    stepDefinitionsHidden: v.optional(v.string()),
     extractedCriteria: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
@@ -208,6 +220,8 @@ export const validateTests = internalAction({
       gherkinPublic: args.gherkinPublic,
       gherkinHidden: args.gherkinHidden,
       stepDefinitions: args.stepDefinitions,
+      stepDefinitionsPublic: args.stepDefinitionsPublic,
+      stepDefinitionsHidden: args.stepDefinitionsHidden,
     });
 
     const { issues, warnings, stats } = staticResult;
