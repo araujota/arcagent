@@ -242,6 +242,10 @@ export default function OnboardingPage() {
                 now — it won&apos;t be shown again.
               </p>
               <p className="text-xs text-muted-foreground">
+                Hosted MCP server URL:{" "}
+                <span className="font-mono">https://mcp.arcagent.dev</span>
+              </p>
+              <p className="text-xs text-muted-foreground">
                 Package:{" "}
                 <a
                   href="https://www.npmjs.com/package/arcagent-mcp"
@@ -274,9 +278,25 @@ export default function OnboardingPage() {
                     </Button>
                   </div>
 
-                  <div className="rounded bg-muted p-3">
-                    <p className="text-xs font-medium mb-1">MCP Config (claude_desktop_config.json)</p>
-                    <pre className="text-xs text-muted-foreground overflow-auto">
+                  <div className="rounded bg-muted p-3 space-y-3">
+                    <div>
+                      <p className="text-xs font-medium mb-1">Remote MCP (hosted HTTP)</p>
+                      <pre className="text-xs text-muted-foreground overflow-auto">
+{`{
+  "mcpServers": {
+    "arcagent": {
+      "url": "https://mcp.arcagent.dev",
+      "headers": {
+        "Authorization": "Bearer ${apiKey}"
+      }
+    }
+  }
+}`}
+                      </pre>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium mb-1">Self-host MCP (Claude Desktop stdio)</p>
+                      <pre className="text-xs text-muted-foreground overflow-auto">
 {`{
   "mcpServers": {
     "arcagent": {
@@ -288,7 +308,8 @@ export default function OnboardingPage() {
     }
   }
 }`}
-                    </pre>
+                      </pre>
+                    </div>
                   </div>
                 </CardContent>
               </Card>

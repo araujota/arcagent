@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 
 locals {
-  worker_public_ips = var.allocate_eip ? aws_eip.worker[*].public_ip : aws_instance.worker[*].public_ip
+  worker_public_ips = var.enable_autoscaling ? [] : (var.allocate_eip ? aws_eip.worker[*].public_ip : aws_instance.worker[*].public_ip)
 }
 
 output "worker_public_ips" {
@@ -13,12 +13,22 @@ output "worker_public_ips" {
 
 output "worker_instance_ids" {
   description = "EC2 instance IDs"
-  value       = aws_instance.worker[*].id
+  value       = var.enable_autoscaling ? [] : aws_instance.worker[*].id
+}
+
+output "worker_autoscaling_group_name" {
+  description = "Worker Auto Scaling Group name (empty when autoscaling is disabled)"
+  value       = var.enable_autoscaling ? aws_autoscaling_group.worker[0].name : ""
+}
+
+output "worker_alb_dns_name" {
+  description = "Worker ALB DNS name (empty when autoscaling is disabled)"
+  value       = var.enable_autoscaling ? aws_lb.worker[0].dns_name : ""
 }
 
 output "worker_host_urls" {
-  description = "WORKER_HOST_URL values — set these in Convex environment"
-  value       = [for ip in local.worker_public_ips : "http://${ip}:3001"]
+  description = "Worker URL(s) — set WORKER_API_URL in Convex (autoscaling uses worker_public_url when set, otherwise ALB DNS)"
+  value       = var.enable_autoscaling ? [local.worker_public_url_effective] : [for ip in local.worker_public_ips : "http://${ip}:3001"]
 }
 
 output "worker_dns_url" {
@@ -42,11 +52,11 @@ output "security_group_id" {
 }
 
 output "ssh_command" {
-  description = "SSH command template"
-  value       = length(local.worker_public_ips) > 0 ? "ssh -i <key.pem> ubuntu@${local.worker_public_ips[0]}" : "No workers deployed"
+  description = "SSH command template (only populated when autoscaling is disabled)"
+  value       = (!var.enable_autoscaling && length(local.worker_public_ips) > 0) ? "ssh -i <key.pem> ubuntu@${local.worker_public_ips[0]}" : "Autoscaling enabled: resolve an instance IP from the ASG first"
 }
 
 output "rootfs_bucket" {
-  description = "S3 bucket for pre-built rootfs images"
+  description = "S3 bucket for worker bootstrap scripts and artifacts (legacy output name)"
   value       = aws_s3_bucket.rootfs.id
 }

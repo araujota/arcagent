@@ -13,6 +13,10 @@ Package page: https://www.npmjs.com/package/arcagent-mcp
 
 Both modes use the same tool registration path and support the same workflow surface.
 
+When a client asks for the MCP server URL, use:
+- `https://mcp.arcagent.dev` (hosted remote server URL)
+- `/mcp` as the transport endpoint path when explicitly required by the client
+
 ## Self-Hosted / Local Run
 
 ```bash
@@ -36,6 +40,21 @@ Claude Desktop example:
 ```
 
 ## Operator-Hosted HTTP Runtime
+
+Remote client example:
+
+```json
+{
+  "mcpServers": {
+    "arcagent": {
+      "url": "https://mcp.arcagent.dev",
+      "headers": {
+        "Authorization": "Bearer arc_xxx"
+      }
+    }
+  }
+}
+```
 
 ```bash
 MCP_TRANSPORT=http \
@@ -152,3 +171,9 @@ npm publish --access public --otp <code>
 - Claude Desktop MCP (stdio)
 - Codex MCP clients
 - Streamable HTTP MCP clients (hosted or self-hosted)
+
+## License
+
+Licensed under the Elastic License 2.0 (`Elastic-2.0`). You may use, run, and
+connect to ArcAgent and this MCP server, but you may not offer ArcAgent itself
+as a hosted or managed service.

@@ -64,22 +64,16 @@ async function main(): Promise<void> {
   const runsQueue = true;
   const runsWorkspace = true;
   const hasLocalExecution = runsQueue || runsWorkspace;
-  const executionBackend = (process.env.WORKER_EXECUTION_BACKEND ?? "firecracker").toLowerCase();
+  const executionBackend = (process.env.WORKER_EXECUTION_BACKEND ?? "process").toLowerCase();
   const isProduction = process.env.NODE_ENV === "production";
-  const allowUnsafeProcessBackend = process.env.ALLOW_UNSAFE_PROCESS_BACKEND === "true";
+  const supportedBackends = new Set(["firecracker", "process"]);
 
-  if (hasLocalExecution && executionBackend !== "firecracker") {
-    if (!allowUnsafeProcessBackend) {
-      logger.error("Only firecracker execution backend is safe by default", {
-        executionBackend,
-        allowUnsafeProcessBackend,
-      });
-      process.exit(1);
-    }
-    logger.warn("Running with unsafe local process backend override", {
+  if (hasLocalExecution && !supportedBackends.has(executionBackend)) {
+    logger.error("Unsupported execution backend", {
       executionBackend,
-      allowUnsafeProcessBackend,
+      supportedBackends: Array.from(supportedBackends),
     });
+    process.exit(1);
   }
 
   if (hasLocalExecution && executionBackend === "firecracker" && isProduction && process.env.FC_HARDEN_EGRESS !== "true") {
@@ -158,7 +152,7 @@ async function main(): Promise<void> {
     checks.workspaceMode = runsWorkspace ? "local" : "external_only";
     checks.executionBackend = executionBackend;
     checks.firecrackerLocked = executionBackend === "firecracker" ? "true" : "false";
-    checks.executionIsolation = executionBackend === "firecracker" ? "microvm_rootfs" : "unsafe_process";
+    checks.executionIsolation = executionBackend === "firecracker" ? "microvm_rootfs" : "process_sandbox";
     checks.workerHostRuntime = "ok";
     checks.snykCli = hasBinary("snyk") ? "ok" : "missing";
     checks.sonarScanner = hasBinary("sonar-scanner") ? "ok" : "missing";
@@ -168,9 +162,9 @@ async function main(): Promise<void> {
       checks.firecrackerLocked = "not_applicable";
       checks.executionIsolation = "external_executor";
     } else {
-      if (executionBackend !== "firecracker") {
-        checks.executionBackendPolicy = allowUnsafeProcessBackend ? "unsafe_override" : "violation";
-        healthy = allowUnsafeProcessBackend;
+      if (!supportedBackends.has(executionBackend)) {
+        checks.executionBackendPolicy = "violation";
+        healthy = false;
       } else {
         checks.executionBackendPolicy = "ok";
       }

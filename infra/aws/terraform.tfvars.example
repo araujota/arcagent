@@ -9,10 +9,21 @@ aws_region   = "us-east-1"
 environment  = "production"
 
 # EC2 sizing.
-instance_type = "c8i.large"
-worker_count  = 1
+instance_type = "t3.micro"
 worker_role   = "api"
 ssh_key_name  = "your-key-pair-name"
+
+# Capacity scaling (enabled by default)
+enable_autoscaling   = true
+asg_min_size         = 1
+asg_desired_capacity = 1
+asg_max_size         = 6
+asg_cpu_target_utilization       = 60
+asg_scale_in_cooldown_seconds    = 180
+asg_scale_out_cooldown_seconds   = 60
+
+# Only used when enable_autoscaling=false
+worker_count = 1
 
 # Restrict SSH access to your IP (leave empty to disable SSH)
 ssh_allowed_cidrs = ["YOUR_IP/32"]
@@ -26,20 +37,16 @@ convex_url           = "https://your-app.convex.cloud"
 # Leave empty to auto-derive from convex_url.
 convex_http_actions_url = "https://your-app.convex.site"
 
-# VM capacity
+# Workspace capacity
 max_dev_vms    = 10
-warm_pool_size = 2
-max_warm_vms   = 4
+warm_pool_size = 0
+max_warm_vms   = 0
 
 # Worker concurrency (parallel BullMQ verification jobs)
 worker_concurrency = 2
 
 # Idle workspace timeout (ms) — default 30 min
 workspace_idle_timeout_ms = 1800000
-
-# Firecracker
-firecracker_version = "1.10.1"
-harden_egress       = true
 
 # Node.js version for the worker runtime
 node_version = "20"
@@ -50,20 +57,20 @@ sonarqube_url           = ""   # Example: https://sonar.your-domain.com
 sonarqube_token         = ""   # Optional SonarQube token
 snyk_token              = ""   # Optional Snyk token
 
-# Root volume size (needs space for rootfs images, overlays, etc.)
-root_volume_size_gb = 200
+# Root volume size
+root_volume_size_gb = 100
 
 # Stable addressing
-allocate_eip = true
+allocate_eip = false
 
 # Optional stable DNS for MCP -> worker calls
 route53_zone_name = "speedlesvc.com"
 worker_dns_name   = "arcagent.speedlesvc.com"
 worker_public_url = "http://arcagent.speedlesvc.com:3001"
 
-# Pre-built rootfs images — version tag in S3 (bucket is auto-created)
-# Build and upload images first: bash infra/rootfs/build-and-upload.sh <bucket> v1
-rootfs_version = "v1"
+# Optional: bootstrap worker build artifact from S3 key in the artifact bucket
+# Example: "artifacts/worker/worker-build-2026-02-28.tar.gz"
+worker_artifact_s3_key = ""
 
 # ---------------------------------------------------------------------------
 # Env vars you must also set in the Convex dashboard:

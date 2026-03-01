@@ -29,24 +29,10 @@ describe("firecracker backend selection", () => {
 
   afterEach(() => {
     delete process.env.WORKER_EXECUTION_BACKEND;
-    delete process.env.ALLOW_UNSAFE_PROCESS_BACKEND;
   });
 
-  it("rejects process backend unless unsafe local override is enabled", async () => {
+  it("delegates to process backend when WORKER_EXECUTION_BACKEND=process", async () => {
     process.env.WORKER_EXECUTION_BACKEND = "process";
-
-    const mod = await import("./firecracker");
-    await expect(mod.createFirecrackerVM({
-      jobId: "job-1",
-      rootfsImage: "node-20.ext4",
-      vcpuCount: 2,
-      memSizeMib: 1024,
-    })).rejects.toThrow("Process backend is disabled");
-  });
-
-  it("delegates to process backend only with explicit unsafe local override", async () => {
-    process.env.WORKER_EXECUTION_BACKEND = "process";
-    process.env.ALLOW_UNSAFE_PROCESS_BACKEND = "true";
 
     const expectedHandle = {
       vmId: "proc-123",
@@ -60,6 +46,30 @@ describe("firecracker backend selection", () => {
     const mod = await import("./firecracker");
     const handle = await mod.createFirecrackerVM({
       jobId: "job-1",
+      rootfsImage: "node-20.ext4",
+      vcpuCount: 2,
+      memSizeMib: 1024,
+    });
+
+    expect(createProcessVMMock).toHaveBeenCalledOnce();
+    expect(handle).toBe(expectedHandle);
+  });
+
+  it("delegates to process backend by default", async () => {
+    delete process.env.WORKER_EXECUTION_BACKEND;
+
+    const expectedHandle = {
+      vmId: "proc-default",
+      jobId: "job-default",
+      guestIp: "127.0.0.1",
+      exec: vi.fn(),
+    } as any;
+
+    createProcessVMMock.mockResolvedValue(expectedHandle);
+
+    const mod = await import("./firecracker");
+    const handle = await mod.createFirecrackerVM({
+      jobId: "job-default",
       rootfsImage: "node-20.ext4",
       vcpuCount: 2,
       memSizeMib: 1024,

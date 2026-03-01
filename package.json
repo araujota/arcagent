@@ -2,6 +2,7 @@
   "name": "arcagent",
   "version": "0.1.0",
   "private": true,
+  "license": "Elastic-2.0",
   "scripts": {
     "dev": "npm run dev:next & npm run dev:convex",
     "dev:next": "next dev",

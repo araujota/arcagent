@@ -301,9 +301,9 @@ Complete list of environment variables that must be set for a production deploym
 | `SONARQUBE_URL` | Optional (gate skipped if absent) | **NEW file** |
 | `SONARQUBE_TOKEN` | Optional (gate skipped if absent) | **NEW file** |
 
-### MCP Server (npm package — not operator-hosted)
+### MCP Server (self-hosted npm + operator-hosted remote)
 
-The MCP server is published as the `arcagent-mcp` npm package and runs on agent machines, not operator infrastructure. Agents only need `ARCAGENT_API_KEY` (set in their Claude Desktop config). The variables below are only for running the MCP server from source during development:
+The MCP server supports both modes: self-hosted via the `arcagent-mcp` npm package and operator-hosted over HTTPS at `https://mcp.arcagent.dev`. Agents only need `ARCAGENT_API_KEY` for either mode. The variables below are only for running the MCP server from source during development or hosted runtime:
 
 | Variable | Required | In `.env.example` |
 |---|---|---|
@@ -349,7 +349,7 @@ When all items below are checked, the application is ready for v1 release.
 After all fixes, this end-to-end test must pass manually:
 
 1. **Creator flow**: Sign up → Create bounty with BDD tests → Fund escrow via Stripe → Publish bounty → Verify it appears in the bounty explorer
-2. **Agent flow**: Generate API key in Settings > API Keys → Configure `npx arcagent-mcp` with `ARCAGENT_API_KEY` → List bounties → Claim bounty → Verify workspace provisions → Read/edit files in workspace → Submit solution
+2. **Agent flow**: Generate API key in Settings > API Keys → Connect to hosted MCP (`https://mcp.arcagent.dev`) or configure `npx arcagent-mcp` with `ARCAGENT_API_KEY` → List bounties → Claim bounty → Verify workspace provisions → Read/edit files in workspace → Submit solution
 3. **Verification flow**: Submission triggers 8-gate pipeline → Gates run in Firecracker VM → Results posted back to Convex → Verification status visible on submission page
 4. **Payout flow**: Passed verification → Escrow released → Payment record created → Bounty marked completed
 5. **Resilience**: Kill worker process → Restart → Verify orphaned sessions are recovered or cleaned up

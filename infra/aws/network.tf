@@ -2,8 +2,7 @@
 # VPC + Networking
 # ---------------------------------------------------------------------------
 #
-# IMPORTANT: VPC uses 10.1.0.0/16 to avoid collision with Firecracker's
-# internal 10.0.0.0/24 TAP subnet used for VM networking.
+# VPC uses 10.1.0.0/16 for worker hosts and future expansion room.
 # ---------------------------------------------------------------------------
 
 resource "aws_vpc" "worker" {
@@ -87,7 +86,7 @@ resource "aws_security_group" "worker" {
     }
   }
 
-  # All outbound (VMs need git clone, npm install, etc.)
+  # All outbound (worker jobs need git clone, npm install, etc.)
   egress {
     description = "All outbound"
     from_port   = 0

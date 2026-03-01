@@ -22,6 +22,41 @@ interface HttpRuntime {
   sessions: SessionStore;
 }
 
+interface StaticServerCard {
+  $schema: string;
+  serverInfo: {
+    name: string;
+    version: string;
+    title: string;
+    description: string;
+    websiteUrl: string;
+    sourceCodeUrl: string;
+    iconUrl: string;
+  };
+  hosting: {
+    platform: string;
+    hostingType: "remote";
+    regions: string[];
+  };
+  capabilities: {
+    tools: Array<{ name: string; description: string }>;
+    resources: Array<{ uri: string; name: string; description: string }>;
+    prompts: Array<{ name: string; description: string }>;
+  };
+  authentication: {
+    type: "apiKey";
+    in: "header";
+    name: "Authorization";
+    scheme: "Bearer";
+    instructions: string;
+  };
+  endpoints: {
+    mcp: string;
+    registration: string;
+    health: string;
+  };
+}
+
 type LogLevel = "info" | "warning" | "error";
 
 type SearchableIds = {
@@ -47,6 +82,91 @@ const SEARCHABLE_ID_KEYS = new Set([
   "verificationid",
   "workspaceid",
 ]);
+
+const MCP_SERVER_VERSION = "0.1.12";
+
+function buildStaticServerCard(config: ServerConfig): StaticServerCard {
+  const base = config.publicBaseUrl || `http://localhost:${config.mcpPort}`;
+  return {
+    $schema: "https://smithery.ai/schemas/server-card.json",
+    serverInfo: {
+      name: "arcagent",
+      version: MCP_SERVER_VERSION,
+      title: "ArcAgent",
+      description: "ArcAgent MCP server for bounty discovery, workspace execution, and verified coding submissions.",
+      websiteUrl: "https://github.com/araujota/arcagent",
+      sourceCodeUrl: "https://github.com/araujota/arcagent/tree/main/mcp-server",
+      iconUrl: `${base}/icon.svg`,
+    },
+    hosting: {
+      platform: "AWS Fargate",
+      hostingType: "remote",
+      regions: ["us-east-1"],
+    },
+    capabilities: {
+      tools: [
+        {
+          name: "register_account",
+          description: "Create a new ArcAgent account and issue an API key.",
+        },
+        {
+          name: "list_bounties",
+          description: "List active bounties with reward and deadline metadata.",
+        },
+        {
+          name: "claim_bounty",
+          description: "Claim an exclusive lock and workspace for a bounty.",
+        },
+        {
+          name: "workspace_exec",
+          description: "Run shell commands in the claimed bounty workspace.",
+        },
+        {
+          name: "submit_solution",
+          description: "Submit workspace diff for secure verification pipeline execution.",
+        },
+        {
+          name: "get_verification_status",
+          description: "Fetch verification gates, logs, and hidden-test summaries.",
+        },
+      ],
+      resources: [
+        {
+          uri: "arcagent://overview",
+          name: "ArcAgent MCP Overview",
+          description: "Core capabilities and recommended execution workflow.",
+        },
+        {
+          uri: "arcagent://connection",
+          name: "ArcAgent Connection Guide",
+          description: "Auth and endpoint details for remote MCP usage.",
+        },
+      ],
+      prompts: [
+        {
+          name: "bounty_execution_plan",
+          description: "Draft a scoped implementation plan before editing code.",
+        },
+        {
+          name: "verification_triage",
+          description: "Turn failed verification output into prioritized fixes.",
+        },
+      ],
+    },
+    authentication: {
+      type: "apiKey",
+      in: "header",
+      name: "Authorization",
+      scheme: "Bearer",
+      instructions: "Set Authorization header to: Bearer arc_<api_key>",
+    },
+    endpoints: {
+      mcp: `${base}/mcp`,
+      registration: `${base}/api/mcp/register`,
+      health: `${base}/health`,
+    },
+  };
+}
 
 function normalizeHost(rawHost: string | undefined): string | null {
   if (!rawHost) return null;
@@ -316,13 +436,34 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
     });
   });
 
-  app.post("/api/mcp/register", async (req, res) => {
+  app.get("/.well-known/mcp/server-card.json", (_req, res) => {
+    res.setHeader("cache-control", "public, max-age=300");
+    res.json(buildStaticServerCard(config));
+  });
+
+  app.get("/icon.svg", (_req, res) => {
+    res.setHeader("cache-control", "public, max-age=86400");
+    res.type("image/svg+xml").send(
+      [
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\" role=\"img\" aria-label=\"ArcAgent\">",
+        "<rect width=\"128\" height=\"128\" rx=\"24\" fill=\"#0f172a\"/>",
+        "<path d=\"M24 92 L64 20 L104 92 Z\" fill=\"#22c55e\"/>",
+        "<circle cx=\"64\" cy=\"74\" r=\"12\" fill=\"#0f172a\"/>",
+        "</svg>",
+      ].join(""),
+    );
+  });
+
+  const handleRegister = async (req: Request, res: Response) => {
     telemetry.recordRegisterAttempt();
     const requestId = (req as RequestWithMeta).mcpRequestId;
     const ip = req.ip || req.socket.remoteAddress || "unknown";
+    const isOAuthCompatibilityRoute = req.path === "/register";
     const emailKey = typeof req.body?.email === "string"
       ? req.body.email.trim().toLowerCase()
-      : "unknown";
+      : isOAuthCompatibilityRoute
+        ? `oauth:${ip}`
+        : "unknown";
 
     if (config.registerHoneypotField) {
       const honeypotValue = req.body?.[config.registerHoneypotField];
@@ -387,6 +528,33 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
         githubUsername?: string;
       };
 
+      // Some MCP directories probe /register expecting OAuth Dynamic Client
+      // Registration semantics. Keep this compatibility route distinct from the
+      // ArcAgent account-registration payload used at /api/mcp/register.
+      if (isOAuthCompatibilityRoute && (!name || !email)) {
+        const redirectUris = Array.isArray(req.body?.redirect_uris)
+          ? req.body.redirect_uris.filter((uri): uri is string => typeof uri === "string")
+          : [];
+        const issuedAt = Math.floor(Date.now() / 1000);
+
+        res.status(201).json({
+          client_id: `arcagent_${randomUUID().replaceAll("-", "")}`,
+          client_secret: randomUUID().replaceAll("-", ""),
+          client_id_issued_at: issuedAt,
+          client_secret_expires_at: 0,
+          redirect_uris: redirectUris,
+          token_endpoint_auth_method: "client_secret_post",
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+        });
+        telemetry.recordRegisterSuccess();
+        emitAuditLog("info", "register_oauth_compat", "Returned OAuth-compatible registration payload", {
+          requestId,
+          ip,
+        });
+        return;
+      }
+
       if (!name || !email) {
         telemetry.recordRegisterFailure();
         sendError(res, 400, "bad_request", "name and email are required");
@@ -427,7 +595,11 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
         error instanceof Error ? error.message : "Registration failed",
       );
     }
-  });
+  };
+
+  app.post("/api/mcp/register", handleRegister);
+  // Compatibility alias used by some MCP directory scanners.
+  app.post("/register", handleRegister);
 
   app.post("/mcp", async (req, res) => {
     if (config.startupMode === "registration-only") {
@@ -442,8 +614,40 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
 
     const startedAt = Date.now();
     const requestMeta = req as RequestWithMeta;
+    const rpcMethod = typeof req.body?.method === "string" ? req.body.method : undefined;
     const auth = await authenticateRequest(req);
     if (!auth.ok) {
+      const isPublicDiscoveryMethod = rpcMethod === "initialize"
+        || rpcMethod === "tools/list"
+        || rpcMethod === "prompts/list"
+        || rpcMethod === "resources/list"
+        || rpcMethod === "resources/templates/list";
+      if (isPublicDiscoveryMethod) {
+        // Directory scanners often omit the MCP stream Accept header.
+        // Normalize it in-place so streamable HTTP transport accepts discovery probes.
+        const originalAccept = req.headers.accept;
+        req.headers.accept = "application/json, text/event-stream";
+
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+          enableJsonResponse: true,
+        });
+        const server = createSandboxServer();
+        await server.connect(transport);
+        try {
+          await transport.handleRequest(req, res, req.body);
+        } finally {
+          req.headers.accept = originalAccept;
+        }
+        await transport.close().catch(() => {});
+        telemetry.recordToolRequest(Date.now() - startedAt, res.statusCode < 400);
+        emitAuditLog("info", "unauthenticated_discovery_allowed", "Allowed unauthenticated MCP discovery request", {
+          requestId: requestMeta.mcpRequestId,
+          rpcMethod,
+        });
+        return;
+      }
+
       telemetry.recordAuthFailure();
       emitAuditLog("warning", "auth_failed", "MCP request rejected due to authentication failure", {
         requestId: requestMeta.mcpRequestId,

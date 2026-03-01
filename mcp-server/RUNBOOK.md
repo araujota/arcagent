@@ -6,6 +6,7 @@
 - Operator-hosted: HTTP transport behind HTTPS (`https://mcp.arcagent.dev`)
 
 Feature parity must be maintained across both modes.
+Publish `https://mcp.arcagent.dev` as the MCP server URL for remote clients.
 
 ## Hosted Deployment Topology
 

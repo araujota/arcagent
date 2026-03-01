@@ -17,13 +17,55 @@ variable "environment" {
 variable "instance_type" {
   description = "EC2 instance type for the worker host"
   type        = string
-  default     = "c8i.large"
+  default     = "t3.micro"
 }
 
 variable "worker_count" {
-  description = "Number of worker instances to deploy"
+  description = "Number of worker instances to deploy when autoscaling is disabled"
   type        = number
   default     = 1
+}
+
+variable "enable_autoscaling" {
+  description = "Enable EC2 Auto Scaling Group for worker hosts"
+  type        = bool
+  default     = true
+}
+
+variable "asg_min_size" {
+  description = "Minimum worker instance count when autoscaling is enabled"
+  type        = number
+  default     = 1
+}
+
+variable "asg_max_size" {
+  description = "Maximum worker instance count when autoscaling is enabled"
+  type        = number
+  default     = 6
+}
+
+variable "asg_desired_capacity" {
+  description = "Desired worker instance count when autoscaling is enabled"
+  type        = number
+  default     = 1
+}
+
+variable "asg_cpu_target_utilization" {
+  description = "Target average CPU utilization for worker ASG target tracking"
+  type        = number
+  default     = 60
+}
+
+variable "asg_scale_in_cooldown_seconds" {
+  description = "Scale-in cooldown for worker ASG target tracking policy"
+  type        = number
+  default     = 180
+}
+
+variable "asg_scale_out_cooldown_seconds" {
+  description = "Scale-out cooldown for worker ASG target tracking policy"
+  type        = number
+  default     = 60
 }
 
 variable "worker_role" {
@@ -38,7 +80,7 @@ variable "worker_role" {
 }
 
 variable "allocate_eip" {
-  description = "Allocate and attach Elastic IPs to workers. Disable when EIP quota is exhausted."
+  description = "Allocate and attach Elastic IPs to workers. Only used when autoscaling is disabled."
   type        = bool
   default     = true
 }
@@ -72,31 +114,31 @@ variable "convex_http_actions_url" {
 }
 
 variable "root_volume_size_gb" {
-  description = "Root EBS volume size in GB (stores rootfs images, overlays, etc.)"
+  description = "Root EBS volume size in GB (stores repos, build artifacts, and runtime data)"
   type        = number
-  default     = 200
+  default     = 100
 }
 
 variable "max_dev_vms" {
-  description = "Maximum concurrent development VMs per worker"
+  description = "Maximum concurrent development workspaces per worker"
   type        = number
   default     = 10
 }
 
 variable "warm_pool_size" {
-  description = "Number of warm VMs to keep per language"
+  description = "Legacy warm pool size setting (used only by firecracker backend)"
   type        = number
   default     = 2
 }
 
 variable "max_warm_vms" {
-  description = "Maximum total warm VMs across all languages"
+  description = "Legacy max warm pool setting (used only by firecracker backend)"
   type        = number
   default     = 4
 }
 
 variable "firecracker_version" {
-  description = "Firecracker release version to install"
+  description = "Deprecated no-op (kept for backward compatibility with older tfvars)"
   type        = string
   default     = "1.10.1"
 }
@@ -108,7 +150,7 @@ variable "node_version" {
 }
 
 variable "harden_egress" {
-  description = "Enable hardened egress filtering (DNS resolver + SNI proxy)"
+  description = "Deprecated no-op (kept for backward compatibility with older tfvars)"
   type        = bool
   default     = true
 }
@@ -126,19 +168,19 @@ variable "workspace_idle_timeout_ms" {
 }
 
 variable "rootfs_version" {
-  description = "Version tag for pre-built rootfs images in S3 (e.g. v1, v2)"
+  description = "Deprecated no-op (kept for backward compatibility with older tfvars)"
   type        = string
   default     = "v1"
 }
 
 variable "rootfs_upload_on_boot" {
-  description = "When true, upload locally-built rootfs images to S3 cache if missing."
+  description = "Deprecated no-op (kept for backward compatibility with older tfvars)"
   type        = bool
   default     = true
 }
 
 variable "worker_artifact_s3_key" {
-  description = "Optional S3 key for a worker build tarball (dist + package files) in the rootfs bucket."
+  description = "Optional S3 key for a worker build tarball (dist + package files) in the artifact bucket."
   type        = string
   default     = ""
 }

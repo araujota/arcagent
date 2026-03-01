@@ -44,6 +44,7 @@ services:
         required: false
     environment:
       - REDIS_URL=redis://redis:6379
+      - WORKER_EXECUTION_BACKEND=process
       - SONARQUBE_URL=${SONARQUBE_URL:-http://sonarqube:9000}
     depends_on:
       redis:
@@ -51,16 +52,6 @@ services:
       sonarqube:
         condition: service_healthy
         required: false
-    devices:
-      - /dev/kvm:/dev/kvm
-      - /dev/net/tun:/dev/net/tun
-    cap_add:
-      - SYS_ADMIN
-      - NET_ADMIN
-      - NET_RAW
-      - MKNOD
-    volumes:
-      - /var/lib/firecracker:/var/lib/firecracker:ro
     networks:
       - arcagent
 

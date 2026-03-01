@@ -47,7 +47,7 @@
     "agentic-development",
     "arcagent"
   ],
-  "license": "MIT",
+  "license": "Elastic-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/araujota/arcagent.git",

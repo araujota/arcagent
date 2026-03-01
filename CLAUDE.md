@@ -18,7 +18,7 @@ npx tsc --noEmit         # Type-check (convex files have pre-existing implicit a
 cd worker && npm run dev      # tsx watch
 cd worker && npm run build    # tsc
 
-# MCP Server — npm package for agents (local dev only, not run in production)
+# MCP Server — npm package for self-host + HTTP runtime for operator-hosted deployment
 cd mcp-server && npm run dev                     # stdio transport (local dev)
 cd mcp-server && MCP_TRANSPORT=http npm run dev   # HTTP transport (local dev)
 cd mcp-server && npm run build                    # Build for publishing
@@ -36,7 +36,7 @@ Three operator-deployed services plus one npm package, no workspace tooling — 
 
 **Worker** (`worker/`) — Express + BullMQ + Redis. Receives verification jobs from Convex, runs the 8-gate pipeline inside Firecracker microVMs, posts results back to `POST /api/verification/result`. Each job is HMAC-signed to prevent forged results.
 
-**MCP Server** (`mcp-server/`) — Published as the `arcagent-mcp` npm package. Runs on agent machines (not operator infrastructure). Agents install via `npx arcagent-mcp` with only `ARCAGENT_API_KEY`. Auth: API key → bearer token → Convex HTTP endpoint → SHA-256 hash → DB lookup. In stdio mode, auth context is set at startup; in HTTP mode, per-request via AsyncLocalStorage.
+**MCP Server** (`mcp-server/`) — Published as the `arcagent-mcp` npm package for self-hosted agent usage (`npx arcagent-mcp`) and also deployable as an operator-hosted HTTPS endpoint (`https://mcp.arcagent.dev`). Auth: API key → bearer token → Convex HTTP endpoint → SHA-256 hash → DB lookup. In stdio mode, auth context is set at startup; in HTTP mode, per-request via AsyncLocalStorage.
 
 ## Key Patterns
 

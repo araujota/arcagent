@@ -41,7 +41,7 @@ echo "Writing systemd service file..."
 
 cat > "$SERVICE_FILE" <<'SERVICEEOF'
 [Unit]
-Description=ArcAgent Worker — Firecracker VM orchestrator
+Description=ArcAgent Worker — process backend orchestrator
 Documentation=https://github.com/your-org/arcagent
 After=network-online.target arcagent-runtime-stack.service
 Wants=network-online.target arcagent-runtime-stack.service
@@ -50,9 +50,9 @@ Wants=network-online.target arcagent-runtime-stack.service
 Type=notify
 NotifyAccess=main
 User=root
-# Root required for: creating TAP devices, iptables rules, jailer execution,
-# dm-crypt setup. The worker itself is Node.js but needs these host privileges.
-# Individual VM commands run as the unprivileged "agent" user inside the VM.
+# Root required for: runuser/chown privilege drop into the execution user,
+# metadata egress hardening rules, and runtime sidecar management.
+# User code still runs as the unprivileged "agent" user.
 
 WorkingDirectory=/opt/arcagent/worker
 EnvironmentFile=/opt/arcagent/worker.env
@@ -65,7 +65,7 @@ ExecStartPre=/opt/arcagent/scripts/detect-host-url.sh
 ExecStart=/usr/bin/node dist/index.js
 
 # Graceful shutdown: SIGTERM triggers the shutdown handler in index.ts
-# which destroys all sessions and drains the VM pool
+# which drains jobs and destroys active sessions.
 KillSignal=SIGTERM
 TimeoutStopSec=120
 
@@ -85,7 +85,7 @@ NoNewPrivileges=no
 ProtectSystem=false
 ProtectHome=read-only
 PrivateTmp=false
-# Can't use PrivateTmp because Firecracker uses /tmp for vsock sockets, overlays, etc.
+# /tmp is used for process-backend isolated workspaces and should remain shared.
 
 # Resource limits
 LimitNOFILE=65536

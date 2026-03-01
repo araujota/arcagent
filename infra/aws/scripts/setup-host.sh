@@ -3,8 +3,8 @@
 # ArcAgent Worker — Host Setup (runs as user-data on first boot)
 # ---------------------------------------------------------------------------
 # Installs dependencies and starts the worker service via systemd.
-# In API-only deployments, the worker itself provisions and owns workspace VMs,
-# so host-side Firecracker setup is required.
+# In API-only deployments, the worker provisions and owns workspace execution
+# using the Firecracker backend.
 #
 # This script is idempotent — safe to re-run.
 # ---------------------------------------------------------------------------
@@ -27,14 +27,10 @@ WORKER_ROLE="${worker_role}"
 MAX_DEV_VMS="${max_dev_vms}"
 WARM_POOL_SIZE="${warm_pool_size}"
 MAX_WARM_VMS="${max_warm_vms}"
-FIRECRACKER_VERSION="${firecracker_version}"
 NODE_VERSION="${node_version}"
-HARDEN_EGRESS="${harden_egress}"
 WORKER_CONCURRENCY="${worker_concurrency}"
 WORKSPACE_IDLE_TIMEOUT_MS="${workspace_idle_timeout_ms}"
-ROOTFS_BUCKET="${rootfs_bucket}"
-ROOTFS_VERSION="${rootfs_version}"
-ROOTFS_UPLOAD_ON_BOOT="${rootfs_upload_on_boot}"
+ARTIFACT_BUCKET="${artifact_bucket}"
 AWS_REGION="${aws_region}"
 ROUTE53_ZONE_NAME="${route53_zone_name}"
 WORKER_DNS_NAME="${worker_dns_name}"
@@ -50,8 +46,7 @@ if [ "$WORKER_ROLE" != "api" ]; then
   exit 1
 fi
 
-RUNS_EXECUTOR="true"
-echo "Worker role: $WORKER_ROLE (runs_executor=$RUNS_EXECUTOR)"
+echo "Worker role: $WORKER_ROLE (execution_backend=firecracker)"
 
 if [ -z "$CONVEX_HTTP_ACTIONS_URL" ]; then
   CONVEX_HTTP_ACTIONS_URL="$${CONVEX_URL/.convex.cloud/.convex.site}"
@@ -98,17 +93,34 @@ apt-get install -y -qq \
   iptables-persistent \
   iproute2 \
   redis-server \
-  squid-openssl \
-  dmsetup \
-  cryptsetup \
   file \
-  e2fsprogs \
   acl \
   unzip \
   awscli \
-  zstd \
-  debootstrap \
-  docker.io
+  docker.io \
+  python3 \
+  python3-venv \
+  python3-pip \
+  golang-go \
+  rustc \
+  cargo \
+  default-jdk \
+  maven \
+  gradle \
+  ruby-full \
+  php \
+  php-cli \
+  php-xml \
+  php-mbstring \
+  php-curl \
+  php-zip \
+  composer \
+  cppcheck \
+  clang-tidy \
+  flawfinder
+
+# Optional package on newer Ubuntu variants; skip silently if unavailable.
+apt-get install -y -qq openjdk-21-jdk-headless || true
 
 # Ubuntu package naming for Compose varies by repository/version.
 # Prefer Docker Compose v2 plugin, fall back to docker-compose v1.
@@ -116,48 +128,8 @@ if ! apt-get install -y -qq docker-compose-plugin; then
   apt-get install -y -qq docker-compose
 fi
 
-if [ "$RUNS_EXECUTOR" = "true" ]; then
-  # ---------------------------------------------------------------------------
-  # 2. Enable KVM
-  # ---------------------------------------------------------------------------
-  echo ">>> Configuring KVM..."
-  if [ ! -e /dev/kvm ]; then
-    echo "WARNING: /dev/kvm not found. This instance may not support KVM."
-    echo "Firecracker requires a KVM-capable host (.metal or nested-virtualization-enabled EC2)."
-  fi
-
-  # Ensure kvm group exists and the worker user can access it
-  groupadd -f kvm
-  chmod 666 /dev/kvm 2>/dev/null || true
-
-  # ---------------------------------------------------------------------------
-  # 3. Enable IP forwarding (required for Firecracker TAP networking)
-  # ---------------------------------------------------------------------------
-  echo ">>> Enabling IP forwarding..."
-  sysctl -w net.ipv4.ip_forward=1
-  if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
-    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-  fi
-
-  # Enable NAT masquerading for VM outbound traffic
-  # VMs use 10.0.0.0/24 internally — NAT to the host's interface
-  PRIMARY_IF=$(ip route show default | awk '/default/ {print $5}' | head -1)
-  iptables -t nat -C POSTROUTING -o "$PRIMARY_IF" -s 10.0.0.0/24 -j MASQUERADE 2>/dev/null || \
-    iptables -t nat -A POSTROUTING -o "$PRIMARY_IF" -s 10.0.0.0/24 -j MASQUERADE
-
-  # Persist iptables rules (restored on reboot by iptables-persistent / netfilter-persistent)
-  mkdir -p /etc/iptables
-  iptables-save > /etc/iptables/rules.v4
-  systemctl enable netfilter-persistent 2>/dev/null || true
-
-  # ---------------------------------------------------------------------------
-  # 4. Firecracker install is executed after script sync in step 8
-  # ---------------------------------------------------------------------------
-  echo ">>> Firecracker install deferred until provisioning scripts are synced."
-fi
-
 # ---------------------------------------------------------------------------
-# 5. Install Node.js
+# 2. Install Node.js
 # ---------------------------------------------------------------------------
 echo ">>> Installing Node.js v$NODE_VERSION..."
 if ! command -v node &>/dev/null; then
@@ -167,7 +139,38 @@ fi
 echo "Node.js: $(node --version)"
 
 # ---------------------------------------------------------------------------
-# 6. Configure container runtime sidecars (Redis + optional SonarQube)
+# 3. Install cross-language toolchain/scanner CLIs for process backend parity
+# ---------------------------------------------------------------------------
+echo ">>> Installing process-backend toolchain/scanner dependencies..."
+
+# Python tooling used by gates (best effort for transient install failures).
+# Install into an isolated venv to avoid breaking distro python packages
+# used by docker-compose on older Ubuntu images.
+TOOLING_VENV="/opt/arcagent/tooling-venv"
+python3 -m venv "$TOOLING_VENV" || true
+"$TOOLING_VENV/bin/pip" install --upgrade pip setuptools wheel || true
+"$TOOLING_VENV/bin/pip" install --upgrade ruff mypy bandit semgrep pytest || true
+for tool in ruff mypy bandit semgrep pytest; do
+  if [ -x "$TOOLING_VENV/bin/$tool" ]; then
+    ln -sf "$TOOLING_VENV/bin/$tool" "/usr/local/bin/$tool"
+  fi
+done
+
+# JS/TS tooling.
+npm install -g pyright || true
+
+# Go security/lint tooling.
+GOBIN=/usr/local/bin go install github.com/securego/gosec/v2/cmd/gosec@latest || true
+curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b /usr/local/bin || true
+
+# Rust security tooling.
+cargo install cargo-audit || true
+
+# Vulnerability scanner used by security gate.
+curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin || true
+
+# ---------------------------------------------------------------------------
+# 4. Configure container runtime sidecars (Redis + optional SonarQube)
 # ---------------------------------------------------------------------------
 echo ">>> Configuring runtime sidecars..."
 systemctl enable docker
@@ -250,7 +253,13 @@ volumes:
   sonarqube-db-data:
 COMPOSEEOF
 
-cat > /etc/systemd/system/arcagent-runtime-stack.service <<'SERVICEEOF'
+RUNTIME_SERVICES="redis"
+if [ "$ENABLE_SONARQUBE" = "true" ]; then
+  RUNTIME_SERVICES="redis sonarqube-db sonarqube"
+fi
+echo "Runtime sidecars to start: $RUNTIME_SERVICES"
+
+cat > /etc/systemd/system/arcagent-runtime-stack.service <<SERVICEEOF
 [Unit]
 Description=ArcAgent runtime sidecars (Redis/SonarQube)
 After=network-online.target docker.service
@@ -260,7 +269,7 @@ Wants=network-online.target docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/arcagent/runtime
-ExecStart=/usr/local/bin/arcagent-compose -f /opt/arcagent/runtime/docker-compose.yml up -d
+ExecStart=/usr/local/bin/arcagent-compose -f /opt/arcagent/runtime/docker-compose.yml up -d $RUNTIME_SERVICES
 ExecStop=/usr/local/bin/arcagent-compose -f /opt/arcagent/runtime/docker-compose.yml down
 TimeoutStartSec=300
 TimeoutStopSec=120
@@ -273,23 +282,17 @@ systemctl daemon-reload
 systemctl enable arcagent-runtime-stack
 systemctl start arcagent-runtime-stack
 
-/usr/local/bin/arcagent-compose -f /opt/arcagent/runtime/docker-compose.yml up -d redis
-/usr/local/bin/arcagent-compose -f /opt/arcagent/runtime/docker-compose.yml ps redis
-if [ "$ENABLE_SONARQUBE" = "true" ]; then
-  /usr/local/bin/arcagent-compose -f /opt/arcagent/runtime/docker-compose.yml up -d sonarqube-db sonarqube
-fi
+systemctl is-active --quiet arcagent-runtime-stack
+/usr/local/bin/arcagent-compose -f /opt/arcagent/runtime/docker-compose.yml ps
 
 # ---------------------------------------------------------------------------
-# 7. Create worker user and directories
+# 5. Create worker user and directories
 # ---------------------------------------------------------------------------
 echo ">>> Setting up worker user and directories..."
 
 # Create arcagent user (no fixed UID — UID 1000 is typically taken by 'ubuntu')
 if ! id -u arcagent &>/dev/null; then
   useradd -m -s /bin/bash arcagent
-fi
-if [ "$RUNS_EXECUTOR" = "true" ]; then
-  usermod -aG kvm arcagent 2>/dev/null || true
 fi
 
 # Process backend execution user (used in dedicated attempt VM mode)
@@ -307,45 +310,32 @@ iptables -C OUTPUT -m owner --uid-owner agent -d 169.254.169.254/32 -j REJECT 2>
 mkdir -p /etc/iptables
 iptables-save > /etc/iptables/rules.v4
 
-if [ "$RUNS_EXECUTOR" = "true" ]; then
-  # Firecracker directories
-  mkdir -p /var/lib/firecracker/rootfs
-  mkdir -p /var/lib/firecracker/kernel
-  chown -R arcagent:arcagent /var/lib/firecracker
-fi
-
 # Worker application directory
 mkdir -p /opt/arcagent
 chown -R arcagent:arcagent /opt/arcagent
 
 # ---------------------------------------------------------------------------
-# 8. Deploy provisioning scripts from repo (or pre-baked AMI)
+# 6. Deploy provisioning scripts from repo (or pre-baked AMI)
 # ---------------------------------------------------------------------------
 echo ">>> Deploying provisioning scripts..."
 mkdir -p /opt/arcagent/scripts
-SCRIPT_NAMES=(setup-worker.sh install-firecracker.sh detect-host-url.sh build-rootfs.sh)
+SCRIPT_NAMES=(setup-worker.sh detect-host-url.sh)
 for script in "$${SCRIPT_NAMES[@]}"; do
-  if aws s3 cp "s3://$ROOTFS_BUCKET/scripts/$${script}" "/opt/arcagent/scripts/$${script}" --region "$AWS_REGION" --quiet; then
+  if aws s3 cp "s3://$ARTIFACT_BUCKET/scripts/$${script}" "/opt/arcagent/scripts/$${script}" --region "$AWS_REGION" --quiet; then
     chmod 755 "/opt/arcagent/scripts/$${script}"
   else
-    echo "ERROR: Missing provisioning script s3://$ROOTFS_BUCKET/scripts/$${script}"
+    echo "ERROR: Missing provisioning script s3://$ARTIFACT_BUCKET/scripts/$${script}"
     exit 1
   fi
 done
 chown -R root:root /opt/arcagent/scripts
 echo "Provisioning scripts downloaded to /opt/arcagent/scripts."
 
-if [ "$RUNS_EXECUTOR" = "true" ]; then
-  # Install Firecracker + Jailer once install-firecracker.sh is available.
-  echo ">>> Installing Firecracker v$FIRECRACKER_VERSION..."
-  bash /opt/arcagent/scripts/install-firecracker.sh "$FIRECRACKER_VERSION"
-fi
-
 # Optional: deploy worker build artifact from S3
 if [ -n "$WORKER_ARTIFACT_S3_KEY" ]; then
-  echo ">>> Downloading worker artifact s3://$ROOTFS_BUCKET/$WORKER_ARTIFACT_S3_KEY..."
+  echo ">>> Downloading worker artifact s3://$ARTIFACT_BUCKET/$WORKER_ARTIFACT_S3_KEY..."
   mkdir -p /opt/arcagent/worker
-  if aws s3 cp "s3://$ROOTFS_BUCKET/$WORKER_ARTIFACT_S3_KEY" /tmp/worker-build.tar.gz --region "$AWS_REGION"; then
+  if aws s3 cp "s3://$ARTIFACT_BUCKET/$WORKER_ARTIFACT_S3_KEY" /tmp/worker-build.tar.gz --region "$AWS_REGION"; then
     tar -xzf /tmp/worker-build.tar.gz -C /opt/arcagent/worker
     chown -R arcagent:arcagent /opt/arcagent/worker
     rm -f /tmp/worker-build.tar.gz
@@ -361,163 +351,8 @@ else
   echo "No worker artifact key configured (worker_artifact_s3_key)."
 fi
 
-if [ "$RUNS_EXECUTOR" = "true" ]; then
-  # ---------------------------------------------------------------------------
-  # 9. Download pre-built rootfs images from S3
-  # ---------------------------------------------------------------------------
-  echo ">>> Downloading pre-built rootfs images from s3://$ROOTFS_BUCKET/$ROOTFS_VERSION/..."
-  ROOTFS_IMAGES=(base node-20 python-312 rust-stable go-122 java-21)
-  ROOTFS_DOWNLOAD_FAILED=false
-  BUILT_ROOTFS_IMAGES=()
-  MIN_VSOCK_AGENT_BYTES=32768
-
-validate_rootfs_image() {
-  local ext4_path="$1"
-  local image_name="$2"
-  local stat_out size
-
-  if ! stat_out=$(debugfs -R "stat /usr/local/bin/vsock-agent" "$ext4_path" 2>/dev/null); then
-    echo "  ERROR: $image_name.ext4 missing /usr/local/bin/vsock-agent"
-    return 1
-  fi
-  size=$(echo "$stat_out" | awk '/Size:/{print $2; exit}')
-  if [ -z "$size" ] || [ "$size" -lt "$MIN_VSOCK_AGENT_BYTES" ]; then
-    echo "  ERROR: $image_name.ext4 has invalid vsock-agent size ($size bytes)"
-    return 1
-  fi
-  return 0
-}
-
-for img in "$${ROOTFS_IMAGES[@]}"; do
-  dest="/var/lib/firecracker/rootfs/$${img}.ext4"
-  if [ -f "$dest" ]; then
-    echo "  $${img}.ext4 already exists — validating"
-    if ! validate_rootfs_image "$dest" "$img"; then
-      echo "  WARNING: Existing $${img}.ext4 failed validation; deleting"
-      rm -f "$dest"
-      ROOTFS_DOWNLOAD_FAILED=true
-    else
-      echo "  Existing $${img}.ext4 passed validation"
-      continue
-    fi
-  fi
-
-  if [ -f "$dest" ]; then
-    continue
-  fi
-
-  echo "  Downloading $${img}.ext4.zst..."
-  if aws s3 cp "s3://$ROOTFS_BUCKET/$ROOTFS_VERSION/$${img}.ext4.zst" "/tmp/$${img}.ext4.zst" \
-       --region "$AWS_REGION" --quiet; then
-    echo "  Decompressing $${img}.ext4.zst..."
-    zstd -d --rm "/tmp/$${img}.ext4.zst" -o "$dest"
-    if validate_rootfs_image "$dest" "$img"; then
-      chown arcagent:arcagent "$dest"
-      echo "  Done: $${img}.ext4 ($(du -h "$dest" | cut -f1))"
-    else
-      rm -f "$dest"
-      ROOTFS_DOWNLOAD_FAILED=true
-      echo "  WARNING: Discarded invalid $${img}.ext4"
-    fi
-  else
-    echo "  WARNING: Failed to download $${img}.ext4.zst from S3"
-    ROOTFS_DOWNLOAD_FAILED=true
-  fi
-done
-
-if [ "$ROOTFS_DOWNLOAD_FAILED" = "true" ]; then
-  echo "WARNING: Some rootfs images failed to download."
-  echo "Falling back to local build if build-rootfs.sh is available..."
-  if [ -f /opt/arcagent/scripts/build-rootfs.sh ]; then
-    bash /opt/arcagent/scripts/build-rootfs.sh
-    for img in "$${ROOTFS_IMAGES[@]}"; do
-      if [ -f "/var/lib/firecracker/rootfs/$${img}.ext4" ]; then
-        if validate_rootfs_image "/var/lib/firecracker/rootfs/$${img}.ext4" "$img"; then
-          BUILT_ROOTFS_IMAGES+=("$${img}")
-        else
-          rm -f "/var/lib/firecracker/rootfs/$${img}.ext4"
-        fi
-      fi
-    done
-  else
-    echo "ERROR: No rootfs images available and no build script found."
-    echo "Upload images to S3 first: bash infra/rootfs/build-and-upload.sh $ROOTFS_BUCKET $ROOTFS_VERSION"
-  fi
-fi
-
-for img in "$${ROOTFS_IMAGES[@]}"; do
-  if [ ! -f "/var/lib/firecracker/rootfs/$${img}.ext4" ]; then
-    echo "ERROR: Required rootfs image missing after hydration/build: $${img}.ext4"
-    exit 1
-  fi
-done
-
-if [ "$ROOTFS_UPLOAD_ON_BOOT" = "true" ] && [ "$${#BUILT_ROOTFS_IMAGES[@]}" -gt 0 ]; then
-  echo ">>> Uploading locally-built rootfs images to s3://$ROOTFS_BUCKET/$ROOTFS_VERSION/ ..."
-  for img in "$${BUILT_ROOTFS_IMAGES[@]}"; do
-    ext4_path="/var/lib/firecracker/rootfs/$${img}.ext4"
-    s3_key="$ROOTFS_VERSION/$${img}.ext4.zst"
-
-    if aws s3api head-object --bucket "$ROOTFS_BUCKET" --key "$s3_key" --region "$AWS_REGION" >/dev/null 2>&1; then
-      echo "  $${img}.ext4.zst already exists in S3 - skipping upload"
-      continue
-    fi
-
-    tmp_zst="/tmp/$${img}.ext4.zst"
-    echo "  Compressing $ext4_path ..."
-    zstd -3 -f "$ext4_path" -o "$tmp_zst"
-
-    echo "  Uploading s3://$ROOTFS_BUCKET/$s3_key ..."
-    aws s3 cp "$tmp_zst" "s3://$ROOTFS_BUCKET/$s3_key" --region "$AWS_REGION"
-    rm -f "$tmp_zst"
-  done
-fi
-
-  echo "Rootfs images in /var/lib/firecracker/rootfs/:"
-  ls -lh /var/lib/firecracker/rootfs/ 2>/dev/null || echo "  (empty)"
-
-  # ---------------------------------------------------------------------------
-  # 10. Download vmlinux kernel
-  # ---------------------------------------------------------------------------
-  echo ">>> Downloading Firecracker kernel..."
-  KERNEL_PATH="/var/lib/firecracker/vmlinux"
-  if [ ! -f "$KERNEL_PATH" ]; then
-    # Kernels are hosted in the Firecracker CI S3 bucket, not in GitHub releases.
-    # Use the major.minor version to find the right CI prefix (e.g. 1.10.1 → v1.10).
-    FC_MAJOR_MINOR=$(echo "$FIRECRACKER_VERSION" | cut -d. -f1,2)
-    KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v$${FC_MAJOR_MINOR}/x86_64/vmlinux-6.1.102"
-    echo "  Kernel URL: $KERNEL_URL"
-    curl -fsSL -o "$KERNEL_PATH" "$KERNEL_URL" || {
-      echo "WARNING: Could not download kernel from CI bucket. Trying 5.10 series..."
-      curl -fsSL -o "$KERNEL_PATH" \
-        "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v$${FC_MAJOR_MINOR}/x86_64/vmlinux-5.10.223" || {
-        echo "ERROR: Failed to download vmlinux kernel. Provide it manually at $KERNEL_PATH"
-      }
-    }
-    [ -f "$KERNEL_PATH" ] && chown arcagent:arcagent "$KERNEL_PATH"
-  fi
-fi
-
 # ---------------------------------------------------------------------------
-# 11. Configure Squid (for hardened egress, if enabled)
-# ---------------------------------------------------------------------------
-if [ "$RUNS_EXECUTOR" = "true" ] && [ "$HARDEN_EGRESS" = "true" ]; then
-  echo ">>> Configuring Squid for egress filtering..."
-  mkdir -p /etc/squid/ssl_cert
-  # Generate a self-signed CA for SSL bumping (VMs trust this CA)
-  if [ ! -f /etc/squid/ssl_cert/myCA.pem ]; then
-    openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
-      -subj "/C=US/ST=CA/O=ArcAgent/CN=ArcAgent Egress CA" \
-      -keyout /etc/squid/ssl_cert/myCA.key \
-      -out /etc/squid/ssl_cert/myCA.pem
-    cat /etc/squid/ssl_cert/myCA.key /etc/squid/ssl_cert/myCA.pem > /etc/squid/ssl_cert/myCA-combined.pem
-    chown proxy:proxy /etc/squid/ssl_cert/*
-    chmod 600 /etc/squid/ssl_cert/myCA.key
-  fi
-fi
-
-# ---------------------------------------------------------------------------
-# 12. Write worker environment file
+# 7. Write worker environment file
 # ---------------------------------------------------------------------------
 echo ">>> Writing worker environment config..."
 cat > /opt/arcagent/worker.env <<ENVEOF
@@ -539,7 +374,7 @@ WORKER_ROUTE53_ZONE=$ROUTE53_ZONE_NAME
 WORKER_DNS_NAME=$WORKER_DNS_NAME
 
 # -------------------------------------------------------
-# VM capacity
+# Workspace capacity
 # -------------------------------------------------------
 MAX_DEV_VMS=$MAX_DEV_VMS
 WARM_POOL_SIZE=$WARM_POOL_SIZE
@@ -548,21 +383,12 @@ WORKER_CONCURRENCY=$WORKER_CONCURRENCY
 WORKSPACE_IDLE_TIMEOUT_MS=$WORKSPACE_IDLE_TIMEOUT_MS
 
 # -------------------------------------------------------
-# Firecracker / VM configuration
+# Execution backend configuration
 # -------------------------------------------------------
 WORKER_ROLE=$WORKER_ROLE
 WORKER_EXECUTION_BACKEND=firecracker
 WORKSPACE_ISOLATION_MODE=shared_worker
-FC_USE_VSOCK=true
-FC_HARDEN_EGRESS=$HARDEN_EGRESS
-FC_VSOCK_INIT_PATH=/usr/local/bin/vsock-agent
-FC_VALIDATE_VSOCK_ROOTFS=true
-FIRECRACKER_BIN=/usr/local/bin/firecracker
-JAILER_BIN=/usr/local/bin/jailer
-FC_KERNEL_IMAGE=/var/lib/firecracker/vmlinux
-FC_ROOTFS_DIR=/var/lib/firecracker/rootfs
-FC_JAILER_UID=$(id -u arcagent)
-FC_JAILER_GID=$(id -g arcagent)
+PROCESS_BACKEND_EXEC_USER=agent
 
 # -------------------------------------------------------
 # Runtime
@@ -593,13 +419,13 @@ chown arcagent:arcagent /opt/arcagent/worker.env
 chmod 600 /opt/arcagent/worker.env
 
 # ---------------------------------------------------------------------------
-# 13. Set up worker systemd service
+# 8. Set up worker systemd service
 # ---------------------------------------------------------------------------
 echo ">>> Configuring systemd service..."
 bash /opt/arcagent/scripts/setup-worker.sh
 
 # ---------------------------------------------------------------------------
-# 14. Start the worker
+# 9. Start the worker
 # ---------------------------------------------------------------------------
 echo ">>> Starting arcagent-worker service..."
 systemctl daemon-reload

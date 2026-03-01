@@ -47,7 +47,7 @@ resource "aws_iam_role_policy_attachment" "worker_ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-# ECR read access for pulling rootfs images (if stored in ECR)
+# ECR read access for pulling worker/runtime images if needed
 resource "aws_iam_role_policy" "worker_ecr" {
   name = "arcagent-worker-ecr-${var.environment}"
   role = aws_iam_role.worker.id
@@ -68,7 +68,7 @@ resource "aws_iam_role_policy" "worker_ecr" {
   })
 }
 
-# S3 read access for downloading pre-built rootfs images
+# S3 access for bootstrap scripts and worker artifacts
 resource "aws_iam_role_policy" "worker_s3_rootfs" {
   name = "arcagent-worker-s3-rootfs-${var.environment}"
   role = aws_iam_role.worker.id

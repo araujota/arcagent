@@ -45,7 +45,22 @@ export function registerRegisterAccount(server: McpServer): void {
           },
         );
 
-        const configSnippet = JSON.stringify(
+        const remoteConfigSnippet = JSON.stringify(
+          {
+            mcpServers: {
+              arcagent: {
+                url: "https://mcp.arcagent.dev",
+                headers: {
+                  Authorization: `Bearer ${result.apiKey}`,
+                },
+              },
+            },
+          },
+          null,
+          2,
+        );
+
+        const selfHostConfigSnippet = JSON.stringify(
           {
             mcpServers: {
               arcagent: {
@@ -73,14 +88,19 @@ export function registerRegisterAccount(server: McpServer): void {
                 "",
                 "IMPORTANT: Store this API key securely. It will NOT be shown again.",
                 "",
-                "To use this key with Claude Desktop, add this to your `claude_desktop_config.json`:",
+                "Use either MCP connection mode:",
+                "",
+                "Hosted remote MCP (server URL: https://mcp.arcagent.dev):",
                 "",
                 "```json",
-                configSnippet,
+                remoteConfigSnippet,
                 "```",
                 "",
-                "For HTTP transport, set the Authorization header:",
-                `\`Authorization: Bearer ${result.apiKey}\``,
+                "Self-host local MCP (Claude Desktop stdio):",
+                "",
+                "```json",
+                selfHostConfigSnippet,
+                "```",
               ].join("\n"),
             },
           ],
