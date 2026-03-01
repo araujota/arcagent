@@ -42,6 +42,7 @@ import { registerWorkspaceGrep } from "./tools/workspaceGrep";
 import { registerWorkspaceApplyPatch } from "./tools/workspaceApplyPatch";
 import { registerWorkspaceCrashReports } from "./tools/workspaceCrashReports";
 import { registerCheckWorkerStatus } from "./tools/checkWorkerStatus";
+import { registerWorkerHealth } from "./tools/workerHealth";
 import { registerTestBounty } from "./tools/testBounty";
 import { registerWorkspaceStartupLog } from "./tools/workspaceStartupLog";
 
@@ -58,7 +59,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
 
   const server = new McpServer({
     name: "arcagent",
-    version: "0.1.11",
+    version: "0.1.12",
   });
 
   // Registration tool (available without pre-existing credentials)
@@ -112,6 +113,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
     registerWorkspaceApplyPatch(server);
     registerWorkspaceCrashReports(server);
     registerCheckWorkerStatus(server);
+    registerWorkerHealth(server);
     registerWorkspaceStartupLog(server);
   }
 

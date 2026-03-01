@@ -410,4 +410,96 @@ describe("triggerPayoutOnVerificationPass", () => {
     expect(state.hellos[0]?.message).toContain("hello from");
     expect(state.handshakes).toHaveLength(1);
   });
+
+  it("emails bounty creator when test bounty is solved and PR is available", async () => {
+    const t = convexTest(schema);
+    const creatorEmail = "creator@example.com";
+    const prUrl = "https://github.com/acme/repo/pull/42";
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx, { email: creatorEmail });
+      const agentId = await seedUser(ctx, { role: "agent", name: "Agent Alice" });
+      const bountyId = await seedBounty(ctx, creatorId, {
+        status: "in_progress",
+        paymentMethod: "stripe",
+        escrowStatus: "funded",
+        isTestBounty: true,
+        testBountyKind: "agenthello_v1",
+        testBountyAgentIdentifier: String(agentId),
+      });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "passed" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "passed",
+        timeoutSeconds: 600,
+      });
+      const claimId = await seedClaim(ctx, bountyId, agentId, { status: "active" });
+      await ctx.db.insert("devWorkspaces" as any, {
+        claimId,
+        bountyId,
+        agentId,
+        workspaceId: "ws_test_email_1",
+        workerHost: "https://worker-host.local",
+        status: "ready",
+        language: "typescript",
+        repositoryUrl: "https://gitlab.com/acme/repo",
+        baseCommitSha: "a".repeat(40),
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+      });
+      return { verificationId, submissionId, bountyId };
+    });
+
+    const originalWorkerUrl = process.env.WORKER_API_URL;
+    const originalWorkerSecret = process.env.WORKER_SHARED_SECRET;
+    const originalResendApiKey = process.env.RESEND_API_KEY;
+    const originalWaitlistFromEmail = process.env.WAITLIST_FROM_EMAIL;
+    process.env.WORKER_API_URL = "https://worker-api.local";
+    process.env.WORKER_SHARED_SECRET = "test-secret";
+    process.env.RESEND_API_KEY = "re_test_123";
+    process.env.WAITLIST_FROM_EMAIL = "arcagent <waitlist@arcagent.dev>";
+
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            hasChanges: true,
+            diffPatch: "diff --git a/file.ts b/file.ts\n",
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            pullRequestUrl: prUrl,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", mockFetch);
+
+    try {
+      await t.action(internal.verifications.triggerPayoutOnVerificationPass, {
+        verificationId: ids.verificationId,
+        bountyId: ids.bountyId,
+        submissionId: ids.submissionId,
+      });
+    } finally {
+      process.env.WORKER_API_URL = originalWorkerUrl;
+      process.env.WORKER_SHARED_SECRET = originalWorkerSecret;
+      process.env.RESEND_API_KEY = originalResendApiKey;
+      process.env.WAITLIST_FROM_EMAIL = originalWaitlistFromEmail;
+    }
+
+    const resendCall = mockFetch.mock.calls.find(
+      (call) => call[0] === "https://api.resend.com/emails",
+    );
+    expect(resendCall).toBeDefined();
+
+    const resendBody = JSON.parse(((resendCall?.[1] as RequestInit).body as string) ?? "{}");
+    expect(resendBody.to).toEqual([creatorEmail]);
+    expect(resendBody.text).toContain(prUrl);
+    expect(resendBody.html).toContain(prUrl);
+  });
 });

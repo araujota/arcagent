@@ -57,6 +57,7 @@ import { TierBadge } from "@/components/shared/tier-badge";
 import { StarRating } from "@/components/shared/star-rating";
 import { AgentRatingDialog } from "@/components/bounties/agent-rating-dialog";
 import type { TierLevel } from "@/lib/constants/tiers";
+import { useProductAnalytics } from "@/lib/analytics";
 
 function SubmitSolutionDialog({
   bountyId,
@@ -216,8 +217,10 @@ function CancelBountyDialog({
 
 function FundEscrowButton({
   bountyId,
+  onFunded,
 }: {
   bountyId: Id<"bounties">;
+  onFunded?: () => void;
 }) {
   const fundEscrow = useAction(api.stripe.fundEscrow);
   const [funding, setFunding] = useState(false);
@@ -227,6 +230,7 @@ function FundEscrowButton({
     try {
       await fundEscrow({ bountyId });
       toast.success("Escrow funded successfully!");
+      onFunded?.();
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Failed to fund escrow"
@@ -247,9 +251,11 @@ function FundEscrowButton({
 function PublishDraftButton({
   bountyId,
   escrowStatus,
+  onPublished,
 }: {
   bountyId: Id<"bounties">;
   escrowStatus?: string;
+  onPublished?: () => void;
 }) {
   const updateStatus = useMutation(api.bounties.updateStatus);
   const [publishing, setPublishing] = useState(false);
@@ -261,6 +267,7 @@ function PublishDraftButton({
     try {
       await updateStatus({ bountyId, status: "active" });
       toast.success("Bounty published!");
+      onPublished?.();
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Failed to publish bounty"
@@ -346,6 +353,7 @@ export default function BountyDetailPage() {
   const params = useParams();
   const bountyId = params.id as Id<"bounties">;
   const { user } = useCurrentUser();
+  const trackEvent = useProductAnalytics();
   const [nowMs, setNowMs] = useState<number | null>(null);
 
   const bounty = useQuery(api.bounties.getById, { bountyId });
@@ -354,6 +362,10 @@ export default function BountyDetailPage() {
   const repoConnection = useQuery(api.repoConnections.getByBountyId, { bountyId });
   const repoMap = useQuery(api.repoMaps.getByBountyId, { bountyId });
   const existingRating = useQuery(api.agentRatings.getByBounty, { bountyId });
+  const myActiveClaim = useQuery(
+    api.bountyClaims.getMyActiveClaimForBounty,
+    user ? { bountyId } : "skip"
+  );
 
   useEffect(() => {
     setNowMs(Date.now());
@@ -388,6 +400,18 @@ export default function BountyDetailPage() {
 
   const publicTests = testSuites?.filter((s) => s.visibility === "public");
   const hiddenTests = testSuites?.filter((s) => s.visibility === "hidden");
+  const isCreator = !!user && bounty.creatorId === user._id;
+  const canAttemptSubmit =
+    !!user &&
+    !isCreator &&
+    (bounty.status === "active" || bounty.status === "in_progress");
+  const hasMyActiveClaim = myActiveClaim?.hasActiveClaim === true;
+  const showClaimPrerequisite = canAttemptSubmit && myActiveClaim !== undefined && !hasMyActiveClaim;
+
+  useEffect(() => {
+    if (!showClaimPrerequisite) return;
+    trackEvent("submit_blocked_no_claim", { bountyId });
+  }, [showClaimPrerequisite, trackEvent, bountyId]);
 
   return (
     <div className="space-y-6">
@@ -450,17 +474,30 @@ export default function BountyDetailPage() {
 
         <div className="flex items-center gap-2">
           <ShareBountyButton bountyId={bountyId} />
-          {user && bounty.creatorId === user._id && bounty.status === "draft" && bounty.escrowStatus !== "funded" && (
-            <FundEscrowButton bountyId={bountyId} />
+          {isCreator && bounty.status === "draft" && bounty.escrowStatus !== "funded" && (
+            <FundEscrowButton
+              bountyId={bountyId}
+              onFunded={() => trackEvent("bounty_escrow_funded", { bountyId })}
+            />
           )}
-          {user && bounty.creatorId === user._id && bounty.status === "draft" && (
-            <PublishDraftButton bountyId={bountyId} escrowStatus={bounty.escrowStatus} />
+          {isCreator && bounty.status === "draft" && (
+            <PublishDraftButton
+              bountyId={bountyId}
+              escrowStatus={bounty.escrowStatus}
+              onPublished={() => trackEvent("bounty_published", { bountyId })}
+            />
           )}
-          {user && bounty.creatorId !== user._id && bounty.status === "active" && (
+          {!isCreator && canAttemptSubmit && hasMyActiveClaim && (
             <SubmitSolutionDialog bountyId={bountyId} />
           )}
+          {!isCreator && canAttemptSubmit && myActiveClaim !== undefined && !hasMyActiveClaim && (
+            <Button variant="secondary" disabled title="Claim this bounty via MCP first">
+              <Send className="h-4 w-4 mr-2" />
+              Submit Solution
+            </Button>
+          )}
           {user &&
-            bounty.creatorId === user._id &&
+            isCreator &&
             bounty.status !== "completed" &&
             bounty.status !== "cancelled" && (
               <CancelBountyDialog
@@ -470,6 +507,53 @@ export default function BountyDetailPage() {
             )}
         </div>
       </div>
+
+      {isCreator && (
+        <Card className="border-dashed">
+          <CardContent className="py-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <p className="text-sm font-medium">Publishing Progress</p>
+              <div className="flex items-center gap-2 text-xs">
+                <Badge variant="secondary">Draft</Badge>
+                <span className={bounty.escrowStatus === "funded" ? "text-foreground" : "text-muted-foreground"}>
+                  Escrow {bounty.escrowStatus === "funded" ? "Funded" : "Unfunded"}
+                </span>
+                <span className={bounty.status !== "draft" ? "text-foreground" : "text-muted-foreground"}>
+                  {bounty.status !== "draft" ? "Published" : "Not published"}
+                </span>
+              </div>
+            </div>
+            {bounty.status === "draft" && (
+              <p className="text-xs text-muted-foreground mt-2">
+                Next steps: fund escrow, then publish this draft so agents can claim it.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {showClaimPrerequisite && (
+        <Card className="border-amber-200 bg-amber-50/60">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Claim required before submitting</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            <p className="text-muted-foreground">
+              Submissions are allowed only for agents with an active claim on this bounty.
+            </p>
+            <div className="rounded bg-background/70 border px-3 py-2 font-mono text-xs">
+              list_bounties → get_bounty_details → claim_bounty
+            </div>
+            <Link
+              href="/docs?tab=agent#agent-claiming-workflow"
+              className="text-primary underline"
+              onClick={() => trackEvent("agent_docs_opened_from_bounty", { bountyId })}
+            >
+              Open claim workflow docs
+            </Link>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Refund status for cancelled bounties */}
       {bounty.status === "cancelled" && bounty.escrowStatus && (

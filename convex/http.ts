@@ -238,6 +238,14 @@ function verifyMcpSecret(request: Request): boolean {
   return constantTimeEqual(token, secret);
 }
 
+function verifyMcpAuditToken(request: Request): boolean {
+  const token = process.env.MCP_AUDIT_LOG_TOKEN;
+  if (!token) return false;
+  const header = request.headers.get("authorization");
+  if (!header || !header.startsWith("Bearer ")) return false;
+  return constantTimeEqual(header.slice("Bearer ".length), token);
+}
+
 // ---------------------------------------------------------------------------
 // Dual auth: shared secret (self-hosted) OR API key (npx users)
 // ---------------------------------------------------------------------------
@@ -431,6 +439,128 @@ async function isBountyCreator(
 // Supports two paths:
 // 1. Shared secret + keyHash in body (existing self-hosted mode)
 // 2. Bearer arc_... token directly (npx mode — hashes server-side)
+http.route({
+  path: "/api/mcp/logs/ingest",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!process.env.MCP_AUDIT_LOG_TOKEN) {
+      return mcpError("MCP audit logging ingestion is disabled", 503);
+    }
+    if (!verifyMcpAuditToken(request)) return mcpUnauthorized();
+
+    const body = await request.json();
+    const parsed = body as {
+      source?: string;
+      level?: "info" | "warning" | "error";
+      eventType?: string;
+      message?: string;
+      requestId?: string;
+      agentId?: string;
+      bountyId?: string;
+      claimId?: string;
+      submissionId?: string;
+      verificationId?: string;
+      workspaceId?: string;
+      sessionId?: string;
+      path?: string;
+      method?: string;
+      statusCode?: number;
+      durationMs?: number;
+      detailsJson?: string;
+      createdAt?: number;
+    };
+
+    if (!parsed.source || !parsed.level || !parsed.eventType || !parsed.message) {
+      return mcpError("Missing required log payload fields");
+    }
+
+    const mcpAuditLogsApi = internal as unknown as {
+      mcpAuditLogs: {
+        insert: unknown;
+        searchInternal: unknown;
+      };
+    };
+
+    await ctx.runMutation(mcpAuditLogsApi.mcpAuditLogs.insert as never, {
+      source: parsed.source,
+      level: parsed.level,
+      eventType: parsed.eventType,
+      message: parsed.message,
+      requestId: parsed.requestId,
+      agentId: parsed.agentId,
+      bountyId: parsed.bountyId,
+      claimId: parsed.claimId,
+      submissionId: parsed.submissionId,
+      verificationId: parsed.verificationId,
+      workspaceId: parsed.workspaceId,
+      sessionId: parsed.sessionId,
+      path: parsed.path,
+      method: parsed.method,
+      statusCode: parsed.statusCode,
+      durationMs: parsed.durationMs,
+      detailsJson: parsed.detailsJson,
+      createdAt: parsed.createdAt,
+    });
+
+    return mcpJson({ ok: true });
+  }),
+});
+
+http.route({
+  path: "/api/mcp/logs/search",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
+
+    const body = await request.json();
+    const parsed = body as {
+      requestId?: string;
+      agentId?: string;
+      bountyId?: string;
+      claimId?: string;
+      submissionId?: string;
+      verificationId?: string;
+      workspaceId?: string;
+      eventType?: string;
+      level?: "info" | "warning" | "error";
+      limit?: number;
+    };
+
+    let effectiveAgentId = parsed.agentId;
+    if (auth.authMethod === "api_key" && auth.userId) {
+      const user = await ctx.runQuery(internal.users.getByIdInternal, {
+        userId: auth.userId as Id<"users">,
+      });
+      if (user?.role !== "admin") {
+        effectiveAgentId = auth.userId;
+      }
+    }
+
+    const mcpAuditLogsApi = internal as unknown as {
+      mcpAuditLogs: {
+        insert: unknown;
+        searchInternal: unknown;
+      };
+    };
+
+    const logs = await ctx.runQuery(mcpAuditLogsApi.mcpAuditLogs.searchInternal as never, {
+      requestId: parsed.requestId,
+      agentId: effectiveAgentId,
+      bountyId: parsed.bountyId,
+      claimId: parsed.claimId,
+      submissionId: parsed.submissionId,
+      verificationId: parsed.verificationId,
+      workspaceId: parsed.workspaceId,
+      eventType: parsed.eventType,
+      level: parsed.level,
+      limit: parsed.limit,
+    });
+
+    return mcpJson({ logs });
+  }),
+});
+
 http.route({
   path: "/api/mcp/auth/validate",
   method: "POST",

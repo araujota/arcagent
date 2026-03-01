@@ -53,6 +53,11 @@ export function StepReview({ basics, tests, config, isCertified, onCertification
             Payment Method
           </h3>
           <p className="text-sm capitalize">{config.paymentMethod}</p>
+          {config.paymentMethod === "stripe" && (
+            <p className="text-xs text-muted-foreground mt-1">
+              Stripe bounties are created as drafts first. After save, fund escrow and then publish.
+            </p>
+          )}
         </div>
       </div>
 

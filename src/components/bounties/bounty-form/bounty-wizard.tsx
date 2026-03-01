@@ -12,6 +12,7 @@ import { StepTests, type TestsData } from "./step-tests";
 import { StepConfig, type ConfigData } from "./step-config";
 import { StepReview } from "./step-review";
 import { RepoStatusBadge } from "@/components/bounties/repo-status-badge";
+import { useProductAnalytics } from "@/lib/analytics";
 import { toast } from "sonner";
 import { Sparkles, Loader2 } from "lucide-react";
 
@@ -29,6 +30,7 @@ interface GitHubPermissionStatus {
 
 export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
   const router = useRouter();
+  const trackEvent = useProductAnalytics();
   const createBounty = useMutation(api.bounties.create);
   const createTestSuite = useMutation(api.testSuites.create);
   const connectRepo = useAction(api.bounties.connectRepo);
@@ -168,7 +170,20 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
       }
 
       clearWizardState();
-      toast.success(asDraft ? "Bounty saved as draft" : "Bounty published!");
+      if (asDraft) {
+        trackEvent("bounty_draft_created", {
+          bountyId,
+          paymentMethod: config.paymentMethod,
+        });
+        toast.success(
+          config.paymentMethod === "stripe"
+            ? "Draft saved. Next: fund escrow, then publish."
+            : "Draft saved."
+        );
+      } else {
+        trackEvent("bounty_published", { bountyId });
+        toast.success("Bounty published!");
+      }
       router.push(`/bounties/${bountyId}`);
     } catch (error) {
       toast.error(
@@ -417,7 +432,7 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
                   >
                     {isSubmitting
                       ? config.paymentMethod === "stripe" ? "Saving..." : "Publishing..."
-                      : config.paymentMethod === "stripe" ? "Save & Fund" : "Publish Bounty"}
+                      : config.paymentMethod === "stripe" ? "Save Draft" : "Publish Bounty"}
                   </Button>
                 </>
               ) : (

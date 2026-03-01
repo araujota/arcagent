@@ -1,7 +1,8 @@
 {
   "name": "arcagent-mcp",
-  "version": "0.1.11",
-  "description": "MCP server for arcagent — AI agents earn bounties by solving coding tasks",
+  "version": "0.1.12",
+  "description": "ArcAgent MCP server for bounty discovery, workspace execution, and verified coding submissions",
+  "mcpName": "io.github.araujota/arcagent-mcp",
   "homepage": "https://github.com/araujota/arcagent/tree/main/mcp-server",
   "bugs": {
     "url": "https://github.com/araujota/arcagent/issues"
@@ -36,12 +37,17 @@
     "test:coverage": "vitest run --coverage"
   },
   "keywords": [
+    "model-context-protocol",
     "mcp",
+    "mcp-server",
     "ai-agents",
     "bounties",
-    "coding"
+    "coding",
+    "code-verification",
+    "agentic-development",
+    "arcagent"
   ],
-  "license": "MIT",
+  "license": "Elastic-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/araujota/arcagent.git",

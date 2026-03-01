@@ -1,0 +1,317 @@
+name: Deploy Main Surfaces
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      convex: ${{ steps.filter.outputs.convex }}
+      mcp: ${{ steps.filter.outputs.mcp }}
+      worker: ${{ steps.filter.outputs.worker }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed surfaces
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            convex:
+              - "convex/**"
+            mcp:
+              - "mcp-server/**"
+            worker:
+              - "worker/**"
+
+  deploy-convex:
+    name: Deploy Convex
+    needs: detect-changes
+    if: needs.detect-changes.outputs.convex == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy Convex (prod)
+        run: npx convex deploy -y --typecheck=disable
+
+  deploy-mcp-fargate:
+    name: Deploy MCP to Fargate
+    needs: detect-changes
+    if: needs.detect-changes.outputs.mcp == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      MCP_ECR_REPOSITORY: ${{ vars.MCP_ECR_REPOSITORY }}
+      MCP_ECS_CLUSTER: ${{ vars.MCP_ECS_CLUSTER }}
+      MCP_ECS_SERVICE: ${{ vars.MCP_ECS_SERVICE }}
+      MCP_ECS_CONTAINER_NAME: ${{ vars.MCP_ECS_CONTAINER_NAME || 'mcp-server' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve image tags
+        id: image
+        run: |
+          set -euo pipefail
+          if [[ -z "${MCP_ECR_REPOSITORY}" ]]; then
+            echo "MCP_ECR_REPOSITORY is not configured"; exit 1
+          fi
+          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+          IMAGE_URI="${REGISTRY}/${MCP_ECR_REPOSITORY}:sha-${GITHUB_SHA}"
+          MAIN_URI="${REGISTRY}/${MCP_ECR_REPOSITORY}:main"
+          echo "uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+          echo "main_uri=${MAIN_URI}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push MCP image
+        uses: docker/build-push-action@v6
+        with:
+          context: mcp-server
+          file: mcp-server/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.image.outputs.uri }}
+            ${{ steps.image.outputs.main_uri }}
+
+      - name: Roll ECS service
+        run: |
+          set -euo pipefail
+          if [[ -z "${MCP_ECS_CLUSTER}" || -z "${MCP_ECS_SERVICE}" ]]; then
+            echo "MCP_ECS_CLUSTER and MCP_ECS_SERVICE are required"; exit 1
+          fi
+
+          CURRENT_TASK_DEF_ARN="$(aws ecs describe-services \
+            --cluster "${MCP_ECS_CLUSTER}" \
+            --services "${MCP_ECS_SERVICE}" \
+            --query 'services[0].taskDefinition' \
+            --output text)"
+
+          aws ecs describe-task-definition \
+            --task-definition "${CURRENT_TASK_DEF_ARN}" \
+            --query 'taskDefinition' \
+            --output json > task-def.json
+
+          jq --arg IMAGE "${{ steps.image.outputs.uri }}" --arg NAME "${MCP_ECS_CONTAINER_NAME}" '
+            .containerDefinitions |= map(if .name == $NAME then .image = $IMAGE else . end)
+            | del(
+                .taskDefinitionArn,
+                .revision,
+                .status,
+                .requiresAttributes,
+                .compatibilities,
+                .registeredAt,
+                .registeredBy
+              )
+          ' task-def.json > task-def-updated.json
+
+          NEW_TASK_DEF_ARN="$(aws ecs register-task-definition \
+            --cli-input-json file://task-def-updated.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)"
+
+          aws ecs update-service \
+            --cluster "${MCP_ECS_CLUSTER}" \
+            --service "${MCP_ECS_SERVICE}" \
+            --task-definition "${NEW_TASK_DEF_ARN}" \
+            --force-new-deployment >/dev/null
+
+          aws ecs wait services-stable \
+            --cluster "${MCP_ECS_CLUSTER}" \
+            --services "${MCP_ECS_SERVICE}"
+
+  publish-mcp-npm:
+    name: Publish MCP package (Trusted Publishing)
+    needs:
+      - detect-changes
+      - deploy-mcp-fargate
+    if: needs.detect-changes.outputs.mcp == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: mcp-server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            mcp-server/package-lock.json
+            worker/package-lock.json
+          registry-url: https://registry.npmjs.org
+
+      - name: Install Worker Dependencies
+        run: npm --prefix ../worker ci
+
+      - name: Install MCP Dependencies
+        run: npm ci
+
+      - name: Upgrade npm for Trusted Publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - name: Validate Package
+        run: |
+          npm test
+          npm run prepack
+          npm run pack:check
+
+      - name: Resolve publish strategy
+        id: publish_meta
+        run: |
+          set -euo pipefail
+          PKG_NAME="$(node -p "require('./package.json').name")"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            npm version prerelease --preid "main.${GITHUB_RUN_NUMBER}" --no-git-tag-version
+            NEXT_VERSION="$(node -p "require('./package.json').version")"
+            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
+            echo "publish_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+            echo "publish_version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        run: npm publish --access public --tag "${{ steps.publish_meta.outputs.npm_tag }}"
+        env:
+          NODE_AUTH_TOKEN: ""
+
+  deploy-worker:
+    name: Deploy Worker
+    needs: detect-changes
+    if: needs.detect-changes.outputs.worker == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      WORKER_ECR_REPOSITORY: ${{ vars.WORKER_ECR_REPOSITORY }}
+      WORKER_ECS_CLUSTER: ${{ vars.WORKER_ECS_CLUSTER }}
+      WORKER_ECS_SERVICE: ${{ vars.WORKER_ECS_SERVICE }}
+      WORKER_ECS_CONTAINER_NAME: ${{ vars.WORKER_ECS_CONTAINER_NAME || 'worker' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve image tags
+        id: image
+        run: |
+          set -euo pipefail
+          if [[ -z "${WORKER_ECR_REPOSITORY}" ]]; then
+            echo "WORKER_ECR_REPOSITORY is not configured"; exit 1
+          fi
+          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+          IMAGE_URI="${REGISTRY}/${WORKER_ECR_REPOSITORY}:sha-${GITHUB_SHA}"
+          MAIN_URI="${REGISTRY}/${WORKER_ECR_REPOSITORY}:main"
+          echo "uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+          echo "main_uri=${MAIN_URI}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: worker
+          file: worker/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.image.outputs.uri }}
+            ${{ steps.image.outputs.main_uri }}
+
+      - name: Roll ECS service
+        run: |
+          set -euo pipefail
+          if [[ -z "${WORKER_ECS_CLUSTER}" || -z "${WORKER_ECS_SERVICE}" ]]; then
+            echo "WORKER_ECS_CLUSTER and WORKER_ECS_SERVICE are required"; exit 1
+          fi
+
+          CURRENT_TASK_DEF_ARN="$(aws ecs describe-services \
+            --cluster "${WORKER_ECS_CLUSTER}" \
+            --services "${WORKER_ECS_SERVICE}" \
+            --query 'services[0].taskDefinition' \
+            --output text)"
+
+          aws ecs describe-task-definition \
+            --task-definition "${CURRENT_TASK_DEF_ARN}" \
+            --query 'taskDefinition' \
+            --output json > task-def.json
+
+          jq --arg IMAGE "${{ steps.image.outputs.uri }}" --arg NAME "${WORKER_ECS_CONTAINER_NAME}" '
+            .containerDefinitions |= map(if .name == $NAME then .image = $IMAGE else . end)
+            | del(
+                .taskDefinitionArn,
+                .revision,
+                .status,
+                .requiresAttributes,
+                .compatibilities,
+                .registeredAt,
+                .registeredBy
+              )
+          ' task-def.json > task-def-updated.json
+
+          NEW_TASK_DEF_ARN="$(aws ecs register-task-definition \
+            --cli-input-json file://task-def-updated.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)"
+
+          aws ecs update-service \
+            --cluster "${WORKER_ECS_CLUSTER}" \
+            --service "${WORKER_ECS_SERVICE}" \
+            --task-definition "${NEW_TASK_DEF_ARN}" \
+            --force-new-deployment >/dev/null
+
+          aws ecs wait services-stable \
+            --cluster "${WORKER_ECS_CLUSTER}" \
+            --services "${WORKER_ECS_SERVICE}"

@@ -58,6 +58,7 @@ export default function SettingsPage() {
     () => getStripeSettingsNotice(new URLSearchParams(searchParams.toString())),
     [searchParams]
   );
+  const hasActiveApiKey = (apiKeys ?? []).some((key) => key.status === "active");
 
   useEffect(() => {
     if (user) {
@@ -201,6 +202,35 @@ export default function SettingsPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle className="text-base">Account Readiness</CardTitle>
+          <CardDescription>
+            Quick status for core creator and agent setup steps.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span>Creator Billing</span>
+            <Badge variant={user?.hasPaymentMethod ? "default" : "secondary"}>
+              {user?.hasPaymentMethod ? "Configured" : "Not configured"}
+            </Badge>
+          </div>
+          <div className="flex items-center justify-between text-sm">
+            <span>Agent Payouts</span>
+            <Badge variant={user?.stripeConnectOnboardingComplete ? "default" : "secondary"}>
+              {user?.stripeConnectOnboardingComplete ? "Configured" : "Not configured"}
+            </Badge>
+          </div>
+          <div className="flex items-center justify-between text-sm">
+            <span>MCP/API Keys</span>
+            <Badge variant={hasActiveApiKey ? "default" : "secondary"}>
+              {hasActiveApiKey ? "Configured" : "Not configured"}
+            </Badge>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle className="text-base">Profile</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -302,7 +332,7 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <CreditCard className="h-4 w-4" />
-            Payment Method
+            Creator Billing
           </CardTitle>
           <CardDescription>
             Add or update your payment method for funding bounty escrows.
@@ -340,7 +370,7 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <ExternalLink className="h-4 w-4" />
-            Payout Account
+            Agent Payouts
           </CardTitle>
           <CardDescription>
             Set up your Stripe Connect account to receive bounty payouts. An 8% platform fee is deducted.
@@ -386,7 +416,7 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <Key className="h-4 w-4" />
-            API Keys
+            MCP/API Keys
           </CardTitle>
           <CardDescription>
             Manage API keys for MCP/Claude Desktop integration via

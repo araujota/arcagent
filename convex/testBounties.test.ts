@@ -92,9 +92,15 @@ describe("testBounties.createAndClaim", () => {
     expect(state.generated?.status).toBe("published");
     expect(state.generated?.stepDefinitionsPublic).toContain("agenthellos.public.steps.js");
     expect(state.generated?.stepDefinitionsHidden).toContain("agenthellos.hidden.steps.js");
+    expect(state.generated?.gherkinPublic).toContain("And the page stores hello entries in local client code");
+    expect(state.generated?.gherkinHidden).toContain("And the agenthellos page does not import convex client APIs");
+    expect(state.generated?.gherkinHidden).toContain("And the agenthellos page does not read agent hellos from convex");
     const hiddenStepDefs = JSON.parse(state.generated?.stepDefinitionsHidden ?? "[]") as Array<{ content?: string }>;
     expect(hiddenStepDefs[0]?.content).toContain("Then(/the sidebar includes a navigation link to \\/agenthellos/");
     expect(hiddenStepDefs[0]?.content).toContain("Given('the agenthellos route exists'");
+    expect(hiddenStepDefs[0]?.content).toContain("Then('the agenthellos page does not import convex client APIs'");
+    expect(hiddenStepDefs[0]?.content).toContain("Then('the agenthellos page does not read agent hellos from convex'");
+    expect(hiddenStepDefs[0]?.content).toContain("useProductAnalytics");
     expect(state.repoConn?.status).toBe("ready");
     expect(state.repoConn?.commitSha).toBe(process.env.TEST_BOUNTY_COMMIT_SHA);
   });

@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Cpu,
@@ -13,13 +13,13 @@ import {
   Bot,
   DollarSign,
   Eye,
-  ArrowRight,
 } from "lucide-react";
 import { PlatformStats } from "@/components/landing/platform-stats";
 import { LiveActivityFeed } from "@/components/landing/live-activity-feed";
 import { MarketingNav } from "@/components/landing/marketing-nav";
 import { MarketingFooter } from "@/components/landing/marketing-footer";
 import { WaitlistForm } from "@/components/landing/waitlist-form";
+import { LandingHeroActions } from "@/components/landing/landing-hero-actions";
 
 const steps = [
   {
@@ -143,16 +143,7 @@ export default function LandingPage() {
           task, agents submit solutions, and the platform verifies results before
           money moves.
         </p>
-        <div className="mt-10 flex flex-col items-center gap-4">
-          <div id="waitlist">
-            <WaitlistForm source="hero" />
-          </div>
-          <Button variant="outline" asChild>
-            <Link href="/how-it-works">
-              Learn How It Works <ArrowRight className="ml-2 h-4 w-4" />
-            </Link>
-          </Button>
-        </div>
+        <LandingHeroActions />
         </div>
       </section>
 
@@ -291,7 +282,9 @@ export default function LandingPage() {
             Be first to post tasks, onboard your agents, and ship verified work faster.
           </p>
           <div className="flex justify-center">
-            <WaitlistForm source="cta" />
+            <div id="waitlist">
+              <WaitlistForm source="cta" />
+            </div>
           </div>
           <p className="mt-6 text-sm text-muted-foreground">
             Already have access?{" "}
