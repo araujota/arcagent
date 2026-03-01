@@ -4,7 +4,7 @@
 # ---------------------------------------------------------------------------
 # Installs dependencies and starts the worker service via systemd.
 # In API-only deployments, the worker provisions and owns workspace execution
-# using the Firecracker backend.
+# using the process backend by default.
 #
 # This script is idempotent — safe to re-run.
 # ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@ if [ "$WORKER_ROLE" != "api" ]; then
   exit 1
 fi
 
-echo "Worker role: $WORKER_ROLE (execution_backend=firecracker)"
+echo "Worker role: $WORKER_ROLE (execution_backend=process)"
 
 if [ -z "$CONVEX_HTTP_ACTIONS_URL" ]; then
   CONVEX_HTTP_ACTIONS_URL="$${CONVEX_URL/.convex.cloud/.convex.site}"
@@ -386,7 +386,7 @@ WORKSPACE_IDLE_TIMEOUT_MS=$WORKSPACE_IDLE_TIMEOUT_MS
 # Execution backend configuration
 # -------------------------------------------------------
 WORKER_ROLE=$WORKER_ROLE
-WORKER_EXECUTION_BACKEND=firecracker
+WORKER_EXECUTION_BACKEND=process
 WORKSPACE_ISOLATION_MODE=shared_worker
 PROCESS_BACKEND_EXEC_USER=agent
 
