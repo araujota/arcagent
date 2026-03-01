@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Mock logger
@@ -193,6 +193,7 @@ function findExecCalls(cmd: string): Array<{ cmd: string; args: string[] }> {
 
 describe("createFirecrackerVM", () => {
   beforeEach(() => {
+    process.env.WORKER_EXECUTION_BACKEND = "firecracker";
     vi.clearAllMocks();
     defaultExecFileMock();
     mockFsWriteFile.mockResolvedValue(undefined);
@@ -215,6 +216,10 @@ describe("createFirecrackerVM", () => {
       keyBuffer: Buffer.alloc(32),
     });
     mockDestroyEncryptedOverlay.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    delete process.env.WORKER_EXECUTION_BACKEND;
   });
 
   it("creates TAP device with correct name derived from vmId", async () => {
@@ -498,11 +503,17 @@ describe("destroyFirecrackerVM", () => {
   let handle: VMHandle;
 
   beforeEach(async () => {
+    process.env.WORKER_EXECUTION_BACKEND = "firecracker";
     vi.clearAllMocks();
     defaultExecFileMock();
     mockFsWriteFile.mockResolvedValue(undefined);
     mockFsChmod.mockResolvedValue(undefined);
     mockFsUnlink.mockResolvedValue(undefined);
+    mockFsStat.mockResolvedValue({
+      mode: 0o100660,
+      uid: 1001,
+      gid: 1001,
+    });
     mockVsockExec.mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
     mockVsockExecWithStdin.mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
     mockVsockWriteFile.mockResolvedValue(undefined);
@@ -539,6 +550,10 @@ describe("destroyFirecrackerVM", () => {
         return Promise.resolve({ stdout: "", stderr: "" });
       },
     );
+  });
+
+  afterEach(() => {
+    delete process.env.WORKER_EXECUTION_BACKEND;
   });
 
   it("kills process, removes egress, removes TAP, removes overlay in correct order", async () => {

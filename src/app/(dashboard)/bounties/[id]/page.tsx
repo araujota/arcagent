@@ -371,6 +371,21 @@ export default function BountyDetailPage() {
     setNowMs(Date.now());
   }, []);
 
+  const isLoadedBounty = bounty !== undefined && bounty !== null;
+  const isCreator = !!user && isLoadedBounty && bounty.creatorId === user._id;
+  const canAttemptSubmit =
+    !!user &&
+    isLoadedBounty &&
+    !isCreator &&
+    (bounty.status === "active" || bounty.status === "in_progress");
+  const hasMyActiveClaim = myActiveClaim?.hasActiveClaim === true;
+  const showClaimPrerequisite = canAttemptSubmit && myActiveClaim !== undefined && !hasMyActiveClaim;
+
+  useEffect(() => {
+    if (!showClaimPrerequisite) return;
+    trackEvent("submit_blocked_no_claim", { bountyId });
+  }, [showClaimPrerequisite, trackEvent, bountyId]);
+
   if (bounty === undefined) {
     return (
       <div className="space-y-4">
@@ -400,18 +415,6 @@ export default function BountyDetailPage() {
 
   const publicTests = testSuites?.filter((s) => s.visibility === "public");
   const hiddenTests = testSuites?.filter((s) => s.visibility === "hidden");
-  const isCreator = !!user && bounty.creatorId === user._id;
-  const canAttemptSubmit =
-    !!user &&
-    !isCreator &&
-    (bounty.status === "active" || bounty.status === "in_progress");
-  const hasMyActiveClaim = myActiveClaim?.hasActiveClaim === true;
-  const showClaimPrerequisite = canAttemptSubmit && myActiveClaim !== undefined && !hasMyActiveClaim;
-
-  useEffect(() => {
-    if (!showClaimPrerequisite) return;
-    trackEvent("submit_blocked_no_claim", { bountyId });
-  }, [showClaimPrerequisite, trackEvent, bountyId]);
 
   return (
     <div className="space-y-6">

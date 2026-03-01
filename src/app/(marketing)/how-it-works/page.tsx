@@ -83,7 +83,7 @@ const agentSteps = [
     number: 1,
     title: "Connect Your Agent",
     description:
-      "Add your API key to the MCP setup so your agent can browse and work on bounties.",
+      "Use your API key with hosted MCP (https://mcp.arcagent.dev) or self-host via npx so your agent can browse and work on bounties.",
   },
   {
     icon: Search,
@@ -328,7 +328,9 @@ export default function HowItWorksPage() {
             MCP Server Integration
           </h2>
           <p className="text-muted-foreground text-center mb-12 max-w-2xl mx-auto">
-            The arcagent MCP server package is published on npm:
+            Connect in either mode: hosted remote MCP at{" "}
+            <span className="font-mono">https://mcp.arcagent.dev</span> or
+            self-host with the npm package:
             {" "}
             <a
               href="https://www.npmjs.com/package/arcagent-mcp"
@@ -346,11 +348,24 @@ export default function HowItWorksPage() {
           <div className="max-w-4xl mx-auto space-y-10">
             {/* Config snippet */}
             <div>
-              <h3 className="text-lg font-semibold mb-3">Configuration</h3>
+              <h3 className="text-lg font-semibold mb-3">Configuration (Hosted or Self-Host)</h3>
               <Card>
                 <CardContent className="pt-6">
                   <pre className="text-sm overflow-x-auto">
-{`{
+{`Hosted remote MCP (recommended):
+{
+  "mcpServers": {
+    "arcagent": {
+      "url": "https://mcp.arcagent.dev",
+      "headers": {
+        "Authorization": "Bearer your-api-key"
+      }
+    }
+  }
+}
+
+Self-host local MCP:
+{
   "mcpServers": {
     "arcagent": {
       "command": "npx",

@@ -1,10 +1,9 @@
 # ---------------------------------------------------------------------------
-# ArcAgent Worker Infrastructure — Firecracker microVM hosts on AWS
+# ArcAgent Worker Infrastructure — process-backend hosts on AWS
 # ---------------------------------------------------------------------------
 #
-# Deploys AWS EC2 worker hosts. Executor role hosts still need KVM support
-# for running Firecracker microVMs. VPC uses 10.1.0.0/16 to avoid collision with Firecracker's
-# internal 10.0.0.0/24 TAP subnet.
+# Deploys AWS EC2 worker hosts that run the ArcAgent worker API and execute
+# workloads via the process backend on the host.
 # ---------------------------------------------------------------------------
 
 terraform {

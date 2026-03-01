@@ -45,10 +45,127 @@ import { registerCheckWorkerStatus } from "./tools/checkWorkerStatus";
 import { registerWorkerHealth } from "./tools/workerHealth";
 import { registerTestBounty } from "./tools/testBounty";
 import { registerWorkspaceStartupLog } from "./tools/workspaceStartupLog";
+import { z } from "zod";
 
 export interface McpServerOptions {
   enableWorkspaceTools?: boolean;
   enableRegistration?: boolean;
+}
+
+function registerPromptsAndResources(server: McpServer): void {
+  // Avoid SDK+zod deep generic inference blow-ups (same issue class as tool registration).
+  (server.registerPrompt as any)(
+    "bounty_execution_plan",
+    {
+      title: "Bounty Execution Plan",
+      description: "Create a concrete implementation plan for an ArcAgent bounty before editing code.",
+      argsSchema: {
+        bountyId: z.string().describe("ArcAgent bounty ID"),
+        constraints: z.string().optional().describe("Optional constraints, preferences, or deadlines"),
+      },
+    },
+    async ({ bountyId, constraints }) => {
+      const extra = constraints ? `\nConstraints: ${constraints}` : "";
+      return {
+        description: "Structured plan prompt for bounty implementation.",
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text:
+                `Build an implementation plan for ArcAgent bounty ${bountyId}.` +
+                `${extra}\nInclude risk checks, test strategy, and verification steps before submission.`,
+            },
+          },
+        ],
+      };
+    },
+  );
+
+  (server.registerPrompt as any)(
+    "verification_triage",
+    {
+      title: "Verification Failure Triage",
+      description: "Turn ArcAgent verification output into prioritized fixes and retry strategy.",
+      argsSchema: {
+        bountyId: z.string().describe("ArcAgent bounty ID"),
+        verificationId: z.string().optional().describe("Verification ID if available"),
+      },
+    },
+    async ({ bountyId, verificationId }) => ({
+      description: "Prompt for debugging failed verification runs.",
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text:
+              `Analyze failed verification feedback for bounty ${bountyId}.` +
+              (verificationId ? ` Verification: ${verificationId}.` : "") +
+              " Produce ordered action items, likely root causes, and minimal retest commands.",
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerResource(
+    "arcagent_overview",
+    "arcagent://overview",
+    {
+      title: "ArcAgent MCP Overview",
+      description: "High-level capabilities and connection model for ArcAgent MCP.",
+      mimeType: "text/markdown",
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.toString(),
+          mimeType: "text/markdown",
+          text: [
+            "# ArcAgent MCP",
+            "",
+            "ArcAgent provides tools for bounty discovery, claim management, workspace execution, and verified submissions.",
+            "",
+            "## Core flow",
+            "1. `list_bounties`",
+            "2. `claim_bounty`",
+            "3. workspace tools (`workspace_read_file`, `workspace_exec`, etc.)",
+            "4. `submit_solution`",
+            "5. `get_verification_status`",
+          ].join("\n"),
+        },
+      ],
+    }),
+  );
+
+  server.registerResource(
+    "arcagent_connection",
+    "arcagent://connection",
+    {
+      title: "ArcAgent Connection Guide",
+      description: "Authentication and remote endpoint details for ArcAgent MCP clients.",
+      mimeType: "text/markdown",
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.toString(),
+          mimeType: "text/markdown",
+          text: [
+            "# Connection",
+            "",
+            "- Remote MCP endpoint: `https://mcp.arcagent.dev/mcp`",
+            "- Registration endpoint: `https://mcp.arcagent.dev/register`",
+            "- Auth header: `Authorization: Bearer arc_<api_key>`",
+            "",
+            "Use `register_account` or `POST /api/mcp/register` to create a key for testing.",
+          ].join("\n"),
+        },
+      ],
+    }),
+  );
 }
 
 export function createMcpServer(options?: McpServerOptions): McpServer {
@@ -61,6 +178,8 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
     name: "arcagent",
     version: "0.1.12",
   });
+
+  registerPromptsAndResources(server);
 
   // Registration tool (available without pre-existing credentials)
   if (enableRegistration) {

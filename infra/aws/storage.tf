@@ -1,8 +1,9 @@
 # ---------------------------------------------------------------------------
-# S3 Bucket for Pre-Built Rootfs Images
+# S3 Bucket for Worker Bootstrap Artifacts
 # ---------------------------------------------------------------------------
-# Stores compressed ext4 filesystem images (e.g. node-20.ext4.zst) that
-# worker instances download on first boot instead of building from scratch.
+# Stores provisioning scripts and optional worker build archives consumed
+# by setup-host.sh during first boot.
+# NOTE: resource name keeps "rootfs" for Terraform state compatibility.
 # ---------------------------------------------------------------------------
 
 data "aws_caller_identity" "current" {}
@@ -43,10 +44,8 @@ resource "aws_s3_bucket_public_access_block" "rootfs" {
 
 locals {
   bootstrap_scripts = {
-    "setup-worker.sh"        = "${path.module}/scripts/setup-worker.sh"
-    "install-firecracker.sh" = "${path.module}/scripts/install-firecracker.sh"
-    "detect-host-url.sh"     = "${path.module}/scripts/detect-host-url.sh"
-    "build-rootfs.sh"        = "${path.module}/scripts/build-rootfs.sh"
+    "setup-worker.sh"    = "${path.module}/scripts/setup-worker.sh"
+    "detect-host-url.sh" = "${path.module}/scripts/detect-host-url.sh"
   }
 }
 

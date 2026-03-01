@@ -136,6 +136,86 @@ describe("HTTP MCP auth/session hardening", () => {
     }
   });
 
+  it("allows unauthenticated MCP initialize for directory scanning", async () => {
+    const runtime = await startRuntime(baseConfig());
+    try {
+      const resp = await fetch(`${runtime.url}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2024-11-05",
+            capabilities: {},
+            clientInfo: { name: "scanner", version: "1.0.0" },
+          },
+        }),
+      });
+      expect(resp.status).toBe(200);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("allows unauthenticated MCP tools/list for directory scanning", async () => {
+    const runtime = await startRuntime(baseConfig());
+    try {
+      const resp = await fetch(`${runtime.url}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/list",
+          params: {},
+        }),
+      });
+      expect(resp.status).toBe(200);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("allows unauthenticated MCP prompts/list for directory scanning", async () => {
+    const runtime = await startRuntime(baseConfig());
+    try {
+      const resp = await fetch(`${runtime.url}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "prompts/list",
+          params: {},
+        }),
+      });
+      expect(resp.status).toBe(200);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("allows unauthenticated MCP resources/list for directory scanning", async () => {
+    const runtime = await startRuntime(baseConfig());
+    try {
+      const resp = await fetch(`${runtime.url}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 4,
+          method: "resources/list",
+          params: {},
+        }),
+      });
+      expect(resp.status).toBe(200);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("allows registration without API key and returns Convex-issued key", async () => {
     callConvexMock.mockResolvedValue({
       userId: "user_1",
@@ -181,6 +261,118 @@ describe("HTTP MCP auth/session hardening", () => {
       });
 
       expect(resp.status).toBe(200);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("supports POST /register as an alias for /api/mcp/register", async () => {
+    callConvexMock.mockResolvedValue({
+      userId: "user_register_alias",
+      apiKey: "arc_generated_from_convex_register_alias_1234",
+      keyPrefix: "arc_gene",
+    });
+
+    const runtime = await startRuntime(baseConfig());
+    try {
+      const resp = await fetch(`${runtime.url}/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Alias User",
+          email: "alias@test.dev",
+        }),
+      });
+
+      expect(resp.status).toBe(200);
+      const body = await resp.json() as { userId: string; apiKey: string };
+      expect(body.userId).toBe("user_register_alias");
+      expect(body.apiKey).toContain("arc_");
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("returns OAuth-compatible client registration payload on POST /register without name/email", async () => {
+    const runtime = await startRuntime(baseConfig());
+    try {
+      const resp = await fetch(`${runtime.url}/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          redirect_uris: ["https://smithery.ai/oauth/callback"],
+          client_name: "smithery-scanner",
+        }),
+      });
+
+      expect(resp.status).toBe(201);
+      const body = await resp.json() as {
+        client_id: string;
+        client_secret: string;
+        client_id_issued_at: number;
+        client_secret_expires_at: number;
+        redirect_uris: string[];
+        token_endpoint_auth_method: string;
+      };
+      expect(body.client_id).toMatch(/^arcagent_/);
+      expect(body.client_secret.length).toBeGreaterThan(10);
+      expect(body.client_id_issued_at).toBeGreaterThan(0);
+      expect(body.client_secret_expires_at).toBe(0);
+      expect(body.redirect_uris).toEqual(["https://smithery.ai/oauth/callback"]);
+      expect(body.token_endpoint_auth_method).toBe("client_secret_post");
+      expect(callConvexMock).not.toHaveBeenCalled();
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("serves static server card metadata for directory scanners", async () => {
+    const runtime = await startRuntime(baseConfig({
+      publicBaseUrl: "https://mcp.arcagent.dev",
+    }));
+    try {
+      const resp = await fetch(`${runtime.url}/.well-known/mcp/server-card.json`);
+      expect(resp.status).toBe(200);
+      const body = await resp.json() as {
+        $schema: string;
+        serverInfo: {
+          name: string;
+          version: string;
+          title: string;
+          iconUrl: string;
+          websiteUrl: string;
+        };
+        endpoints: { mcp: string; registration: string; health: string };
+        capabilities: { prompts: unknown[]; resources: unknown[] };
+      };
+
+      expect(body.$schema).toBe("https://smithery.ai/schemas/server-card.json");
+      expect(body.serverInfo.name).toBe("arcagent");
+      expect(body.serverInfo.version).toBe("0.1.12");
+      expect(body.serverInfo.title).toBe("ArcAgent");
+      expect(body.serverInfo.websiteUrl).toContain("github.com/araujota/arcagent");
+      expect(body.serverInfo.iconUrl).toBe("https://mcp.arcagent.dev/icon.svg");
+      expect(body.endpoints.mcp).toBe("https://mcp.arcagent.dev/mcp");
+      expect(body.endpoints.registration).toBe("https://mcp.arcagent.dev/api/mcp/register");
+      expect(body.endpoints.health).toBe("https://mcp.arcagent.dev/health");
+      expect(body.capabilities.prompts.length).toBeGreaterThan(0);
+      expect(body.capabilities.resources.length).toBeGreaterThan(0);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("serves a public icon for registry metadata", async () => {
+    const runtime = await startRuntime(baseConfig({
+      publicBaseUrl: "https://mcp.arcagent.dev",
+    }));
+    try {
+      const resp = await fetch(`${runtime.url}/icon.svg`);
+      expect(resp.status).toBe(200);
+      expect(resp.headers.get("content-type")).toContain("image/svg+xml");
+      const svg = await resp.text();
+      expect(svg).toContain("<svg");
+      expect(svg).toContain("ArcAgent");
     } finally {
       await runtime.close();
     }

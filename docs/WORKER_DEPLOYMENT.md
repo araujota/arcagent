@@ -14,11 +14,11 @@ This guide covers deploying the ArcAgent verification worker — from local deve
 │                   │         │  → memory → snyk → sonarqube → test  │
 └──────────────────┘         │                                      │
                               │  ┌──────────────────────────────┐    │
-                              │  │  Firecracker microVMs        │    │
-                              │  │  - Isolated per job          │    │
-                              │  │  - Language-specific rootfs   │    │
-                              │  │  - vsock communication       │    │
-                              │  │  - Egress filtering          │    │
+                              │  │  Process backend sandbox     │    │
+                              │  │  - Isolated workspace dirs   │    │
+                              │  │  - Unprivileged exec user    │    │
+                              │  │  - Per-job cleanup           │    │
+                              │  │  - Secret-scrubbed env       │    │
                               │  └──────────────────────────────┘    │
                               └──────────────────────────────────────┘
 ```
@@ -28,7 +28,7 @@ This guide covers deploying the ArcAgent verification worker — from local deve
 - The worker runs in API-only mode (`WORKER_ROLE=api`) and still processes BullMQ verification jobs.
 - Workspace/job execution is performed by this worker instance (or its configured execution backend), so each worker can provision and own multiple workspaces.
 - Requires **Redis** for the BullMQ job queue
-- Firecracker microVMs provide per-job isolation with language-specific rootfs images
+- Process backend is the default runtime and executes jobs as an unprivileged host user
 - Communication between Convex and the worker is authenticated via `WORKER_SHARED_SECRET` (constant-time comparison)
 
 ## Local Development (Docker Compose)
@@ -73,18 +73,12 @@ Create a `.env` file at the repo root (loaded by all services via `env_file`). R
 | `PORT` | No | Default: `3001` |
 | `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` (default) |
 
-### Firecracker in Docker
+### Process Backend in Docker
 
-For local development without KVM, run with `WORKER_EXECUTION_BACKEND=process` (non-production only).
-For production-style Firecracker execution, run on Linux hosts with KVM available.
-
-```bash
-WORKER_EXECUTION_BACKEND=process  # local non-production only
-cd worker && npm run dev
-```
+Run the worker with the process backend in both local and production-style environments.
 
 ```bash
-WORKER_EXECUTION_BACKEND=firecracker
+WORKER_EXECUTION_BACKEND=process
 cd worker && npm run dev
 ```
 
@@ -114,9 +108,8 @@ The `infra/aws/` directory contains Terraform configuration for deploying worker
 ### Infrastructure overview
 
 Terraform provisions:
-- **VPC** (`10.1.0.0/16`) with public subnets — uses `10.1.x.x` to avoid collision with Firecracker's internal `10.0.0.0/24` TAP subnet
-- **EC2 worker hosts** (standard EC2 sizing for API-only workers)
-- **Elastic IPs** for stable worker addressing
+- **VPC** (`10.1.0.0/16`) with public subnets for worker hosts
+- **EC2 Auto Scaling Group** for worker hosts (target-tracking on CPU)
 - **Security group** — port 3001 open for Convex/MCP inbound, SSH restricted to specified CIDRs
 - **IAM role** with CloudWatch Logs, SSM, and ECR read access
 
@@ -135,11 +128,19 @@ Edit `terraform.tfvars` with your values:
 aws_region   = "us-east-1"
 environment  = "production"
 
-# Use standard EC2 for API-only workers; execution environments are separate.
-instance_type = "c8i.large"
-worker_count  = 1
+# Use a small baseline worker shape and autoscaling by capacity.
+instance_type = "t3.micro"
 worker_role   = "api"
 ssh_key_name  = "your-key-pair-name"
+enable_autoscaling   = true
+asg_min_size         = 1
+asg_desired_capacity = 1
+asg_max_size         = 6
+asg_cpu_target_utilization = 60
+
+# Recommended in autoscaling mode to preserve an existing stable URL.
+# If omitted, Terraform uses the ALB DNS name as WORKER_API_URL.
+worker_public_url = "http://arcagent.speedlesvc.com:3001"
 
 # Restrict SSH to your IP
 ssh_allowed_cidrs = ["YOUR_IP/32"]
@@ -166,8 +167,9 @@ terraform apply   # Confirm and deploy
 Note the outputs:
 
 ```
-worker_host_urls  = ["http://<eip>:3001"]
-ssh_command       = "ssh -i <key.pem> ubuntu@<eip>"
+worker_host_urls             = ["http://arcagent.speedlesvc.com:3001"]
+worker_autoscaling_group_name = "arcagent-worker-production"
+worker_alb_dns_name           = "arcagent-worker-production-123456.us-east-1.elb.amazonaws.com"
 ```
 
 #### 3. Copy provisioning scripts to the host
@@ -175,13 +177,13 @@ ssh_command       = "ssh -i <key.pem> ubuntu@<eip>"
 The `setup-host.sh` script runs as user-data on first boot but needs the helper scripts:
 
 ```bash
-scp -i <key.pem> infra/aws/scripts/* ubuntu@<eip>:/opt/arcagent/scripts/
+scp -i <key.pem> infra/aws/scripts/* ubuntu@<worker-host>:/opt/arcagent/scripts/
 ```
 
 If the scripts weren't present during first boot, re-run setup:
 
 ```bash
-ssh -i <key.pem> ubuntu@<eip> 'sudo bash /var/lib/cloud/instance/user-data.txt'
+ssh -i <key.pem> ubuntu@<worker-host> 'sudo bash /var/lib/cloud/instance/user-data.txt'
 ```
 
 #### 4. Build and deploy the worker code
@@ -198,8 +200,8 @@ tar czf worker-build.tar.gz dist/ package.json package-lock.json
 Copy to the host and deploy:
 
 ```bash
-scp -i <key.pem> worker-build.tar.gz ubuntu@<eip>:/tmp/
-ssh -i <key.pem> ubuntu@<eip> 'sudo bash /opt/arcagent/deploy.sh /tmp/worker-build.tar.gz'
+scp -i <key.pem> worker-build.tar.gz ubuntu@<worker-host>:/tmp/
+ssh -i <key.pem> ubuntu@<worker-host> 'sudo bash /opt/arcagent/deploy.sh /tmp/worker-build.tar.gz'
 ```
 
 The `deploy.sh` script (created by `setup-worker.sh`) stops the service, extracts the archive, runs `npm ci --production`, and restarts the service.
@@ -212,7 +214,7 @@ sudo bash /opt/arcagent/deploy.sh /tmp/worker-build.tar.gz 1800
 #### 5. Set worker endpoints in Convex
 
 ```bash
-npx convex env set WORKER_API_URL "http://<eip>:3001"
+npx convex env set WORKER_API_URL "http://arcagent.speedlesvc.com:3001"
 ```
 
 Ensure `WORKER_SHARED_SECRET` is also set in Convex to the same value as in `terraform.tfvars`.
@@ -220,58 +222,46 @@ Ensure `WORKER_SHARED_SECRET` is also set in Convex to the same value as in `ter
 #### 6. Verify
 
 ```bash
-curl http://<eip>:3001/api/health
+curl http://arcagent.speedlesvc.com:3001/api/health
 # Expected: {"status":"ok","timestamp":"..."}
 ```
 
 ## Scaling
 
-### Horizontal scaling (more instances)
+### Horizontal scaling (automatic)
 
-Increase `worker_count` in `terraform.tfvars`:
+Autoscaling is enabled by default. Tune these values in `terraform.tfvars`:
 
 ```hcl
-worker_count = 3
+enable_autoscaling = true
+asg_min_size = 1
+asg_desired_capacity = 1
+asg_max_size = 6
+asg_cpu_target_utilization = 60
 ```
 
-Run `terraform apply`. Each instance gets its own EIP. BullMQ distributes jobs across all workers connected to the same Redis instance.
+Run `terraform apply`. The ASG scales worker count up/down around your CPU target.
 
 > **Note:** The default setup uses a local Redis per host. For multi-host horizontal scaling, you need a shared Redis instance (e.g. Amazon ElastiCache). Update `REDIS_URL` in `/opt/arcagent/worker.env` on each host to point to the shared Redis.
 
-### Vertical scaling (more throughput per instance)
+### Vertical scaling (bigger/smaller node shape)
 
 Adjust these variables in `terraform.tfvars`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `instance_type` | `t3.micro` | Per-node EC2 size for each worker in the ASG |
 | `worker_concurrency` | `2` | Parallel BullMQ verification jobs per instance |
-| `max_dev_vms` | `10` | Maximum concurrent development VMs |
-| `warm_pool_size` | `2` | Pre-warmed VMs per language (faster job start) |
-| `max_warm_vms` | `4` | Maximum total warm VMs across all languages |
+| `max_dev_vms` | `10` | Maximum concurrent development workspaces |
+| `warm_pool_size` | `0` | Legacy firecracker warm pool setting (recommend `0` for process backend) |
+| `max_warm_vms` | `0` | Legacy firecracker warm pool cap (recommend `0` for process backend) |
 
 The BullMQ worker also enforces a rate limit of **10 jobs per minute** per instance (configurable in `worker/src/queue/jobQueue.ts`).
 
-### VM resource allocation per language
+### Language Execution Profiles
 
-Each language has a fixed resource profile defined in `worker/src/vm/vmConfig.ts`:
-
-| Language | vCPUs | RAM (MiB) | Gate Timeout | Rootfs Image |
-|----------|-------|-----------|-------------|--------------|
-| TypeScript | 2 | 1024 | 2 min | `node-20.ext4` |
-| JavaScript | 2 | 1024 | 2 min | `node-20.ext4` |
-| Python | 2 | 1024 | 2 min | `python-312.ext4` |
-| Go | 2 | 1024 | 2 min | `go-122.ext4` |
-| Ruby | 2 | 1024 | 2 min | `ruby-33.ext4` |
-| PHP | 2 | 1024 | 2 min | `php-84.ext4` |
-| C | 2 | 1024 | 3 min | `cpp-gcc14.ext4` |
-| Rust | 4 | 2048 | 5 min | `rust-stable.ext4` |
-| Java | 4 | 2048 | 3 min | `java-21.ext4` |
-| C++ | 4 | 2048 | 5 min | `cpp-gcc14.ext4` |
-| C# | 4 | 2048 | 3 min | `dotnet-9.ext4` |
-| Swift | 4 | 2048 | 3 min | `swift-6.ext4` |
-| Kotlin | 4 | 2048 | 3 min | `kotlin-jvm21.ext4` |
-
-For executor sizing, plan around aggregate guest VM resources (`worker/src/vm/vmConfig.ts`) and `WORKER_CONCURRENCY`.
+Language defaults still come from `worker/src/vm/vmConfig.ts` and are used for gate timeout/capacity planning.
+For process backend sizing, plan around host CPU/RAM, `WORKER_CONCURRENCY`, and expected build/test workload mix.
 
 ## Updating / Redeploying
 
@@ -284,8 +274,8 @@ npm run build
 tar czf worker-build.tar.gz dist/ package.json package-lock.json
 
 # Deploy to host
-scp -i <key.pem> worker-build.tar.gz ubuntu@<eip>:/tmp/
-ssh -i <key.pem> ubuntu@<eip> 'sudo bash /opt/arcagent/deploy.sh /tmp/worker-build.tar.gz'
+scp -i <key.pem> worker-build.tar.gz ubuntu@<worker-host>:/tmp/
+ssh -i <key.pem> ubuntu@<worker-host> 'sudo bash /opt/arcagent/deploy.sh /tmp/worker-build.tar.gz'
 ```
 
 `deploy.sh` handles: stop service → extract archive → `npm ci --production` → start service.
@@ -320,7 +310,7 @@ cat /var/log/arcagent-setup.log
 ### Health check
 
 ```bash
-curl http://<eip>:3001/api/health
+curl http://arcagent.speedlesvc.com:3001/api/health
 # {"status":"ok","timestamp":"2026-02-20T12:00:00.000Z"}
 ```
 
@@ -338,13 +328,12 @@ sudo systemctl stop arcagent-worker
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `KVM not available` or `/dev/kvm: No such file` | Host lacks KVM support | Configure `WORKER_EXECUTION_BACKEND=process` in a non-production worker environment, or use an instance with KVM/Firecracker support. |
-| `Redis connection refused` | Redis not running | `sudo systemctl start redis-server` and verify with `redis-cli ping` |
-| `Rootfs image not found` | `build-rootfs.sh` hasn't run | `sudo bash /opt/arcagent/scripts/build-rootfs.sh` |
-| `Firecracker binary not found` | `install-firecracker.sh` hasn't run | `sudo bash /opt/arcagent/scripts/install-firecracker.sh 1.7.0` |
-| `WORKER_HOST_URL` is `localhost` | EIP not yet attached during first boot | Restart the service: `sudo systemctl restart arcagent-worker` (the `detect-host-url.sh` ExecStartPre re-detects the public IP) |
+| `Redis connection refused` | Runtime sidecar not running | `sudo systemctl restart arcagent-runtime-stack` then `docker ps` |
+| `runuser binary is required` | Missing util-linux package in image/host | Install `util-linux` (provides `runuser`) and restart worker |
+| `Process backend execution user 'agent' does not exist` | Host bootstrap did not create the execution user | Re-run `setup-host.sh` or create user: `sudo useradd -m -s /bin/bash -U agent` |
+| `WORKER_API_URL` changed unexpectedly | `worker_public_url` not pinned, so output followed ALB DNS changes | Set `worker_public_url` in `terraform.tfvars` to pin a stable URL and re-apply |
 | `401 Unauthorized` from Convex | `WORKER_SHARED_SECRET` mismatch | Ensure the secret in `/opt/arcagent/worker.env` matches the Convex env var |
-| Worker starts but jobs fail | VM networking issues | Verify IP forwarding: `sysctl net.ipv4.ip_forward` (should be `1`). Check NAT rules: `iptables -t nat -L POSTROUTING` |
+| Worker starts but jobs fail | Missing language/scanner tooling on host | Check setup log and rerun bootstrap: `sudo bash /var/lib/cloud/instance/user-data.txt` |
 
 ## Security Considerations
 
@@ -359,22 +348,22 @@ sudo systemctl stop arcagent-worker
 - **Encrypted EBS** — root volumes use `encrypted = true`.
 - **SSH restricted** — only allowed from CIDRs specified in `ssh_allowed_cidrs`. Leave empty to disable SSH entirely (use SSM Session Manager instead).
 
-### Egress filtering
+### Execution hardening
 
-When `harden_egress = true` (default), the worker configures:
-- **Squid proxy** with SSL bumping for HTTPS inspection
-- **Per-language domain allowlists** — each VM can only reach its language's package registry (e.g. `registry.npmjs.org` for Node.js, `crates.io` for Rust) plus GitHub
-- **Rate limiting** on TAP devices via `tc qdisc` (10 Mbit/s per VM)
+Process backend hardening defaults:
+- Commands run as unprivileged `agent` user (via `runuser`)
+- Child process environments are scrubbed of worker secrets
+- Workspace paths are isolated to per-job temp directories
+- Metadata endpoint access is blocked for the execution user (`169.254.169.254`)
 
 ### Why root?
 
 The worker systemd service runs as `root` because it needs to:
-- Create TAP network devices for VM networking
-- Manage iptables rules for NAT and egress filtering
-- Run the Firecracker `jailer` (which needs `cap_sys_admin`, `cap_net_admin`)
-- Set up dm-crypt for encrypted overlay filesystems
+- Set up and persist host firewall rules for metadata hardening
+- Create/chown execution workspaces and drop privileges with `runuser`
+- Manage runtime sidecars and worker service lifecycle
 
-Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker microVM boundary provides the isolation.
+User code still runs as an unprivileged `agent` user.
 
 ## Environment Variable Reference
 
@@ -386,20 +375,12 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 | `CONVEX_HTTP_ACTIONS_URL` | No | derived from `CONVEX_URL` | Convex HTTP actions URL for `/api/*` callbacks |
 | `WORKER_SHARED_SECRET` | Yes | — | Shared secret (must match Convex env) |
 | `WORKER_ROLE` | No | `api` | Runtime role |
-| `WORKER_EXECUTION_BACKEND` | No | `firecracker` | Execution backend for worker-owned workspaces (`firecracker` or `process` for non-production override) |
+| `WORKER_EXECUTION_BACKEND` | No | `process` | Execution backend for worker-owned workspaces (`process` recommended, `firecracker` legacy) |
 | `REDIS_URL` | Yes | `redis://localhost:6379` | Redis connection URL |
 | `PORT` | No | `3001` | Server port |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, `error` |
 | `WORKER_HOST_URL` | No | Auto-detected | Public URL of this worker instance |
-| `FIRECRACKER_BIN` | No | `/usr/local/bin/firecracker` | Path to Firecracker binary |
-| `JAILER_BIN` | No | `/usr/local/bin/jailer` | Path to jailer binary |
-| `FC_KERNEL_IMAGE` | No | `/var/lib/firecracker/vmlinux` | Path to kernel image |
-| `FC_ROOTFS_DIR` | No | `/var/lib/firecracker/rootfs` | Path to rootfs images directory |
-| `FC_USE_VSOCK` | No | `true` | Use vsock for host-guest communication |
-| `FC_HARDEN_EGRESS` | No | `true` (production) | Enable egress filtering |
-| `FC_SSH_KEY_PATH` | No | `/root/.ssh/id_ed25519` | SSH key for SSH fallback |
-| `FC_GUEST_SSH_PORT` | No | `22` | SSH port on guest VM |
-| `MAX_DEV_VMS` | No | `10` | Maximum concurrent dev VMs |
+| `MAX_DEV_VMS` | No | `10` | Maximum concurrent development workspaces |
 | `WORKSPACE_IDLE_TIMEOUT_MS` | No | `1800000` | Idle workspace timeout (30 min) |
 | `SONARQUBE_URL` | No | — | SonarQube server URL (enables gate) |
 | `SONARQUBE_TOKEN` | No | — | SonarQube auth token |
@@ -413,26 +394,30 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 |----------|----------|---------|-------------|
 | `aws_region` | No | `us-east-1` | AWS region |
 | `environment` | No | `production` | Environment name |
-| `instance_type` | No | `c8i.large` | EC2 instance type for API-only worker hosts |
-| `worker_count` | No | `1` | Number of worker instances |
+| `instance_type` | No | `t3.micro` | EC2 instance type for worker hosts |
+| `enable_autoscaling` | No | `true` | Enable worker Auto Scaling Group |
+| `asg_min_size` | No | `1` | Minimum worker instances in ASG |
+| `asg_desired_capacity` | No | `1` | Desired worker instances in ASG |
+| `asg_max_size` | No | `6` | Maximum worker instances in ASG |
+| `asg_cpu_target_utilization` | No | `60` | Target average CPU percent for ASG target-tracking |
+| `worker_count` | No | `1` | Number of worker instances when autoscaling is disabled |
 | `worker_role` | No | `api` | Worker runtime role (API-only deployment) |
 | `ssh_key_name` | Yes | — | EC2 key pair name |
 | `ssh_allowed_cidrs` | No | `[]` | CIDRs allowed to SSH (empty = no SSH) |
 | `worker_shared_secret` | Yes | — | Shared secret (sensitive) |
 | `convex_url` | Yes | — | Convex deployment URL |
-| `root_volume_size_gb` | No | `200` | Root EBS volume size in GB |
-| `max_dev_vms` | No | `10` | Max concurrent dev VMs per worker |
-| `warm_pool_size` | No | `2` | Warm VMs per language |
-| `max_warm_vms` | No | `4` | Max total warm VMs |
+| `root_volume_size_gb` | No | `100` | Root EBS volume size in GB |
+| `max_dev_vms` | No | `10` | Max concurrent development workspaces per worker |
+| `warm_pool_size` | No | `0` | Legacy firecracker warm pool setting (keep `0` for process backend) |
+| `max_warm_vms` | No | `0` | Legacy firecracker warm pool cap (keep `0` for process backend) |
 | `worker_concurrency` | No | `2` | Parallel BullMQ jobs per worker |
 | `workspace_idle_timeout_ms` | No | `1800000` | Idle timeout in ms |
-| `firecracker_version` | No | `1.7.0` | Firecracker release version |
 | `node_version` | No | `20` | Node.js major version |
-| `harden_egress` | No | `true` | Enable egress filtering |
 | `enable_sonarqube` | No | `false` | Deploy SonarQube + Postgres sidecars on worker hosts |
 | `sonarqube_url` | No | `""` | SonarQube endpoint passed to worker env (`https://...` recommended for hardened/prod) |
 | `sonarqube_token` | No | `""` | SonarQube auth token passed to worker env |
 | `snyk_token` | No | `""` | Snyk token passed to worker env |
+| `worker_public_url` | No | `""` | Optional pinned public worker URL for all ASG instances (otherwise ALB DNS is used) |
 
 ### Convex environment variables
 
@@ -440,7 +425,7 @@ These must be set in the Convex dashboard (or via `npx convex env set`):
 
 | Variable | Description |
 |----------|-------------|
-| `WORKER_API_URL` | Worker URL from `terraform output worker_host_urls` (e.g. `http://<eip>:3001`) |
+| `WORKER_API_URL` | Stable worker URL from `terraform output worker_host_urls` (for example `http://arcagent.speedlesvc.com:3001`) |
 | `WORKER_SHARED_SECRET` | Same value as in `terraform.tfvars` |
 
 ## Provisioning Scripts Reference
@@ -449,8 +434,6 @@ All scripts are in `infra/aws/scripts/` and deployed to `/opt/arcagent/scripts/`
 
 | Script | Purpose |
 |--------|---------|
-| `setup-host.sh` | Main user-data script. Installs all dependencies, configures KVM/networking, writes `worker.env`, sets up systemd service. Idempotent. |
+| `setup-host.sh` | Main user-data script. Installs process-backend dependencies, configures runtime sidecars, writes `worker.env`, and sets up systemd service. Idempotent. |
 | `setup-worker.sh` | Creates the `arcagent-worker` systemd service, log rotation config, and `deploy.sh` helper. |
-| `install-firecracker.sh` | Downloads and installs Firecracker + jailer binaries. Usage: `bash install-firecracker.sh [VERSION]` |
-| `build-rootfs.sh` | Builds ext4 rootfs images for 6 languages: Node.js 20, Python 3.12, Rust stable, Go 1.22, Java 21, and a base image. Images stored in `/var/lib/firecracker/rootfs/`. Additional languages in `vmConfig.ts` (Ruby, PHP, C/C++, C#, Swift, Kotlin) require manually building their rootfs images. |
 | `detect-host-url.sh` | Runs as `ExecStartPre` before every worker start. Detects the public IP via IMDSv2 and updates `WORKER_HOST_URL` in `worker.env`. |

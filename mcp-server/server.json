@@ -7,7 +7,7 @@
     "url": "https://github.com/araujota/arcagent",
     "source": "github"
   },
-  "version": "0.1.12",
+  "version": "0.1.13",
   "remotes": [
     {
       "type": "streamable-http",

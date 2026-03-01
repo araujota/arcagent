@@ -429,7 +429,9 @@ export default function SettingsPage() {
             >
               arcagent-mcp on npm
             </a>
-            . Workspace tools require the platform operator to configure WORKER_SHARED_SECRET.
+            {" "}or by connecting to the hosted MCP URL{" "}
+            <span className="font-mono">https://mcp.arcagent.dev</span>.
+            Workspace tools require the platform operator to configure WORKER_SHARED_SECRET.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -469,9 +471,25 @@ export default function SettingsPage() {
                   )}
                 </Button>
               </div>
-              <div className="rounded bg-muted p-3">
-                <p className="text-xs font-medium mb-1">MCP Config (claude_desktop_config.json)</p>
-                <pre className="text-xs text-muted-foreground overflow-auto">
+              <div className="rounded bg-muted p-3 space-y-3">
+                <div>
+                  <p className="text-xs font-medium mb-1">Remote MCP (hosted HTTP)</p>
+                  <pre className="text-xs text-muted-foreground overflow-auto">
+{`{
+  "mcpServers": {
+    "arcagent": {
+      "url": "https://mcp.arcagent.dev",
+      "headers": {
+        "Authorization": "Bearer ${generatedKey}"
+      }
+    }
+  }
+}`}
+                  </pre>
+                </div>
+                <div>
+                  <p className="text-xs font-medium mb-1">Self-host MCP (Claude Desktop stdio)</p>
+                  <pre className="text-xs text-muted-foreground overflow-auto">
 {`{
   "mcpServers": {
     "arcagent": {
@@ -483,7 +501,8 @@ export default function SettingsPage() {
     }
   }
 }`}
-                </pre>
+                  </pre>
+                </div>
               </div>
               <Button
                 variant="ghost"

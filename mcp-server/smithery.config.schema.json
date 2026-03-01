@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "arcagentApiKey"
+  ],
+  "properties": {
+    "arcagentApiKey": {
+      "type": "string",
+      "title": "ArcAgent API Key",
+      "description": "ArcAgent bearer token used for Authorization. Format: arc_<token>.",
+      "minLength": 12,
+      "examples": [
+        "arc_example_key_123"
+      ],
+      "format": "password"
+    },
+    "mcpBaseUrl": {
+      "type": "string",
+      "title": "MCP Base URL",
+      "description": "Optional override for self-hosted ArcAgent MCP deployments.",
+      "default": "https://mcp.arcagent.dev/mcp",
+      "format": "uri"
+    }
+  }
+}

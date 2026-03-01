@@ -2,6 +2,8 @@
 
 This stack deploys the Arcagent MCP server for operator-hosted access at `https://mcp.arcagent.dev` while keeping `arcagent.dev` DNS ownership on Vercel.
 
+For remote MCP client configuration, use `https://mcp.arcagent.dev` as the MCP server URL.
+
 ## What it deploys
 
 - VPC with public + private subnets

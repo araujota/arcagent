@@ -70,6 +70,11 @@ cd mcp-server && MCP_TRANSPORT=http npm run dev   # HTTP transport (local dev)
 cd mcp-server && npm run build                    # Build for publishing
 ```
 
+## MCP Client Connection Modes
+
+- **Hosted remote MCP**: use server URL `https://mcp.arcagent.dev` with `Authorization: Bearer arc_...`.
+- **Self-host local MCP**: run `npx -y arcagent-mcp` with `ARCAGENT_API_KEY`.
+
 ## Documentation
 
 - [Setup Guide](./setup.md) — full environment variable reference and quick start

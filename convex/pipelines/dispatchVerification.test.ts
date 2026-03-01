@@ -46,7 +46,7 @@ describe("dispatchVerification", () => {
       const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
       const submissionId = await seedSubmission(ctx, bountyId, agentId, {
         status: "pending",
-        repositoryUrl: "https://github.com/test/repo",
+        repositoryUrl: "https://gitlab.com/test/repo",
         commitHash: "abc1234",
       });
       const verificationId = await seedVerification(ctx, submissionId, bountyId, {
@@ -67,7 +67,7 @@ describe("dispatchVerification", () => {
     const body = JSON.parse(options.body);
 
     // Should use new field names
-    expect(body.repoUrl).toBe("https://github.com/test/repo");
+    expect(body.repoUrl).toBe("https://gitlab.com/test/repo");
     expect(body.commitSha).toBe("abc1234");
     // Old field names should NOT be present
     expect(body.repositoryUrl).toBeUndefined();
@@ -80,7 +80,10 @@ describe("dispatchVerification", () => {
       const creatorId = await seedUser(ctx);
       const agentId = await seedUser(ctx, { role: "agent" });
       const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
-      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "pending" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, {
+        status: "pending",
+        repositoryUrl: "https://gitlab.com/test/repo",
+      });
       const verificationId = await seedVerification(ctx, submissionId, bountyId, {
         status: "pending",
         timeoutSeconds: 600,
@@ -110,7 +113,10 @@ describe("dispatchVerification", () => {
       const creatorId = await seedUser(ctx);
       const agentId = await seedUser(ctx, { role: "agent" });
       const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
-      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "pending" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, {
+        status: "pending",
+        repositoryUrl: "https://gitlab.com/test/repo",
+      });
       const verificationId = await seedVerification(ctx, submissionId, bountyId, {
         status: "pending",
         timeoutSeconds: 600,
@@ -145,7 +151,10 @@ describe("dispatchVerification", () => {
       const creatorId = await seedUser(ctx);
       const agentId = await seedUser(ctx, { role: "agent" });
       const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
-      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "pending" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, {
+        status: "pending",
+        repositoryUrl: "https://gitlab.com/test/repo",
+      });
       const verificationId = await seedVerification(ctx, submissionId, bountyId, {
         status: "pending",
         timeoutSeconds: 600,
@@ -173,7 +182,10 @@ describe("dispatchVerification", () => {
       const creatorId = await seedUser(ctx);
       const agentId = await seedUser(ctx, { role: "agent" });
       const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
-      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "pending" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, {
+        status: "pending",
+        repositoryUrl: "https://gitlab.com/test/repo",
+      });
       const verificationId = await seedVerification(ctx, submissionId, bountyId, {
         status: "pending",
         timeoutSeconds: 600,
@@ -213,7 +225,10 @@ describe("dispatchVerification", () => {
       const creatorId = await seedUser(ctx);
       const agentId = await seedUser(ctx, { role: "agent" });
       const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
-      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "pending" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, {
+        status: "pending",
+        repositoryUrl: "https://gitlab.com/test/repo",
+      });
       const verificationId = await seedVerification(ctx, submissionId, bountyId, {
         status: "pending",
         timeoutSeconds: 600,
@@ -259,7 +274,7 @@ describe("dispatchVerificationFromDiff", () => {
       verificationId: ids.verificationId,
       submissionId: ids.submissionId,
       bountyId: ids.bountyId,
-      baseRepoUrl: "https://github.com/test/base-repo",
+      baseRepoUrl: "https://gitlab.com/test/base-repo",
       baseCommitSha: "base123",
       diffPatch: "diff --git a/file.ts b/file.ts\n...",
       sourceWorkspaceId: "ws-1",
@@ -269,7 +284,7 @@ describe("dispatchVerificationFromDiff", () => {
     const [, options] = mockFetch.mock.calls[0];
     const body = JSON.parse(options.body);
 
-    expect(body.repoUrl).toBe("https://github.com/test/base-repo");
+    expect(body.repoUrl).toBe("https://gitlab.com/test/base-repo");
     expect(body.commitSha).toBe("base123");
     expect(body.repositoryUrl).toBeUndefined();
     expect(body.commitHash).toBeUndefined();
