@@ -58,7 +58,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
 
   const server = new McpServer({
     name: "arcagent",
-    version: "0.1.11",
+    version: "0.1.12",
   });
 
   // Registration tool (available without pre-existing credentials)

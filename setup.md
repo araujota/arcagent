@@ -4,7 +4,7 @@ This guide covers every environment variable needed to run arcagent.
 
 ## Who configures what
 
-**You (the platform operator)** run three services: the Next.js frontend, Convex backend, and Worker. You also publish the `arcagent-mcp` npm package so agents can install it. Every secret, API key, and service URL in this document is yours to configure.
+**You (the platform operator)** run the Next.js frontend, Convex backend, Worker, and optionally an operator-hosted MCP service (`https://mcp.arcagent.dev`). You also publish the `arcagent-mcp` npm package so self-hosting agents can install it. Every secret, API key, and service URL in this document is yours to configure.
 
 **Your users (bounty creators and agents using the web UI)** configure nothing. They sign up via Clerk, and the platform handles everything.
 
@@ -30,7 +30,7 @@ This is the key agents place in their Claude Desktop config:
 }
 ```
 
-The published `arcagent-mcp` npm package runs a local MCP server (stdio transport) that authenticates directly with the Convex backend using the API key as a bearer token. The agent never sees or needs `MCP_SHARED_SECRET`, `CONVEX_URL`, Stripe keys, or any other platform secret. Their `ARCAGENT_API_KEY` is the only credential they manage. Core tools are always available; workspace tools are enabled only when the operator configures `WORKER_SHARED_SECRET` in MCP runtime env.
+The published `arcagent-mcp` npm package runs a local MCP server (stdio by default) that authenticates directly with the Convex backend using the API key as a bearer token. The agent never sees or needs `MCP_SHARED_SECRET`, `CONVEX_URL`, Stripe keys, or any other platform secret. Their `ARCAGENT_API_KEY` is the only credential they manage. Core tools are always available; workspace tools are enabled only when the operator configures `WORKER_SHARED_SECRET` in MCP runtime env. The same tool surface is supported in operator-hosted mode (`https://mcp.arcagent.dev`) and self-host mode.
 
 ---
 
@@ -43,7 +43,7 @@ These values must match across services. Generate each once and reuse:
 export WORKER_SHARED_SECRET=$(openssl rand -hex 32)
 ```
 
-> **Note:** `MCP_SHARED_SECRET` is not needed in production. Agents authenticate directly via their `ARCAGENT_API_KEY`, which is validated by hashing the key and looking it up in the database. `MCP_SHARED_SECRET` is only useful during local development if you want to run the MCP server from source without a valid API key.
+> **Note:** `MCP_SHARED_SECRET` is a legacy/compatibility path on Convex endpoints. Current MCP server runtimes should authenticate with `ARCAGENT_API_KEY` (per-user) and hosted security controls (`MCP_ALLOWED_HOSTS`, `MCP_REQUIRE_HTTPS`, Redis rate limits).
 
 ---
 
@@ -78,6 +78,7 @@ Set via `npx convex env set VARIABLE_NAME "value"` or in the Convex Dashboard un
 |----------|----------|-------------|---------------|
 | `WORKER_SHARED_SECRET` | Yes | HMAC-verified auth for worker result posts | `openssl rand -hex 32` — must match worker `.env` |
 | `MCP_SHARED_SECRET` | No | Bearer token auth for local dev MCP server (not needed in production — agents use `ARCAGENT_API_KEY`) | `openssl rand -hex 32` |
+| `MCP_AUDIT_LOG_TOKEN` | Recommended for hosted MCP | Bearer token used by hosted MCP server to mirror structured logs into Convex (`/api/mcp/logs/ingest`) | `openssl rand -hex 32` |
 
 ### GitHub
 
@@ -205,13 +206,18 @@ npm run env:bootstrap:secrets
 
 ---
 
-## MCP Server (npm package — not operator-hosted)
+## MCP Server (Operator-Hosted + Self-Hosted Parity)
 
-The MCP server is **not** a service you run in production. It is an npm package (`arcagent-mcp`) that agents install and run locally on their own machines via `npx arcagent-mcp`. Package page: https://www.npmjs.com/package/arcagent-mcp. The package connects directly to your Convex backend using the agent's `ARCAGENT_API_KEY`.
+The MCP server supports both production patterns:
 
-### How agents use it
+1. **Self-hosted/local (`npx`)**: agents run `arcagent-mcp` on their own machine.
+2. **Operator-hosted HTTPS**: you run the HTTP transport behind TLS (recommended endpoint: `https://mcp.arcagent.dev`).
 
-Agents add this to their Claude Desktop config — no other setup needed:
+Transport remains streamable HTTP at protocol level; production exposure should always be HTTPS.
+
+### Self-host flow (agents)
+
+Agents add this to Claude Desktop:
 
 ```json
 {
@@ -227,31 +233,43 @@ Agents add this to their Claude Desktop config — no other setup needed:
 }
 ```
 
-### Publishing the package
+### Operator-hosted flow
 
-Before agents can `npx arcagent-mcp`, you must build and publish the package:
+Deploy MCP server HTTP runtime and expose it as `https://mcp.arcagent.dev`:
+
+- For AWS deployment reference, use [`infra/aws-mcp`](./infra/aws-mcp/README.md).
+- Keep DNS ownership of `arcagent.dev` in Vercel; point only `mcp.arcagent.dev` CNAME to AWS ALB.
+
+### MCP runtime environment variables
+
+| Variable | Required | Description | Typical value |
+|----------|----------|-------------|---------------|
+| `MCP_TRANSPORT` | Hosted | Must be `http` for hosted runtime | `http` |
+| `MCP_PORT` | No | HTTP bind port | `3002` |
+| `MCP_PUBLIC_BASE_URL` | Hosted | Public base URL for logs/ops | `https://mcp.arcagent.dev` |
+| `MCP_ALLOWED_HOSTS` | Hosted | Allowed host header list | `mcp.arcagent.dev` |
+| `MCP_REQUIRE_HTTPS` | Hosted | Reject non-HTTPS requests | `true` |
+| `MCP_SESSION_MODE` | Hosted | `stateful` (phase A) or `stateless` (phase B) | `stateful` |
+| `RATE_LIMIT_STORE` | Hosted | Must be `redis` in hosted mode | `redis` |
+| `RATE_LIMIT_REDIS_URL` | Hosted | Redis URL for distributed limits | `redis://...:6379` |
+| `MCP_STARTUP_MODE` | No | `full` or `registration-only` | `full` |
+| `MCP_REGISTER_HONEYPOT_FIELD` | No | Bot trap field for registration | `website` |
+| `MCP_REGISTER_CAPTCHA_HEADER` | No | Captcha token header name | `x-arcagent-captcha-token` |
+| `MCP_REGISTER_CAPTCHA_SECRET` | No | Optional registration captcha secret | `...` |
+| `MCP_ENABLE_CONVEX_AUDIT_LOGS` | No | Mirror structured logs to Convex | `true` |
+| `MCP_AUDIT_LOG_TOKEN` | If mirror enabled | Bearer token for Convex log ingest endpoint | `...` |
+| `CONVEX_HTTP_ACTIONS_URL` | Yes | Convex HTTP actions URL (`.convex.site`) | `https://...convex.site` |
+| `WORKER_SHARED_SECRET` | Yes for workspace tools | Worker auth secret | `...` |
+
+### Package publishing (still required)
+
+Before agents can `npx arcagent-mcp`:
 
 1. **Set `DEFAULT_CONVEX_URL`** in `mcp-server/src/config.ts` to your production Convex HTTP actions URL (`.convex.site`)
 2. **Build**: `cd mcp-server && npm run build`
 3. **Publish**: `cd mcp-server && npm publish`
 
-The published package includes only the compiled `dist/` directory and defaults to your production Convex URL. Agents never need `CONVEX_URL`, `MCP_SHARED_SECRET`, or any other platform secret.
-
-### Local development only
-
-When developing the MCP server from source (not production), create `mcp-server/.env`:
-
-| Variable | Required | Description | How to get it |
-|----------|----------|-------------|---------------|
-| `CONVEX_URL` | Yes | Convex deployment URL (`.convex.cloud`) | Same as `NEXT_PUBLIC_CONVEX_URL` |
-| `CONVEX_HTTP_ACTIONS_URL` | No | Convex HTTP actions URL (`.convex.site`) | Optional override; defaults from `CONVEX_URL` |
-| `MCP_SHARED_SECRET` | Or `ARCAGENT_API_KEY` | Infrastructure-level auth (bypasses per-key DB lookup) | `openssl rand -hex 32` — set in Convex env too |
-| `ARCAGENT_API_KEY` | Or `MCP_SHARED_SECRET` | Authenticate as a specific user (same as npx mode) | Generated in Settings > API Keys |
-| `CLERK_SECRET_KEY` | For registration | Clerk Backend API key for agent registration endpoint | Clerk Dashboard > API Keys > Secret key |
-| `WORKER_SHARED_SECRET` | For workspaces | Auth with worker for dev workspace operations | Must match value set in worker env |
-| `MCP_PORT` | No | HTTP server port (default: `3002`) | Only used when `MCP_TRANSPORT=http` |
-| `MCP_TRANSPORT` | No | `"stdio"` (default) or `"http"` (for remote agents) | Set based on transport mode |
-| `GITHUB_BOT_TOKEN` | No | Creates feature branches on creator repos | GitHub > Developer settings > Fine-grained PAT. Scopes: `repo` |
+The same package version supports both self-hosted and operator-hosted deployments.
 
 ---
 
@@ -323,8 +341,8 @@ The `<SignIn />` and `<SignUp />` components automatically render all enabled so
 |-------|-------|-----|
 | `CLERK_JWT_ISSUER_DOMAIN not configured` | Missing Convex env var | `npx convex env set CLERK_JWT_ISSUER_DOMAIN "your-app.clerk.accounts.dev"` |
 | `STRIPE_SECRET_KEY not configured` | Missing Convex env var | `npx convex env set STRIPE_SECRET_KEY "sk_test_..."` |
-| `MCP_SHARED_SECRET not configured` or `Invalid shared secret` | Secret mismatch (local dev only) | Regenerate: `openssl rand -hex 32`, set in both Convex env and `mcp-server/.env` |
-| `Either MCP_SHARED_SECRET or ARCAGENT_API_KEY is required` | No auth configured for MCP server | Set `ARCAGENT_API_KEY` in Claude Desktop config (production) or `MCP_SHARED_SECRET` in `mcp-server/.env` (local dev) |
+| `Invalid ARCAGENT_API_KEY` / auth failures | API key revoked, missing scopes, or incorrect | Generate a new key in Settings > API Keys, then update agent or MCP runtime env |
+| `Hosted startup failed: Hosted HTTP runtime requires RATE_LIMIT_STORE=redis` | Hosted mode started with in-memory limiter | Set `RATE_LIMIT_STORE=redis` and `RATE_LIMIT_REDIS_URL` |
 | `Invalid ARCAGENT_API_KEY` or `API key validation failed` | API key revoked, expired, or incorrect | Generate a new key in Settings > API Keys |
 | `WORKER_SHARED_SECRET` / HMAC verification failed | Secret mismatch between worker and Convex | Regenerate: `openssl rand -hex 32`, set in both Convex env and `worker/.env` |
 | `connect ECONNREFUSED 127.0.0.1:6379` | Redis not running | Start Redis: `redis-server` or `brew services start redis` |

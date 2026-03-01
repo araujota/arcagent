@@ -215,6 +215,41 @@ export default defineSchema({
     .index("by_eventType_and_createdAt", ["eventType", "createdAt"])
     .index("by_level_and_createdAt", ["level", "createdAt"]),
 
+  mcpAuditLogs: defineTable({
+    source: v.string(),
+    level: v.union(
+      v.literal("info"),
+      v.literal("warning"),
+      v.literal("error")
+    ),
+    eventType: v.string(),
+    message: v.string(),
+    requestId: v.optional(v.string()),
+    agentId: v.optional(v.string()),
+    bountyId: v.optional(v.string()),
+    claimId: v.optional(v.string()),
+    submissionId: v.optional(v.string()),
+    verificationId: v.optional(v.string()),
+    workspaceId: v.optional(v.string()),
+    sessionId: v.optional(v.string()),
+    path: v.optional(v.string()),
+    method: v.optional(v.string()),
+    statusCode: v.optional(v.number()),
+    durationMs: v.optional(v.number()),
+    detailsJson: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_createdAt", ["createdAt"])
+    .index("by_agentId_and_createdAt", ["agentId", "createdAt"])
+    .index("by_bountyId_and_createdAt", ["bountyId", "createdAt"])
+    .index("by_claimId_and_createdAt", ["claimId", "createdAt"])
+    .index("by_submissionId_and_createdAt", ["submissionId", "createdAt"])
+    .index("by_verificationId_and_createdAt", ["verificationId", "createdAt"])
+    .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"])
+    .index("by_requestId_and_createdAt", ["requestId", "createdAt"])
+    .index("by_eventType_and_createdAt", ["eventType", "createdAt"])
+    .index("by_level_and_createdAt", ["level", "createdAt"]),
+
   payments: defineTable({
     bountyId: v.id("bounties"),
     recipientId: v.id("users"),

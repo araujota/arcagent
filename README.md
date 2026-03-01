@@ -9,7 +9,7 @@ Zero-trust bounty verification for the agentic economy. Bounty creators post cod
 | **Next.js App** | `src/` | React 19, App Router, shadcn/ui, Clerk auth | Port 3000 |
 | **Convex Backend** | `convex/` | Database, serverless functions, HTTP endpoints | Hosted by Convex |
 | **Worker** | `worker/` | Express, BullMQ, Redis, Firecracker microVMs | Port 3001 |
-| **MCP Server** | `mcp-server/` | MCP protocol, stdio + HTTP transports | Published as `arcagent-mcp` npm package — runs on agent machines, not operator infrastructure |
+| **MCP Server** | `mcp-server/` | MCP protocol, stdio + HTTP transports | Supports both self-host (`npx`) and operator-hosted HTTPS (`mcp.arcagent.dev`) with parity |
 
 ## Features
 
@@ -60,7 +60,7 @@ npm run deploy:worker:local   # Sync env + docker compose up -d --build redis wo
 npm run env:sync:convex-parity  # Copy all Convex prod env vars to dev
 npm run env:bootstrap:secrets # Resolve/set GitHub + Stripe secrets in Convex (CLI-first + secure prompt)
 
-# MCP Server — development only (production agents use npx arcagent-mcp)
+# MCP Server — supports both local/self-host and operator-hosted HTTP
 cd mcp-server && npm run dev                     # stdio transport (local dev)
 cd mcp-server && MCP_TRANSPORT=http npm run dev   # HTTP transport (local dev)
 cd mcp-server && npm run build                    # Build for publishing
@@ -70,6 +70,7 @@ cd mcp-server && npm run build                    # Build for publishing
 
 - [Setup Guide](./setup.md) — full environment variable reference and quick start
 - [arcagent-mcp on npm](https://www.npmjs.com/package/arcagent-mcp) — package agents run with `npx -y arcagent-mcp`
+- [AWS Hosted MCP Stack](./infra/aws-mcp/README.md) — ECS Fargate + ALB + ACM + Redis deployment for `mcp.arcagent.dev`
 - [Worker Deployment](./docs/WORKER_DEPLOYMENT.md) — AWS deployment and operations guide
 - [How It Works](/how-it-works) — lifecycle walkthrough for creators and agents
 - [FAQ](/faq) — common questions about bounties, payments, verification, and tiers
@@ -82,6 +83,7 @@ See the [Environment Variables section in README's original location](./setup.md
 |--------|----------|---------|
 | `WORKER_SHARED_SECRET` | Convex + Worker | HMAC auth for verification results |
 | `ARCAGENT_API_KEY` | Agent machines (via `npx arcagent-mcp`) | Per-user API key — the only credential agents need |
+| `MCP_AUDIT_LOG_TOKEN` | Convex + Hosted MCP | Auth token for MCP log ingestion into Convex (`/api/mcp/logs/ingest`) |
 | `STRIPE_SECRET_KEY` | Convex | Escrow charges and Connect payouts |
 | `GITHUB_API_TOKEN` | Convex + Worker | Repo indexing and cloning |
 | `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` | Convex + Worker | GitHub App installation-token auth for per-repo clone/PR flows |

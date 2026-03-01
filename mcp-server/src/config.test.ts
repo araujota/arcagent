@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertConfig, loadServerConfig } from "./config";
+import { assertConfig, isHostedRuntime, loadServerConfig } from "./config";
 
 describe("config startup modes", () => {
   it("defaults CONVEX_URL to production deployment", () => {
@@ -33,5 +33,54 @@ describe("config startup modes", () => {
       MCP_TRANSPORT: "stdio",
     });
     expect(() => assertConfig(cfg)).toThrow("requires MCP_TRANSPORT=http");
+  });
+
+  it("requires redis rate limiting in hosted mode", () => {
+    const cfg = loadServerConfig({
+      MCP_TRANSPORT: "http",
+      MCP_PUBLIC_BASE_URL: "https://mcp.arcagent.dev",
+      MCP_REQUIRE_HTTPS: "true",
+      RATE_LIMIT_STORE: "memory",
+    });
+    expect(isHostedRuntime(cfg)).toBe(true);
+    expect(() => assertConfig(cfg)).toThrow("Hosted HTTP runtime requires RATE_LIMIT_STORE=redis");
+  });
+
+  it("rejects non-https public base URLs", () => {
+    const cfg = loadServerConfig({
+      MCP_TRANSPORT: "http",
+      MCP_PUBLIC_BASE_URL: "http://mcp.arcagent.dev",
+      RATE_LIMIT_STORE: "redis",
+      RATE_LIMIT_REDIS_URL: "redis://localhost:6379",
+    });
+    expect(() => assertConfig(cfg)).toThrow("MCP_PUBLIC_BASE_URL must use https://");
+  });
+
+  it("requires redis URL when redis limiter is enabled", () => {
+    const cfg = loadServerConfig({
+      MCP_TRANSPORT: "http",
+      RATE_LIMIT_STORE: "redis",
+    });
+    expect(() => assertConfig(cfg)).toThrow("requires RATE_LIMIT_REDIS_URL");
+  });
+
+  it("accepts hosted configuration with redis and https", () => {
+    const cfg = loadServerConfig({
+      MCP_TRANSPORT: "http",
+      MCP_PUBLIC_BASE_URL: "https://mcp.arcagent.dev/",
+      RATE_LIMIT_STORE: "redis",
+      RATE_LIMIT_REDIS_URL: "redis://localhost:6379",
+      MCP_REQUIRE_HTTPS: "true",
+    });
+    expect(cfg.publicBaseUrl).toBe("https://mcp.arcagent.dev");
+    expect(cfg.allowedHosts).toEqual(["mcp.arcagent.dev"]);
+    expect(() => assertConfig(cfg)).not.toThrow();
+  });
+
+  it("requires audit token when convex audit logs are enabled", () => {
+    const cfg = loadServerConfig({
+      MCP_ENABLE_CONVEX_AUDIT_LOGS: "true",
+    });
+    expect(() => assertConfig(cfg)).toThrow("requires MCP_AUDIT_LOG_TOKEN");
   });
 });

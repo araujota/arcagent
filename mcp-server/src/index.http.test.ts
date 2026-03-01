@@ -36,16 +36,22 @@ vi.mock("@modelcontextprotocol/sdk/server/streamableHttp.js", () => ({
   StreamableHTTPServerTransport: class FakeTransport {
     public sessionId?: string;
     public onclose?: () => void;
-    constructor(private opts: { onsessioninitialized: (sid: string) => void }) {}
+    constructor(
+      private opts?: {
+        onsessioninitialized?: (sid: string) => void;
+        sessionIdGenerator?: (() => string) | undefined;
+      },
+    ) {}
 
     async handleRequest(req: { method?: string; headers?: Record<string, string> }, res: {
       status: (code: number) => { json: (body: unknown) => void };
       json: (body: unknown) => void;
     }): Promise<void> {
-      if (!this.sessionId && req.method === "POST") {
+      const stateful = this.opts?.sessionIdGenerator !== undefined;
+      if (stateful && !this.sessionId && req.method === "POST") {
         sessionCounter += 1;
         this.sessionId = `sid-${sessionCounter}`;
-        this.opts.onsessioninitialized(this.sessionId);
+        this.opts?.onsessioninitialized?.(this.sessionId);
         res.status(200).json({ ok: true, sessionId: this.sessionId });
         return;
       }
@@ -73,6 +79,15 @@ function baseConfig(overrides?: Partial<ServerConfig>): ServerConfig {
     rateLimitStore: "memory",
     rateLimitRedisUrl: undefined,
     startupMode: "full",
+    sessionMode: "stateful",
+    publicBaseUrl: undefined,
+    allowedHosts: [],
+    requireHttps: false,
+    registerHoneypotField: "website",
+    registerCaptchaHeader: "x-arcagent-captcha-token",
+    registerCaptchaSecret: undefined,
+    enableConvexAuditLogs: false,
+    convexAuditLogToken: undefined,
     ...overrides,
   };
 }
@@ -433,6 +448,107 @@ describe("HTTP MCP auth/session hardening", () => {
       expect(resp.status).toBe(400);
       const body = await resp.json() as { error: { code: string } };
       expect(body.error.code).toBe("invalid_session");
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("rejects requests for hosts outside MCP_ALLOWED_HOSTS", async () => {
+    const runtime = await startRuntime(baseConfig({
+      allowedHosts: ["mcp.arcagent.dev"],
+    }));
+    try {
+      const resp = await fetch(`${runtime.url}/mcp`, {
+        method: "POST",
+        headers: {
+          Host: "invalid.arcagent.dev",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      });
+      expect(resp.status).toBe(403);
+      const body = await resp.json() as { error: { code: string } };
+      expect(body.error.code).toBe("host_not_allowed");
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("requires HTTPS when MCP_REQUIRE_HTTPS is enabled", async () => {
+    const runtime = await startRuntime(baseConfig({
+      requireHttps: true,
+    }));
+    try {
+      const resp = await fetch(`${runtime.url}/mcp`, {
+        method: "POST",
+        headers: {
+          "X-Forwarded-Proto": "http",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      });
+      expect(resp.status).toBe(400);
+      const body = await resp.json() as { error: { code: string } };
+      expect(body.error.code).toBe("https_required");
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("supports stateless mode for POST /mcp and blocks stream methods", async () => {
+    validateApiKeyMock.mockResolvedValue({
+      userId: "user-stateless",
+      name: "A",
+      email: "a@test.dev",
+      role: "agent",
+      scopes: ["bounties:read"],
+    });
+
+    const runtime = await startRuntime(baseConfig({
+      sessionMode: "stateless",
+    }));
+    try {
+      const postResp = await fetch(`${runtime.url}/mcp`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer arc_key_stateless",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      });
+      expect(postResp.status).toBe(200);
+      const postBody = await postResp.json() as { sessionId: string | null };
+      expect(postBody.sessionId).toBeNull();
+
+      const getResp = await fetch(`${runtime.url}/mcp`, {
+        method: "GET",
+      });
+      expect(getResp.status).toBe(409);
+      const getBody = await getResp.json() as { error: { code: string } };
+      expect(getBody.error.code).toBe("session_mode_stateless");
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("blocks registration when honeypot field is filled", async () => {
+    const runtime = await startRuntime(baseConfig({
+      registerHoneypotField: "website",
+    }));
+    try {
+      const resp = await fetch(`${runtime.url}/api/mcp/register`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: "Alice",
+          email: "alice@test.dev",
+          website: "https://spam.example",
+        }),
+      });
+      expect(resp.status).toBe(202);
+      expect(callConvexMock).not.toHaveBeenCalled();
     } finally {
       await runtime.close();
     }
