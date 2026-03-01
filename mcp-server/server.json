@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.araujota/arcagent-mcp",
+  "title": "ArcAgent MCP",
+  "description": "ArcAgent MCP server for bounty discovery, workspace execution, and verified coding submissions.",
+  "repository": {
+    "url": "https://github.com/araujota/arcagent",
+    "source": "github"
+  },
+  "version": "0.1.12",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "arcagent-mcp",
+      "version": "0.1.12",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "ARCAGENT_API_KEY",
+          "description": "ArcAgent API key used to authenticate MCP tool calls",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 export type RateLimitStore = "memory" | "redis";
 export type StartupMode = "full" | "registration-only";
+export type SessionMode = "stateful" | "stateless";
 
 export interface ServerConfig {
   convexUrl: string;
@@ -15,6 +16,15 @@ export interface ServerConfig {
   rateLimitStore: RateLimitStore;
   rateLimitRedisUrl?: string;
   startupMode: StartupMode;
+  sessionMode: SessionMode;
+  publicBaseUrl?: string;
+  allowedHosts: string[];
+  requireHttps: boolean;
+  registerHoneypotField?: string;
+  registerCaptchaHeader: string;
+  registerCaptchaSecret?: string;
+  enableConvexAuditLogs: boolean;
+  convexAuditLogToken?: string;
 }
 
 const DEFAULT_CONVEX_URL = "https://acoustic-starfish-282.convex.site";
@@ -34,6 +44,14 @@ function parseBoolEnv(value: string | undefined, fallback: boolean): boolean {
   return fallback;
 }
 
+function parseListEnv(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 function normalizeConvexHttpActionsUrl(url: string): string {
   const parsed = new URL(url);
   if (parsed.hostname.endsWith(CLOUD_SUFFIX)) {
@@ -43,6 +61,34 @@ function normalizeConvexHttpActionsUrl(url: string): string {
   parsed.search = "";
   parsed.hash = "";
   return parsed.toString().replace(/\/+$/, "");
+}
+
+function normalizePublicBaseUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  const parsed = new URL(url);
+  parsed.pathname = "";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString().replace(/\/+$/, "");
+}
+
+function getDefaultAllowedHosts(publicBaseUrl?: string): string[] {
+  if (!publicBaseUrl) return [];
+  try {
+    return [new URL(publicBaseUrl).hostname.toLowerCase()];
+  } catch {
+    return [];
+  }
+}
+
+export function isHostedRuntime(config: ServerConfig): boolean {
+  return (
+    config.transport === "http" && (
+      Boolean(config.publicBaseUrl) ||
+      config.allowedHosts.length > 0 ||
+      config.requireHttps
+    )
+  );
 }
 
 export function loadServerConfig(
@@ -55,7 +101,15 @@ export function loadServerConfig(
   const startupMode: StartupMode = env.MCP_STARTUP_MODE === "registration-only"
     ? "registration-only"
     : "full";
+  const sessionMode: SessionMode = env.MCP_SESSION_MODE === "stateless"
+    ? "stateless"
+    : "stateful";
   const convexBaseUrl = env.CONVEX_HTTP_ACTIONS_URL || env.CONVEX_URL || DEFAULT_CONVEX_URL;
+  const publicBaseUrl = normalizePublicBaseUrl(env.MCP_PUBLIC_BASE_URL);
+  const configuredAllowedHosts = parseListEnv(env.MCP_ALLOWED_HOSTS);
+  const allowedHosts = configuredAllowedHosts.length > 0
+    ? configuredAllowedHosts
+    : getDefaultAllowedHosts(publicBaseUrl);
 
   return {
     convexUrl: normalizeConvexHttpActionsUrl(convexBaseUrl),
@@ -71,6 +125,16 @@ export function loadServerConfig(
     rateLimitStore,
     rateLimitRedisUrl: env.RATE_LIMIT_REDIS_URL || env.REDIS_URL,
     startupMode,
+    sessionMode,
+    publicBaseUrl,
+    allowedHosts,
+    requireHttps: parseBoolEnv(env.MCP_REQUIRE_HTTPS, false),
+    registerHoneypotField: env.MCP_REGISTER_HONEYPOT_FIELD || "website",
+    registerCaptchaHeader: (env.MCP_REGISTER_CAPTCHA_HEADER || "x-arcagent-captcha-token")
+      .toLowerCase(),
+    registerCaptchaSecret: env.MCP_REGISTER_CAPTCHA_SECRET,
+    enableConvexAuditLogs: parseBoolEnv(env.MCP_ENABLE_CONVEX_AUDIT_LOGS, false),
+    convexAuditLogToken: env.MCP_AUDIT_LOG_TOKEN,
   };
 }
 
@@ -79,6 +143,24 @@ export function assertConfig(config: ServerConfig): void {
     if (config.transport !== "http") {
       throw new Error("MCP_STARTUP_MODE=registration-only requires MCP_TRANSPORT=http");
     }
-    return;
+  }
+
+  if (config.publicBaseUrl) {
+    const parsed = new URL(config.publicBaseUrl);
+    if (parsed.protocol !== "https:") {
+      throw new Error("MCP_PUBLIC_BASE_URL must use https://");
+    }
+  }
+
+  if (config.rateLimitStore === "redis" && !config.rateLimitRedisUrl) {
+    throw new Error("RATE_LIMIT_STORE=redis requires RATE_LIMIT_REDIS_URL (or REDIS_URL)");
+  }
+
+  if (isHostedRuntime(config) && config.rateLimitStore !== "redis") {
+    throw new Error("Hosted HTTP runtime requires RATE_LIMIT_STORE=redis");
+  }
+
+  if (config.enableConvexAuditLogs && !config.convexAuditLogToken) {
+    throw new Error("MCP_ENABLE_CONVEX_AUDIT_LOGS=true requires MCP_AUDIT_LOG_TOKEN");
   }
 }
