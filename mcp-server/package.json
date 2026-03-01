@@ -1,6 +1,6 @@
 {
   "name": "arcagent-mcp",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "ArcAgent MCP server for bounty discovery, workspace execution, and verified coding submissions",
   "mcpName": "io.github.araujota/arcagent-mcp",
   "homepage": "https://github.com/araujota/arcagent/tree/main/mcp-server",
