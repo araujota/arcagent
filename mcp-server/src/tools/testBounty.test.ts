@@ -66,6 +66,18 @@ describe("testbounty tool", () => {
     expect(result.content[0].text).toContain("boom");
   });
 
+  it("adds remediation guidance for commit resolution failures", async () => {
+    mockCallConvex.mockRejectedValue(
+      new Error("Failed to resolve test bounty commit SHA (status=403, rateLimitRemaining=0)"),
+    );
+
+    const result = await runWithAuth(testUser, () => handler({}));
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("TEST_BOUNTY_COMMIT_SHA");
+    expect(result.content[0].text).toContain("GITHUB_API_TOKEN");
+  });
+
   it("throws when auth context is missing", async () => {
     await expect(handler({})).rejects.toThrow("Authentication required");
   });

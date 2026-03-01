@@ -33,6 +33,11 @@ export interface EncryptedOverlayHandle {
   keyBuffer: Buffer;
 }
 
+interface RootfsDeviceAccessResult {
+  devicePath: string;
+  resolvedDevicePath: string;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -53,6 +58,8 @@ export interface EncryptedOverlayHandle {
 export async function createEncryptedOverlay(
   vmId: string,
   sourcePath: string,
+  jailerUid?: string,
+  jailerGid?: string,
 ): Promise<EncryptedOverlayHandle> {
   const cryptName = `fc-crypt-${vmId}`;
   const backingFile = `/tmp/fc-overlay-${vmId}.ext4`;
@@ -96,6 +103,8 @@ export async function createEncryptedOverlay(
     });
 
     const devicePath = `/dev/mapper/${cryptName}`;
+    const effectiveJailerUid = jailerUid ?? process.env.FC_JAILER_UID ?? "1001";
+    const effectiveJailerGid = jailerGid ?? process.env.FC_JAILER_GID ?? "1001";
 
     // 4. Copy the rootfs content onto the encrypted device
     await execFileAsync("dd", [
@@ -105,7 +114,20 @@ export async function createEncryptedOverlay(
       "conv=notrunc",
     ], { timeout: 60_000 });
 
-    logger.info("Encrypted overlay created", { vmId, loopDevice, devicePath });
+    const accessResult = await ensureRootfsDeviceReadableByJailer(
+      devicePath,
+      effectiveJailerUid,
+      effectiveJailerGid,
+    );
+
+    logger.info("Encrypted overlay created", {
+      vmId,
+      loopDevice,
+      devicePath,
+      resolvedDevicePath: accessResult.resolvedDevicePath,
+      jailerUid: effectiveJailerUid,
+      jailerGid: effectiveJailerGid,
+    });
 
     return {
       loopDevice,
@@ -122,6 +144,29 @@ export async function createEncryptedOverlay(
     keyBuffer.fill(0);
     throw err;
   }
+}
+
+export async function ensureRootfsDeviceReadableByJailer(
+  devicePath: string,
+  jailerUid: string,
+  jailerGid: string,
+): Promise<RootfsDeviceAccessResult> {
+  if (!/^\d+$/.test(jailerUid) || !/^\d+$/.test(jailerGid)) {
+    throw new Error(
+      `Invalid jailer uid/gid for rootfs device access: uid=${jailerUid} gid=${jailerGid}`,
+    );
+  }
+
+  const { stdout: resolvedStdout } = await execFileAsync("readlink", ["-f", devicePath]);
+  const resolvedDevicePath = resolvedStdout.trim() || devicePath;
+  const paths = Array.from(new Set([devicePath, resolvedDevicePath]));
+
+  for (const path of paths) {
+    await execFileAsync("chown", [`${jailerUid}:${jailerGid}`, path]);
+    await execFileAsync("chmod", ["660", path]);
+  }
+
+  return { devicePath, resolvedDevicePath };
 }
 
 /**

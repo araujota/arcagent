@@ -92,6 +92,10 @@ export function registerCheckWorkerStatus(server: McpServer): void {
         const backend = body?.checks?.executionBackend ?? "unknown";
         const backendPolicy = body?.checks?.executionBackendPolicy ?? "unknown";
         const firecrackerLocked = body?.checks?.firecrackerLocked ?? "unknown";
+        const kvmDevice = body?.checks?.kvmDevice ?? "unknown";
+        const vhostVsockDevice = body?.checks?.vhostVsockDevice ?? "unknown";
+        const jailerUid = body?.checks?.jailerUid ?? "unknown";
+        const jailerRootfsRead = body?.checks?.jailerCanReadEncryptedRootfsSample ?? "unknown";
 
         const text =
           `Worker health for ${baseUrl}\n` +
@@ -100,6 +104,10 @@ export function registerCheckWorkerStatus(server: McpServer): void {
           `- Execution backend: ${backend}\n` +
           `- Backend policy: ${backendPolicy}\n` +
           `- Firecracker locked: ${firecrackerLocked}\n` +
+          `- /dev/kvm: ${kvmDevice}\n` +
+          `- /dev/vhost-vsock: ${vhostVsockDevice}\n` +
+          `- Jailer UID: ${jailerUid}\n` +
+          `- Jailer encrypted rootfs readability: ${jailerRootfsRead}\n` +
           (body?.timestamp ? `- Timestamp: ${body.timestamp}\n` : "") +
           "\nChecks:\n" +
           checksText;

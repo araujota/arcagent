@@ -1,8 +1,8 @@
 import express from "express";
 import { execFileSync } from "node:child_process";
 import { createLogger, format, transports } from "winston";
-import { existsSync, readdirSync } from "node:fs";
-import { createVerificationQueue, closeQueue } from "./queue/jobQueue";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { createVerificationQueueWithMode, closeQueue } from "./queue/jobQueue";
 import { createRoutes } from "./api/routes";
 import { authMiddleware } from "./api/auth";
 import { cleanupStaleCryptDevices } from "./vm/encryptedOverlay";
@@ -51,14 +51,26 @@ async function main(): Promise<void> {
 
   const port = parseInt(process.env.PORT ?? "3001", 10);
   const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
+  const workerRoleRaw = (process.env.WORKER_ROLE ?? "api").toLowerCase();
+  if (workerRoleRaw !== "api") {
+    logger.error("Invalid WORKER_ROLE for hard API-only deployment. Set WORKER_ROLE=api.", {
+      workerRole: workerRoleRaw,
+    });
+    process.exit(1);
+  }
+  const workerRole = "api";
+  // API workers must consume verification jobs. If this is false, /api/verify
+  // will enqueue work that never leaves BullMQ "wait".
+  const runsQueue = true;
+  const runsWorkspace = true;
+  const hasLocalExecution = runsQueue || runsWorkspace;
   const executionBackend = (process.env.WORKER_EXECUTION_BACKEND ?? "firecracker").toLowerCase();
   const isProduction = process.env.NODE_ENV === "production";
-  const allowUnsafeProcessBackend =
-    !isProduction && process.env.ALLOW_UNSAFE_PROCESS_BACKEND === "true";
+  const allowUnsafeProcessBackend = process.env.ALLOW_UNSAFE_PROCESS_BACKEND === "true";
 
-  if (executionBackend !== "firecracker") {
+  if (hasLocalExecution && executionBackend !== "firecracker") {
     if (!allowUnsafeProcessBackend) {
-      logger.error("Only firecracker execution backend is allowed for deployed runtimes", {
+      logger.error("Only firecracker execution backend is safe by default", {
         executionBackend,
         allowUnsafeProcessBackend,
       });
@@ -70,12 +82,12 @@ async function main(): Promise<void> {
     });
   }
 
-  if (isProduction && process.env.FC_HARDEN_EGRESS !== "true") {
+  if (hasLocalExecution && executionBackend === "firecracker" && isProduction && process.env.FC_HARDEN_EGRESS !== "true") {
     logger.error("FC_HARDEN_EGRESS must be true in production firecracker mode");
     process.exit(1);
   }
 
-  if (executionBackend === "process") {
+  if (hasLocalExecution && executionBackend === "process") {
     const requiredTools: string[] = [];
     if (process.env.SNYK_TOKEN) requiredTools.push("snyk");
     if (process.env.SONARQUBE_URL && process.env.SONARQUBE_TOKEN) requiredTools.push("sonar-scanner");
@@ -90,23 +102,30 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
   // Startup cleanup — remove orphaned resources from prior unclean shutdowns
   // -------------------------------------------------------------------------
-  if (executionBackend === "firecracker") {
+  if (hasLocalExecution && executionBackend === "firecracker") {
     await cleanupStaleCryptDevices();
     await cleanupStaleResources();
   }
 
-  // Initialize crash recovery: generate instance ID, recover orphans, start heartbeat
-  const instanceId = generateWorkerInstanceId();
-  setWorkerInstanceId(instanceId);
-  logger.info("Worker instance ID generated", { instanceId });
+  if (hasLocalExecution) {
+    // Initialize crash recovery: generate instance ID, recover orphans, start heartbeat
+    const instanceId = generateWorkerInstanceId();
+    setWorkerInstanceId(instanceId);
+    logger.info("Worker instance ID generated", { instanceId });
 
-  await recoverOrphanedSessions(instanceId);
-  workspaceHeartbeat.startWorkerHeartbeat(instanceId);
+    await recoverOrphanedSessions(instanceId);
+    workspaceHeartbeat.startWorkerHeartbeat(instanceId);
+  }
 
   // Initialise the BullMQ queue & worker
-  const { queue, worker, queueEvents } = await createVerificationQueue(redisUrl);
+  const { queue, worker, queueEvents } = await createVerificationQueueWithMode(redisUrl, {
+    processJobs: runsQueue,
+  });
 
   logger.info("BullMQ queue and worker initialised", {
+    workerRole,
+    runsQueue,
+    runsWorkspace,
     redisUrl: redisUrl.replace(/\/\/.*@/, "//<redacted>@"),
   });
   logger.info("Execution backend lock state", {
@@ -133,6 +152,10 @@ async function main(): Promise<void> {
       healthy = false;
     }
 
+    checks.workerRole = workerRole;
+    checks.verificationQueueConsumer = runsQueue ? "enabled" : "disabled";
+    checks.localExecution = hasLocalExecution ? "enabled" : "disabled";
+    checks.workspaceMode = runsWorkspace ? "local" : "external_only";
     checks.executionBackend = executionBackend;
     checks.firecrackerLocked = executionBackend === "firecracker" ? "true" : "false";
     checks.executionIsolation = executionBackend === "firecracker" ? "microvm_rootfs" : "unsafe_process";
@@ -140,48 +163,81 @@ async function main(): Promise<void> {
     checks.snykCli = hasBinary("snyk") ? "ok" : "missing";
     checks.sonarScanner = hasBinary("sonar-scanner") ? "ok" : "missing";
 
-    if (executionBackend !== "firecracker") {
-      checks.executionBackendPolicy = allowUnsafeProcessBackend ? "unsafe_override" : "violation";
-      healthy = false;
+    if (!hasLocalExecution) {
+      checks.executionBackendPolicy = "external_executor_required";
+      checks.firecrackerLocked = "not_applicable";
+      checks.executionIsolation = "external_executor";
     } else {
-      checks.executionBackendPolicy = "ok";
-    }
+      if (executionBackend !== "firecracker") {
+        checks.executionBackendPolicy = allowUnsafeProcessBackend ? "unsafe_override" : "violation";
+        healthy = allowUnsafeProcessBackend;
+      } else {
+        checks.executionBackendPolicy = "ok";
+      }
 
-    if (executionBackend === "process" && process.env.SNYK_TOKEN && checks.snykCli !== "ok") {
-      healthy = false;
-    }
-    if (
-      executionBackend === "process" &&
-      process.env.SONARQUBE_URL &&
-      process.env.SONARQUBE_TOKEN &&
-      checks.sonarScanner !== "ok"
-    ) {
-      healthy = false;
-    }
-
-    if (executionBackend === "firecracker") {
-      // Firecracker binary
-      const fcBin = process.env.FIRECRACKER_BIN ?? "/usr/local/bin/firecracker";
-      checks.firecracker = existsSync(fcBin) ? "ok" : "missing";
-      if (checks.firecracker !== "ok") healthy = false;
-
-      // Kernel image
-      const kernel = process.env.FC_KERNEL_IMAGE ?? "/var/lib/firecracker/vmlinux";
-      checks.kernel = existsSync(kernel) ? "ok" : "missing";
-      if (checks.kernel !== "ok") healthy = false;
-
-      // Rootfs directory (check at least one .ext4 exists)
-      const rootfsDir = process.env.FC_ROOTFS_DIR ?? "/var/lib/firecracker/rootfs";
-      checks.rootfsPath = rootfsDir;
-      try {
-        const files = readdirSync(rootfsDir).filter(f => f.endsWith(".ext4"));
-        checks.rootfsDirectory = "ok";
-        checks.rootfsImages = files.length > 0 ? "ok" : "empty";
-        if (checks.rootfsImages !== "ok") healthy = false;
-      } catch {
-        checks.rootfsDirectory = "missing";
-        checks.rootfsImages = "unknown";
+      if (executionBackend === "process" && process.env.SNYK_TOKEN && checks.snykCli !== "ok") {
         healthy = false;
+      }
+      if (
+        executionBackend === "process" &&
+        process.env.SONARQUBE_URL &&
+        process.env.SONARQUBE_TOKEN &&
+        checks.sonarScanner !== "ok"
+      ) {
+        healthy = false;
+      }
+
+      if (executionBackend === "firecracker") {
+        // Firecracker binary
+        const fcBin = process.env.FIRECRACKER_BIN ?? "/usr/local/bin/firecracker";
+        checks.firecracker = existsSync(fcBin) ? "ok" : "missing";
+        if (checks.firecracker !== "ok") healthy = false;
+
+        // Kernel image
+        const kernel = process.env.FC_KERNEL_IMAGE ?? "/var/lib/firecracker/vmlinux";
+        checks.kernel = existsSync(kernel) ? "ok" : "missing";
+        if (checks.kernel !== "ok") healthy = false;
+
+        // Rootfs directory (check at least one .ext4 exists)
+        const rootfsDir = process.env.FC_ROOTFS_DIR ?? "/var/lib/firecracker/rootfs";
+        checks.rootfsPath = rootfsDir;
+        try {
+          const files = readdirSync(rootfsDir).filter(f => f.endsWith(".ext4"));
+          checks.rootfsDirectory = "ok";
+          checks.rootfsImages = files.length > 0 ? "ok" : "empty";
+          if (checks.rootfsImages !== "ok") healthy = false;
+        } catch {
+          checks.rootfsDirectory = "missing";
+          checks.rootfsImages = "unknown";
+          healthy = false;
+        }
+
+        checks.kvmDevice = existsSync("/dev/kvm") ? "ok" : "missing";
+        if (checks.kvmDevice !== "ok") healthy = false;
+
+        checks.vhostVsockDevice = existsSync("/dev/vhost-vsock") ? "ok" : "missing";
+        if (checks.vhostVsockDevice !== "ok") healthy = false;
+        checks.firecrackerLaunchMode = process.env.FC_USE_JAILER === "false" ? "direct" : "jailer";
+
+        const jailerUid = process.env.FC_JAILER_UID ?? "1001";
+        const jailerGid = process.env.FC_JAILER_GID ?? "1001";
+        checks.jailerUid = jailerUid;
+        checks.jailerGid = jailerGid;
+
+        const encryptedRootfsSamplePath = resolveEncryptedRootfsSamplePath();
+        checks.encryptedRootfsSamplePath = encryptedRootfsSamplePath ?? "none";
+        checks.jailerCanReadEncryptedRootfsSample = evaluateReadabilityForIdentity(
+          encryptedRootfsSamplePath,
+          jailerUid,
+          jailerGid,
+        );
+        if (
+          checks.jailerCanReadEncryptedRootfsSample.startsWith("permission_denied") ||
+          checks.jailerCanReadEncryptedRootfsSample.startsWith("stat_failed") ||
+          checks.jailerCanReadEncryptedRootfsSample.startsWith("invalid_jailer_identity")
+        ) {
+          healthy = false;
+        }
       }
     }
 
@@ -200,15 +256,16 @@ async function main(): Promise<void> {
   const routes = createRoutes(queue);
   app.use("/api", routes);
 
-  // Mount workspace routes (dev VM lifecycle)
   const workspaceRoutes = createWorkspaceRoutes();
   app.use("/api", workspaceRoutes);
 
-  // Start idle workspace checker
-  startIdleChecker();
+  // API-only mode: no local workspace checker.
+  if (runsWorkspace) {
+    startIdleChecker();
+  }
 
   // Initialize warm VM pool (background, non-blocking)
-  if (executionBackend === "firecracker") {
+  if (runsWorkspace && executionBackend === "firecracker") {
     vmPool.initialize().catch((err) => {
       logger.warn("Warm VM pool initialization failed", { error: String(err) });
     });
@@ -238,24 +295,34 @@ async function main(): Promise<void> {
     server.close();
 
     // 2. Stop heartbeat intervals
-    workspaceHeartbeat.stopAll();
+    if (runsWorkspace) {
+      workspaceHeartbeat.stopAll();
+    }
     stopWatchdog();
 
     // 3. Drain BullMQ worker FIRST — waits for in-flight jobs to finish
     //    (their finally blocks will destroy verification VMs)
-    await worker.close().catch((err) => {
-      logger.error("BullMQ worker close failed", { error: String(err) });
-    });
+    if (worker) {
+      await worker.close().catch((err) => {
+        logger.error("BullMQ worker close failed", { error: String(err) });
+      });
+    }
 
     // 4. Now destroy workspace sessions (dev VMs)
-    await destroyAllSessions();
+    if (runsWorkspace) {
+      await destroyAllSessions();
+    }
 
     // 5. Drain warm pool and close vsock connections
-    await vmPool.drainAll();
-    vsockPool.destroyAll();
+    if (runsWorkspace) {
+      await vmPool.drainAll();
+      vsockPool.destroyAll();
+    }
 
     // 6. Close queue, queue events, and Redis
-    await queueEvents.close().catch(() => {});
+    if (queueEvents) {
+      await queueEvents.close().catch(() => {});
+    }
     await closeQueue(queue);
     await sessionStore.close();
 
@@ -346,4 +413,55 @@ function startSystemdWatchdog(): () => void {
     }
     void notify(["STOPPING=1", "--status=arcagent-worker shutting down"]);
   };
+}
+
+function resolveEncryptedRootfsSamplePath(): string | null {
+  const configured = process.env.FC_ENCRYPTED_ROOTFS_SAMPLE_PATH?.trim();
+  if (configured) return configured;
+
+  try {
+    const mapperEntries = readdirSync("/dev/mapper")
+      .filter((entry) => entry.startsWith("fc-crypt-"))
+      .sort();
+    if (mapperEntries.length > 0) {
+      return `/dev/mapper/${mapperEntries[0]}`;
+    }
+  } catch {
+    // /dev/mapper may not exist in local development.
+  }
+
+  return null;
+}
+
+function evaluateReadabilityForIdentity(
+  samplePath: string | null,
+  jailerUidRaw: string,
+  jailerGidRaw: string,
+): string {
+  if (!samplePath) return "unknown_no_sample_device";
+  if (!existsSync(samplePath)) return "sample_missing";
+  if (!/^\d+$/.test(jailerUidRaw) || !/^\d+$/.test(jailerGidRaw)) {
+    return "invalid_jailer_identity";
+  }
+
+  const jailerUid = parseInt(jailerUidRaw, 10);
+  const jailerGid = parseInt(jailerGidRaw, 10);
+
+  try {
+    const resolved = realpathSync(samplePath);
+    const fsStat = statSync(resolved);
+    const modeBits = fsStat.mode & 0o777;
+    const mode = modeBits.toString(8).padStart(3, "0");
+    const readable =
+      jailerUid === 0 ||
+      (jailerUid === fsStat.uid && (modeBits & 0o400) !== 0) ||
+      (jailerGid === fsStat.gid && (modeBits & 0o040) !== 0) ||
+      (modeBits & 0o004) !== 0;
+    if (readable) return "ok";
+
+    return `permission_denied(mode=${mode},owner=${fsStat.uid}:${fsStat.gid},resolved=${resolved})`;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `stat_failed(${message})`;
+  }
 }

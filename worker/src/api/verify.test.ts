@@ -213,3 +213,66 @@ describe("POST /api/verify", () => {
     expect(res.body.error).toContain("jobHmac");
   });
 });
+
+describe("POST /api/verify/publish-pr", () => {
+  let app: express.Application;
+
+  beforeEach(() => {
+    app = createTestApp();
+  });
+
+  it("returns 400 when required fields are missing", async () => {
+    const res = await supertest(app)
+      .post("/api/verify/publish-pr")
+      .set("Authorization", AUTH_HEADER)
+      .send({
+        verificationId: "verif_1",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Missing required fields");
+  });
+
+  it("rejects non-verification feature branch names", async () => {
+    const res = await supertest(app)
+      .post("/api/verify/publish-pr")
+      .set("Authorization", AUTH_HEADER)
+      .send({
+        verificationId: "verif_1",
+        submissionId: "sub_1",
+        bountyId: "bounty_1",
+        repoUrl: "https://github.com/test/repo",
+        repoAuthToken: "ghs_mocktoken",
+        baseCommitSha: "abc1234",
+        baseBranch: "main",
+        featureBranchName: "feature/manual-branch",
+        diffPatch: "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1 @@\n+hello",
+        prTitle: "Test",
+        prBody: "Test body",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("arcagent/verified-");
+  });
+
+  it("requires repoAuthToken for publish-pr", async () => {
+    const res = await supertest(app)
+      .post("/api/verify/publish-pr")
+      .set("Authorization", AUTH_HEADER)
+      .send({
+        verificationId: "verif_1",
+        submissionId: "sub_1",
+        bountyId: "bounty_1",
+        repoUrl: "https://github.com/test/repo",
+        baseCommitSha: "abc1234",
+        baseBranch: "main",
+        featureBranchName: "arcagent/verified-1234abcd",
+        diffPatch: "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1 @@\n+hello",
+        prTitle: "Test",
+        prBody: "Test body",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("repoAuthToken");
+  });
+});

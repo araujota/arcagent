@@ -8,13 +8,19 @@ interface FeedbackResponse {
   feedbackJson: string | null;
   verificationStatus: string;
   attemptNumber?: number;
+  hiddenFailureMechanisms?: Array<{
+    key: string;
+    label: string;
+    count: number;
+    guidance: string;
+  }>;
 }
 
 export function registerGetSubmissionFeedback(server: McpServer): void {
   registerTool(
     server,
     "get_submission_feedback",
-    "Get structured feedback from the most recent failed verification for a bounty. Returns prioritized action items, per-file issues, remaining attempts, public test output, and hidden-test summary-safe guidance.",
+    "Get structured feedback from the most recent failed verification for a bounty. Returns prioritized action items, per-file issues, remaining attempts, and detailed test output for public and hidden scenarios.",
     {
       bountyId: z.string().describe("The bounty ID"),
     },
@@ -65,11 +71,8 @@ export function registerGetSubmissionFeedback(server: McpServer): void {
 
         // Test results
         if (feedback.testResults && feedback.testResults.length > 0) {
-          const publicTests = feedback.testResults.filter(
-            (t: { visibility?: string }) => (t.visibility ?? "public") === "public",
-          );
-          const failed = publicTests.filter((t: { status: string }) => t.status === "fail");
-          const passed = publicTests.filter((t: { status: string }) => t.status === "pass");
+          const failed = feedback.testResults.filter((t: { status: string }) => t.status === "fail");
+          const passed = feedback.testResults.filter((t: { status: string }) => t.status === "pass");
           text += `## Test Results\n`;
           text += `**Passed:** ${passed.length} | **Failed:** ${failed.length}\n\n`;
 
@@ -84,12 +87,26 @@ export function registerGetSubmissionFeedback(server: McpServer): void {
 
         // Prioritized action items
         if (feedback.actionItems && feedback.actionItems.length > 0) {
-          const safeItems = feedback.actionItems.filter(
-            (item: string) => !item.toLowerCase().includes("hidden"),
-          );
           text += `\n## Action Items (prioritized — fix in this order)\n\n`;
-          for (let i = 0; i < safeItems.length; i++) {
-            text += `${i + 1}. ${safeItems[i]}\n`;
+          for (let i = 0; i < feedback.actionItems.length; i++) {
+            text += `${i + 1}. ${feedback.actionItems[i]}\n`;
+          }
+        }
+
+        const hiddenMechanisms = Array.isArray(feedback.hiddenFailureMechanisms) &&
+          feedback.hiddenFailureMechanisms.length > 0
+          ? feedback.hiddenFailureMechanisms
+          : (Array.isArray(result.hiddenFailureMechanisms) ? result.hiddenFailureMechanisms : []);
+
+        if (hiddenMechanisms.length > 0) {
+          text += `\n## Hidden Failure Mechanisms (safe summary)\n\n`;
+          for (const mechanism of hiddenMechanisms.slice(0, 10)) {
+            const label = typeof mechanism?.label === "string" ? mechanism.label : "Unknown edge case";
+            const count = typeof mechanism?.count === "number" ? mechanism.count : "?";
+            const guidance = typeof mechanism?.guidance === "string"
+              ? mechanism.guidance
+              : "Harden boundary conditions and error handling.";
+            text += `- **${label}** (${count}): ${guidance}\n`;
           }
         }
 

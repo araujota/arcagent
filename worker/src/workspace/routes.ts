@@ -7,7 +7,7 @@
  * These endpoints are called directly by the MCP server for low-latency interactive work.
  */
 
-import { Router, Request, Response } from "express";
+import { Router, Request, Response as ExpressResponse } from "express";
 import { logger } from "../index";
 import {
   provisionWorkspace,
@@ -19,6 +19,7 @@ import {
 } from "./sessionManager";
 import { isBlockedCommand, validateWorkspacePath, shellEscape, validateGlobPattern } from "./validation";
 import crypto from "node:crypto";
+import { sessionStore } from "./sessionStore";
 
 // ---------------------------------------------------------------------------
 // Output limits
@@ -75,6 +76,64 @@ function cleanupStreamJobs(workspaceId: string): void {
   streamJobs.delete(workspaceId);
 }
 
+function getWorkerHost(): string {
+  return process.env.WORKER_HOST_URL || `http://localhost:${process.env.PORT ?? "3001"}`;
+}
+
+interface WorkspaceStatusRecord {
+  workspaceId: string;
+  status: string;
+  vmId?: string;
+  guestIp?: string;
+  language?: string;
+  createdAt?: number;
+  readyAt?: number;
+  expiresAt?: number;
+  lastActivityAt?: number;
+  errorMessage?: string;
+}
+
+function toWorkspaceStatusRecordFromSession(
+  session: NonNullable<ReturnType<typeof getSession>>,
+): WorkspaceStatusRecord {
+  return {
+    workspaceId: session.workspaceId,
+    status: session.status,
+    vmId: session.vmHandle?.vmId,
+    guestIp: session.vmHandle?.guestIp,
+    language: session.language,
+    createdAt: session.createdAt,
+    readyAt: session.readyAt,
+    expiresAt: session.expiresAt,
+    lastActivityAt: session.lastActivityAt,
+    errorMessage: session.errorMessage,
+  };
+}
+
+async function resolveWorkspaceStatusRecord(
+  workspaceId: string,
+): Promise<WorkspaceStatusRecord | null> {
+  const inMemory = getSession(workspaceId);
+  if (inMemory) {
+    return toWorkspaceStatusRecordFromSession(inMemory);
+  }
+
+  const fromStore = await sessionStore.get(workspaceId);
+  if (!fromStore) return null;
+
+  return {
+    workspaceId: fromStore.workspaceId,
+    status: fromStore.status,
+    vmId: fromStore.vmId,
+    guestIp: fromStore.guestIp,
+    language: fromStore.language,
+    createdAt: fromStore.createdAt,
+    readyAt: fromStore.readyAt,
+    expiresAt: fromStore.expiresAt,
+    lastActivityAt: fromStore.lastActivityAt,
+  };
+}
+
 // isBlockedCommand and validateWorkspacePath imported from ./validation
 
 // ---------------------------------------------------------------------------
@@ -98,7 +157,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/provision — Create dev VM, clone repo
   // -------------------------------------------------------------------------
-  router.post("/workspace/provision", async (req: Request, res: Response) => {
+  router.post("/workspace/provision", async (req: Request, res: ExpressResponse) => {
     try {
       const {
         workspaceId,
@@ -106,6 +165,7 @@ export function createWorkspaceRoutes(): Router {
         bountyId,
         agentId,
         repoUrl,
+        repoAuthToken,
         commitSha,
         language,
         expiresAt,
@@ -115,6 +175,7 @@ export function createWorkspaceRoutes(): Router {
         bountyId: string;
         agentId: string;
         repoUrl: string;
+        repoAuthToken?: string;
         commitSha: string;
         language: string;
         expiresAt: number;
@@ -131,6 +192,7 @@ export function createWorkspaceRoutes(): Router {
         bountyId,
         agentId,
         repoUrl,
+        repoAuthToken,
         commitSha,
         language: language ?? "typescript",
         expiresAt: expiresAt ?? Date.now() + 4 * 60 * 60 * 1000,
@@ -139,8 +201,9 @@ export function createWorkspaceRoutes(): Router {
       res.json({
         workspaceId: session.workspaceId,
         vmId: session.vmHandle.vmId,
+        guestIp: session.vmHandle.guestIp,
         status: session.status,
-        workerHost: process.env.WORKER_HOST_URL || `http://localhost:${process.env.PORT ?? "3001"}`,
+        workerHost: getWorkerHost(),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to provision workspace";
@@ -158,7 +221,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/exec — Run command in dev VM
   // -------------------------------------------------------------------------
-  router.post("/workspace/exec", async (req: Request, res: Response) => {
+  router.post("/workspace/exec", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, command, timeoutMs } = req.body as {
         workspaceId: string;
@@ -206,7 +269,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/read-file — Read file from dev VM
   // -------------------------------------------------------------------------
-  router.post("/workspace/read-file", async (req: Request, res: Response) => {
+  router.post("/workspace/read-file", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, path, offset, limit } = req.body as {
         workspaceId: string;
@@ -286,7 +349,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/write-file — Write file to dev VM
   // -------------------------------------------------------------------------
-  router.post("/workspace/write-file", async (req: Request, res: Response) => {
+  router.post("/workspace/write-file", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, path, content } = req.body as {
         workspaceId: string;
@@ -335,7 +398,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/diff — Extract git diff from workspace
   // -------------------------------------------------------------------------
-  router.post("/workspace/diff", async (req: Request, res: Response) => {
+  router.post("/workspace/diff", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId } = req.body as { workspaceId: string };
       if (!workspaceId) {
@@ -362,7 +425,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/status — Health check + metadata
   // -------------------------------------------------------------------------
-  router.post("/workspace/status", async (req: Request, res: Response) => {
+  router.post("/workspace/status", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId } = req.body as { workspaceId: string };
       if (!workspaceId) {
@@ -370,7 +433,7 @@ export function createWorkspaceRoutes(): Router {
         return;
       }
 
-      const session = getSession(workspaceId);
+      const session = await resolveWorkspaceStatusRecord(workspaceId);
       if (!session) {
         res.status(404).json({ error: "Workspace not found" });
         return;
@@ -379,7 +442,9 @@ export function createWorkspaceRoutes(): Router {
       res.json({
         workspaceId: session.workspaceId,
         status: session.status,
-        vmId: session.vmHandle?.vmId,
+        vmId: session.vmId,
+        guestIp: session.guestIp,
+        workerHost: getWorkerHost(),
         language: session.language,
         createdAt: session.createdAt,
         readyAt: session.readyAt,
@@ -396,7 +461,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/destroy — Tear down VM
   // -------------------------------------------------------------------------
-  router.post("/workspace/destroy", async (req: Request, res: Response) => {
+  router.post("/workspace/destroy", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, reason } = req.body as {
         workspaceId: string;
@@ -418,7 +483,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/extend-ttl — Extend workspace TTL
   // -------------------------------------------------------------------------
-  router.post("/workspace/extend-ttl", async (req: Request, res: Response) => {
+  router.post("/workspace/extend-ttl", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, newExpiresAt } = req.body as {
         workspaceId: string;
@@ -440,7 +505,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/batch-read — Read multiple files in one request
   // -------------------------------------------------------------------------
-  router.post("/workspace/batch-read", async (req: Request, res: Response) => {
+  router.post("/workspace/batch-read", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, paths, maxLinesPerFile } = req.body as {
         workspaceId: string;
@@ -517,7 +582,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/batch-write — Write multiple files in one request
   // -------------------------------------------------------------------------
-  router.post("/workspace/batch-write", async (req: Request, res: Response) => {
+  router.post("/workspace/batch-write", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, files } = req.body as {
         workspaceId: string;
@@ -587,7 +652,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/search — Structured grep inside workspace
   // -------------------------------------------------------------------------
-  router.post("/workspace/search", async (req: Request, res: Response) => {
+  router.post("/workspace/search", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, pattern, glob, maxResults, caseSensitive } = req.body as {
         workspaceId: string;
@@ -668,7 +733,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/list-files — List files with optional glob
   // -------------------------------------------------------------------------
-  router.post("/workspace/list-files", async (req: Request, res: Response) => {
+  router.post("/workspace/list-files", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, glob, maxDepth, maxResults } = req.body as {
         workspaceId: string;
@@ -723,7 +788,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/exec-stream — Start a long-running command (returns jobId)
   // -------------------------------------------------------------------------
-  router.post("/workspace/exec-stream", async (req: Request, res: Response) => {
+  router.post("/workspace/exec-stream", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, command, timeoutMs } = req.body as {
         workspaceId: string;
@@ -820,7 +885,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/exec-output — Poll output from a streaming exec job
   // -------------------------------------------------------------------------
-  router.post("/workspace/exec-output", async (req: Request, res: Response) => {
+  router.post("/workspace/exec-output", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, jobId, offset } = req.body as {
         workspaceId: string;
@@ -896,7 +961,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/edit-file — Surgical string replacement in a file
   // -------------------------------------------------------------------------
-  router.post("/workspace/edit-file", async (req: Request, res: Response) => {
+  router.post("/workspace/edit-file", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, path, oldString, newString, replaceAll } = req.body as {
         workspaceId: string;
@@ -965,7 +1030,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/glob — Glob pattern file search
   // -------------------------------------------------------------------------
-  router.post("/workspace/glob", async (req: Request, res: Response) => {
+  router.post("/workspace/glob", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, pattern, path, maxResults } = req.body as {
         workspaceId: string;
@@ -1012,7 +1077,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/grep — Ripgrep-powered content search
   // -------------------------------------------------------------------------
-  router.post("/workspace/grep", async (req: Request, res: Response) => {
+  router.post("/workspace/grep", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, pattern, path, glob, caseSensitive, maxResults, contextLines, outputMode } = req.body as {
         workspaceId: string;
@@ -1077,7 +1142,7 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   // POST /workspace/session-exec — Execute in persistent PTY shell session
   // -------------------------------------------------------------------------
-  router.post("/workspace/session-exec", async (req: Request, res: Response) => {
+  router.post("/workspace/session-exec", async (req: Request, res: ExpressResponse) => {
     try {
       const { workspaceId, command, sessionId, timeoutMs } = req.body as {
         workspaceId: string;

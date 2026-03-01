@@ -3,6 +3,8 @@ import { v } from "convex/values";
 import { getCurrentUser, requireAuth } from "./lib/utils";
 import { api, internal } from "./_generated/api";
 import { MIN_BOUNTY_REWARD, MIN_S_TIER_BOUNTY_REWARD } from "./lib/fees";
+import { detectProvider } from "./lib/repoProviders";
+import { findGitHubInstallationForRepo, isGitHubAppConfigured, parseGitHubRepoUrlSafe } from "./lib/githubApp";
 
 const MAX_TITLE_LENGTH = 200;
 const MAX_DESCRIPTION_LENGTH = 50_000;
@@ -910,12 +912,39 @@ export const connectRepo = action({
     repositoryUrl: v.string(),
   },
   handler: async (ctx, args) => {
+    const provider = detectProvider(args.repositoryUrl);
+    let githubInstallationId: number | undefined;
+    let githubInstallationAccountLogin: string | undefined;
+
+    if (provider === "github") {
+      if (!isGitHubAppConfigured()) {
+        throw new Error(
+          "GitHub App is not configured in this environment. Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY before connecting GitHub repos."
+        );
+      }
+      const parsed = parseGitHubRepoUrlSafe(args.repositoryUrl);
+      if (parsed) {
+        const installation = await findGitHubInstallationForRepo(parsed.owner, parsed.repo);
+        if (installation) {
+          githubInstallationId = installation.installationId;
+          githubInstallationAccountLogin = installation.accountLogin;
+        }
+      }
+      if (!githubInstallationId) {
+        throw new Error(
+          "GitHub App installation is required for this repository. Install the Arcagent GitHub App on the repo or owning organization, then reconnect."
+        );
+      }
+    }
+
     // Create repo connection
     const repoConnectionId = await ctx.runMutation(
       api.repoConnections.create,
       {
         bountyId: args.bountyId,
         repositoryUrl: args.repositoryUrl,
+        githubInstallationId,
+        githubInstallationAccountLogin,
       }
     );
 

@@ -150,6 +150,7 @@ function createMockJob(overrides?: Record<string, unknown>): Job {
       submissionId: "sub-lifecycle-001",
       bountyId: "bounty-lifecycle-001",
       repoUrl: "https://github.com/test/repo",
+      repoAuthToken: "ghs_mocktoken",
       commitSha: "abc1234def5678",
       timeoutSeconds: 300,
       convexUrl: "https://test-deploy.convex.cloud",
@@ -182,6 +183,7 @@ describe("Flow 1: Workspace lifecycle (agent → worker → VM → agent)", () =
     bountyId: "bounty-001",
     agentId: "agent-001",
     repoUrl: "https://github.com/test/repo",
+    repoAuthToken: "ghs_mocktoken",
     commitSha: "abc1234",
     language: "typescript",
     expiresAt: Date.now() + 4 * 60 * 60 * 1000,
@@ -208,7 +210,7 @@ describe("Flow 1: Workspace lifecycle (agent → worker → VM → agent)", () =
     // Verify repo clone command was executed inside VM
     const cloneCall = vi.mocked(mockVM.exec).mock.calls[0];
     expect(cloneCall[0]).toContain("git clone");
-    expect(cloneCall[0]).toContain(provisionOpts.repoUrl);
+    expect(cloneCall[0]).toContain("github.com/test/repo");
 
     // --- Step 2: Agent executes command in VM via worker ---
     vi.mocked(mockVM.exec).mockResolvedValueOnce({
@@ -372,7 +374,7 @@ describe("Flow 2: Verification job lifecycle (Convex → worker → VM → gates
     // 2. Repo was cloned inside VM
     const execCalls = vi.mocked(mockVM.exec).mock.calls;
     expect(execCalls[0][0]).toContain("git clone");
-    expect(execCalls[0][0]).toContain("https://github.com/test/repo");
+    expect(execCalls[0][0]).toContain("github.com/test/repo");
 
     // 3. Gates ran
     expect(runGates).toHaveBeenCalledOnce();
@@ -431,7 +433,7 @@ describe("Flow 2: Verification job lifecycle (Convex → worker → VM → gates
 
     // 1. Patch was written to VM
     expect(mockVM.writeFile).toHaveBeenCalledWith(
-      "/tmp/agent.patch",
+      "/workspace/.arcagent/agent.patch",
       Buffer.from(diffPatch),
       "0644",
       "agent:agent",
@@ -461,6 +463,7 @@ describe("Flow 2: Verification job lifecycle (Convex → worker → VM → gates
       exec: vi.fn()
         .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })  // git clone
         .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })  // chown
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })  // mkdir/chown patch dir
         .mockResolvedValueOnce({                                          // git apply FAILS
           stdout: "",
           stderr: "error: patch failed: src/index.ts:1\nerror: src/index.ts: patch does not apply",
@@ -594,6 +597,7 @@ describe("Flow 3: Workspace to verification handoff", () => {
       bountyId: "bounty-handoff",
       agentId: "agent-handoff",
       repoUrl: "https://github.com/test/repo",
+      repoAuthToken: "ghs_mocktoken",
       commitSha: "base-sha-123",
       language: "typescript",
       expiresAt: Date.now() + 4 * 60 * 60 * 1000,
@@ -649,7 +653,7 @@ describe("Flow 3: Workspace to verification handoff", () => {
 
     // Patch was applied to the clean VM
     expect(verifyVM.writeFile).toHaveBeenCalledWith(
-      "/tmp/agent.patch",
+      "/workspace/.arcagent/agent.patch",
       expect.any(Buffer),
       "0644",
       "agent:agent",
@@ -685,6 +689,7 @@ describe("Flow 4: Error propagation across system boundaries", () => {
         bountyId: "bounty-err",
         agentId: "agent-err",
         repoUrl: "https://github.com/test/repo",
+        repoAuthToken: "ghs_mocktoken",
         commitSha: "abc123",
         language: "typescript",
         expiresAt: Date.now() + 1000,
@@ -714,6 +719,7 @@ describe("Flow 4: Error propagation across system boundaries", () => {
         bountyId: "bounty-cf",
         agentId: "agent-cf",
         repoUrl: "https://github.com/test/private-repo",
+        repoAuthToken: "ghs_mocktoken",
         commitSha: "abc123",
         language: "typescript",
         expiresAt: Date.now() + 1000,
@@ -786,14 +792,14 @@ describe("Flow 5: Worker ↔ VM communication patterns", () => {
     const patchContent = "diff --git a/file.ts b/file.ts\n+new code\n";
 
     await mockVM.writeFile(
-      "/tmp/agent.patch",
+      "/workspace/.arcagent/agent.patch",
       Buffer.from(patchContent),
       "0644",
       "agent:agent",
     );
 
     expect(mockVM.writeFile).toHaveBeenCalledWith(
-      "/tmp/agent.patch",
+      "/workspace/.arcagent/agent.patch",
       Buffer.from(patchContent),
       "0644",
       "agent:agent",
@@ -866,6 +872,7 @@ describe("Flow 6: Resource cleanup guarantees", () => {
         bountyId: "bounty-dd",
         agentId: "agent-dd",
         repoUrl: "https://github.com/test/repo",
+        repoAuthToken: "ghs_mocktoken",
         commitSha: "abc123",
         language: "typescript",
         expiresAt: Date.now() + 1000,

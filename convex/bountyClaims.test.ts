@@ -4,8 +4,8 @@ import schema from "./schema";
 import { internal } from "./_generated/api";
 import { seedUser, seedBounty, seedClaim, seedVerification, seedSubmission } from "./__tests__/helpers";
 
-// markCompleted uses ctx.scheduler.runAfter() for cleanup which can
-// cause "Write outside of transaction" errors in convex-test. Suppress them.
+// markCompleted may schedule async follow-up work in test environments,
+// which can surface as unhandled rejections in convex-test. Suppress them.
 let rejectionHandler: (err: unknown) => void;
 beforeEach(() => {
   rejectionHandler = () => {};
@@ -376,7 +376,7 @@ describe("Bounty Claims", () => {
       expect(claim?.status).toBe("completed");
     });
 
-    it("schedules cleanupBranch when branch info exists", async () => {
+    it("keeps completion behavior unchanged when branch info exists", async () => {
       const t = convexTest(schema);
       const claimId = await t.run(async (ctx) => {
         const creatorId = await seedUser(ctx);
@@ -391,7 +391,7 @@ describe("Bounty Claims", () => {
         });
       });
 
-      // Should not throw — cleanup is scheduled via scheduler
+      // Should not throw — branch metadata may still exist after completion.
       await t.mutation(internal.bountyClaims.markCompleted, { claimId });
 
       const claim = await t.run(async (ctx) => ctx.db.get(claimId));

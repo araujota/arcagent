@@ -20,6 +20,18 @@ interface WorkerTokenCacheEntry {
 
 const workerTokenCache = new Map<string, WorkerTokenCacheEntry>();
 
+export class WorkerHttpError extends Error {
+  readonly status: number;
+  readonly path: string;
+
+  constructor(status: number, path: string, message: string) {
+    super(message);
+    this.name = "WorkerHttpError";
+    this.status = status;
+    this.path = path;
+  }
+}
+
 function getTokenCacheKey(workspaceId: string, routePath: string): string {
   const authKey = getAuthApiKey() ?? "stdio";
   return `${authKey}:${workspaceId}:${routePath}`;
@@ -95,7 +107,7 @@ export async function callWorker<T = unknown>(
       } catch {
         errorMessage = `Worker error (${response.status}). ${rawText.slice(0, 200)}`;
       }
-      throw new Error(errorMessage);
+      throw new WorkerHttpError(response.status, path, errorMessage);
     }
 
     return (await response.json()) as T;

@@ -25,7 +25,8 @@ This guide covers deploying the ArcAgent verification worker — from local deve
 
 **Key points:**
 - The worker is independently deployed — it runs on your own infrastructure, not alongside Convex
-- Requires **Linux with KVM support** (bare-metal EC2 for production)
+- The worker runs in API-only mode (`WORKER_ROLE=api`) and still processes BullMQ verification jobs.
+- Workspace/job execution is performed by this worker instance (or its configured execution backend), so each worker can provision and own multiple workspaces.
 - Requires **Redis** for the BullMQ job queue
 - Firecracker microVMs provide per-job isolation with language-specific rootfs images
 - Communication between Convex and the worker is authenticated via `WORKER_SHARED_SECRET` (constant-time comparison)
@@ -67,21 +68,27 @@ Create a `.env` file at the repo root (loaded by all services via `env_file`). R
 | `CONVEX_URL` | Yes | Convex deployment URL (e.g. `https://your-app.convex.cloud`) |
 | `CONVEX_HTTP_ACTIONS_URL` | Recommended | Convex HTTP actions URL (e.g. `https://your-app.convex.site`) |
 | `WORKER_SHARED_SECRET` | Yes | Must match the value set in Convex env |
+| `WORKER_ROLE` | No | Runtime role (`api`) |
 | `REDIS_URL` | No | Overridden to `redis://redis:6379` by Docker Compose |
 | `PORT` | No | Default: `3001` |
 | `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` (default) |
 
 ### Firecracker in Docker
 
-The Docker Compose config mounts `/dev/kvm` and `/dev/net/tun` from the host and adds the required capabilities (`SYS_ADMIN`, `NET_ADMIN`, `NET_RAW`, `MKNOD`). **Your host must be Linux with KVM support** — Firecracker cannot run inside Docker on macOS or Windows.
-
-For local development without Firecracker (e.g. on macOS), you can run the worker directly:
+For local development without KVM, run with `WORKER_EXECUTION_BACKEND=process` (non-production only).
+For production-style Firecracker execution, run on Linux hosts with KVM available.
 
 ```bash
+WORKER_EXECUTION_BACKEND=process  # local non-production only
 cd worker && npm run dev
 ```
 
-This starts the Express server with BullMQ but VM operations will fail unless KVM is available.
+```bash
+WORKER_EXECUTION_BACKEND=firecracker
+cd worker && npm run dev
+```
+
+This starts the Express server in API mode and provisions workspaces on this worker when enabled by runtime configuration.
 
 ### Pulling worker envs from Vercel before local deploy
 
@@ -95,7 +102,7 @@ This generates `worker/.env.generated` (gitignored, mode `0600`) and overlays it
 
 ## Production Deployment to AWS (Terraform)
 
-The `infra/aws/` directory contains complete Terraform configuration for deploying worker instances on bare-metal EC2.
+The `infra/aws/` directory contains Terraform configuration for deploying worker hosts on AWS.
 
 ### Prerequisites
 
@@ -108,7 +115,7 @@ The `infra/aws/` directory contains complete Terraform configuration for deployi
 
 Terraform provisions:
 - **VPC** (`10.1.0.0/16`) with public subnets — uses `10.1.x.x` to avoid collision with Firecracker's internal `10.0.0.0/24` TAP subnet
-- **Bare-metal EC2 instances** (`c6i.metal` by default) with KVM support
+- **EC2 worker hosts** (standard EC2 sizing for API-only workers)
 - **Elastic IPs** for stable worker addressing
 - **Security group** — port 3001 open for Convex/MCP inbound, SSH restricted to specified CIDRs
 - **IAM role** with CloudWatch Logs, SSM, and ECR read access
@@ -128,9 +135,10 @@ Edit `terraform.tfvars` with your values:
 aws_region   = "us-east-1"
 environment  = "production"
 
-# Must be .metal for KVM/Firecracker support
-instance_type = "c6i.metal"
+# Use standard EC2 for API-only workers; execution environments are separate.
+instance_type = "c8i.large"
 worker_count  = 1
+worker_role   = "api"
 ssh_key_name  = "your-key-pair-name"
 
 # Restrict SSH to your IP
@@ -195,8 +203,13 @@ ssh -i <key.pem> ubuntu@<eip> 'sudo bash /opt/arcagent/deploy.sh /tmp/worker-bui
 ```
 
 The `deploy.sh` script (created by `setup-worker.sh`) stops the service, extracts the archive, runs `npm ci --production`, and restarts the service.
+The `deploy.sh` script now stages the release first, pauses queue intake, waits for active verification jobs to drain, performs an atomic directory swap, restarts quickly, health-checks, and resumes queue intake:
 
-#### 5. Set WORKER_API_URL in Convex
+```bash
+sudo bash /opt/arcagent/deploy.sh /tmp/worker-build.tar.gz 1800
+```
+
+#### 5. Set worker endpoints in Convex
 
 ```bash
 npx convex env set WORKER_API_URL "http://<eip>:3001"
@@ -258,7 +271,7 @@ Each language has a fixed resource profile defined in `worker/src/vm/vmConfig.ts
 | Swift | 4 | 2048 | 3 min | `swift-6.ext4` |
 | Kotlin | 4 | 2048 | 3 min | `kotlin-jvm21.ext4` |
 
-A `c6i.metal` instance has 128 vCPUs and 256 GiB RAM — plan your `worker_concurrency` and `max_dev_vms` accordingly.
+For executor sizing, plan around aggregate guest VM resources (`worker/src/vm/vmConfig.ts`) and `WORKER_CONCURRENCY`.
 
 ## Updating / Redeploying
 
@@ -325,7 +338,7 @@ sudo systemctl stop arcagent-worker
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `KVM not available` or `/dev/kvm: No such file` | Instance is not `.metal` or KVM module not loaded | Use a `.metal` instance type. Verify with `ls -la /dev/kvm` |
+| `KVM not available` or `/dev/kvm: No such file` | Host lacks KVM support | Configure `WORKER_EXECUTION_BACKEND=process` in a non-production worker environment, or use an instance with KVM/Firecracker support. |
 | `Redis connection refused` | Redis not running | `sudo systemctl start redis-server` and verify with `redis-cli ping` |
 | `Rootfs image not found` | `build-rootfs.sh` hasn't run | `sudo bash /opt/arcagent/scripts/build-rootfs.sh` |
 | `Firecracker binary not found` | `install-firecracker.sh` hasn't run | `sudo bash /opt/arcagent/scripts/install-firecracker.sh 1.7.0` |
@@ -372,6 +385,8 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 | `CONVEX_URL` | Yes | — | Convex deployment URL |
 | `CONVEX_HTTP_ACTIONS_URL` | No | derived from `CONVEX_URL` | Convex HTTP actions URL for `/api/*` callbacks |
 | `WORKER_SHARED_SECRET` | Yes | — | Shared secret (must match Convex env) |
+| `WORKER_ROLE` | No | `api` | Runtime role |
+| `WORKER_EXECUTION_BACKEND` | No | `firecracker` | Execution backend for worker-owned workspaces (`firecracker` or `process` for non-production override) |
 | `REDIS_URL` | Yes | `redis://localhost:6379` | Redis connection URL |
 | `PORT` | No | `3001` | Server port |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, `error` |
@@ -398,8 +413,9 @@ Code inside VMs runs as an unprivileged `agent` user (uid 1001). The Firecracker
 |----------|----------|---------|-------------|
 | `aws_region` | No | `us-east-1` | AWS region |
 | `environment` | No | `production` | Environment name |
-| `instance_type` | No | `c6i.metal` | EC2 instance type (must be `.metal`) |
+| `instance_type` | No | `c8i.large` | EC2 instance type for API-only worker hosts |
 | `worker_count` | No | `1` | Number of worker instances |
+| `worker_role` | No | `api` | Worker runtime role (API-only deployment) |
 | `ssh_key_name` | Yes | — | EC2 key pair name |
 | `ssh_allowed_cidrs` | No | `[]` | CIDRs allowed to SSH (empty = no SSH) |
 | `worker_shared_secret` | Yes | — | Shared secret (sensitive) |

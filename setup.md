@@ -136,7 +136,7 @@ Set via `npx convex env set VARIABLE_NAME "value"` or in the Convex Dashboard un
 | Variable | Required | Description | How to get it |
 |----------|----------|-------------|---------------|
 | `WORKER_API_URL` | Yes | Worker HTTP endpoint for dispatching verification jobs | `http://localhost:3001` locally, or your worker's production URL |
-| `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` (default) | Single always-on worker routes all execution into Firecracker microVMs |
+| `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` (default) | Workspaces execute on the worker host currently assigned to the claim |
 
 ---
 
@@ -151,9 +151,10 @@ Create `worker/.env`.
 | `CONVEX_URL` | Yes | Convex deployment URL (`.convex.cloud`) | Same as `NEXT_PUBLIC_CONVEX_URL` |
 | `CONVEX_HTTP_ACTIONS_URL` | Recommended | Convex HTTP actions URL (`.convex.site`) used for `/api/*` callbacks | Derive from `CONVEX_URL` by replacing `.cloud` with `.site` |
 | `WORKER_SHARED_SECRET` | Yes | Auth with Convex HTTP endpoints | Must match value set in Convex env |
+| `WORKER_ROLE` | No | Worker runtime role (`api`) | Default `api` |
 | `WORKER_EXECUTION_BACKEND` | No | Execution backend | Must be `firecracker` in deployed runtimes; `process` is blocked unless explicit unsafe local override |
 | `ALLOW_UNSAFE_PROCESS_BACKEND` | No | Local escape hatch for non-KVM development only | Set `true` only for local non-production debugging |
-| `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` | Shared worker + Firecracker execution is the only supported runtime mode |
+| `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` | Workspace orchestration mode (`shared_worker` in current runtime) |
 | `REDIS_URL` | Yes | Redis for BullMQ job queue | `redis://localhost:6379` locally, or Redis cloud connection string |
 | `PORT` | No | Express server port (default: `3001`) | Set if port 3001 is taken |
 | `LOG_LEVEL` | No | Winston log level (default: `"info"`) | Options: `error`, `warn`, `info`, `debug` |
@@ -198,6 +199,8 @@ npm run env:bootstrap:secrets
 | `FC_USE_VSOCK` | No | Use vsock instead of SSH (default: `"true"`) | Set `"false"` to fallback to SSH |
 | `FC_HARDEN_EGRESS` | No | Enable strict egress filtering (default: `"false"`) | Set `"true"` in production |
 | `GITHUB_API_TOKEN` | No | GitHub API token for language detection | Reuse the Convex `GITHUB_API_TOKEN` value or create a dedicated token |
+| `GITHUB_APP_ID` | Recommended | GitHub App ID for repo-scoped installation tokens | GitHub App settings |
+| `GITHUB_APP_PRIVATE_KEY` | Recommended | GitHub App private key (PEM, `\\n` escaped accepted) | GitHub App settings > Generate private key |
 | `GITHUB_TOKEN` | Deprecated fallback | Backward-compatible fallback for language detection token lookup | Prefer `GITHUB_API_TOKEN` |
 
 ---

@@ -4,6 +4,12 @@ import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { Webhook as SvixWebhook } from "svix";
 import { constantTimeEqual } from "./lib/constantTimeEqual";
+import { detectProvider } from "./lib/repoProviders";
+import {
+  findGitHubInstallationForRepo,
+  isGitHubAppConfigured,
+  parseGitHubRepoUrlSafe,
+} from "./lib/githubApp";
 import {
   verifyJobHmac,
   verifyWorkerCallbackSignature,
@@ -242,6 +248,13 @@ interface McpAuthResult {
   authMethod: "shared_secret" | "api_key" | "none";
 }
 
+type HiddenFailureMechanism = {
+  key: string;
+  label: string;
+  count: number;
+  guidance: string;
+};
+
 const WORKSPACE_AGENT_TOKEN_AUDIENCE = "arcagent-worker-workspace";
 const WORKSPACE_AGENT_TOKEN_ISSUER = "arcagent-convex";
 const WORKSPACE_AGENT_TOKEN_TTL_SECONDS = 60;
@@ -264,6 +277,37 @@ const ALLOWED_WORKSPACE_ROUTE_PATHS = new Set<string>([
   "/api/workspace/grep",
   "/api/workspace/session-exec",
 ]);
+
+function parseWorkspaceBootDiagnostics(
+  workspaceError?: string | null,
+  workerHealthChecks?: Record<string, string>,
+): {
+  vmBootStage: string | null;
+  firecrackerExitCode: number | null;
+  firecrackerStderrTail: string | null;
+  rootfsAccessCheck: string | null;
+} {
+  const error = workspaceError ?? "";
+  const vmBootStageMatch = error.match(/vmBootStage=([a-z_]+)/i);
+  const exitCodeMatch = error.match(/firecrackerExitCode=([^\s,\)]+)/i);
+  const stderrTailMatch = error.match(
+    /firecrackerStderrTail=(.*?)(?:,\s*firecrackerProcessError=|,\s*lastError=|\)\s*$|$)/i,
+  );
+  const rootfsFromError = error.match(/rootfsAccessCheck=([^\s,\)]+)/i)?.[1] ?? null;
+  const rootfsFromHealth = workerHealthChecks?.jailerCanReadEncryptedRootfsSample ?? null;
+
+  const parsedExit = exitCodeMatch?.[1] && /^-?\d+$/.test(exitCodeMatch[1])
+    ? parseInt(exitCodeMatch[1], 10)
+    : null;
+  const stderrTail = stderrTailMatch?.[1]?.trim();
+
+  return {
+    vmBootStage: vmBootStageMatch?.[1] ?? null,
+    firecrackerExitCode: parsedExit,
+    firecrackerStderrTail: stderrTail || null,
+    rootfsAccessCheck: rootfsFromError ?? rootfsFromHealth,
+  };
+}
 
 function toBase64Url(bytes: Uint8Array): string {
   const base64 = btoa(String.fromCharCode(...bytes));
@@ -683,6 +727,30 @@ http.route({
     }
 
     try {
+      let githubInstallationId: number | undefined;
+      let githubInstallationAccountLogin: string | undefined;
+      if (repositoryUrl && detectProvider(repositoryUrl) === "github") {
+        if (!isGitHubAppConfigured()) {
+          return mcpError(
+            "GitHub App is not configured in this environment. Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY before creating GitHub-backed bounties."
+          );
+        }
+
+        const parsedRepo = parseGitHubRepoUrlSafe(repositoryUrl);
+        if (!parsedRepo) {
+          return mcpError("Invalid GitHub repository URL");
+        }
+
+        const installation = await findGitHubInstallationForRepo(parsedRepo.owner, parsedRepo.repo);
+        if (!installation) {
+          return mcpError(
+            "GitHub App installation is required for this repository. Install the Arcagent GitHub App on the repo or owning organization, then retry."
+          );
+        }
+        githubInstallationId = installation.installationId;
+        githubInstallationAccountLogin = installation.accountLogin;
+      }
+
       const bountyId = await ctx.runMutation(internal.bounties.createFromMcp, {
         creatorId: creatorId as Id<"users">,
         title,
@@ -708,7 +776,12 @@ http.route({
       if (repositoryUrl) {
         repoConnectionId = await ctx.runMutation(
           internal.repoConnections.createInternal,
-          { bountyId, repositoryUrl }
+          {
+            bountyId,
+            repositoryUrl,
+            githubInstallationId,
+            githubInstallationAccountLogin,
+          }
         );
 
         conversationId = await ctx.runMutation(
@@ -1215,7 +1288,7 @@ http.route({
   }),
 });
 
-// --- Verifications: Get agent-facing status (hidden test details redacted) ---
+// --- Verifications: Get agent-facing status (includes hidden failure feedback) ---
 http.route({
   path: "/api/mcp/verifications/get",
   method: "POST",
@@ -1272,13 +1345,114 @@ http.route({
       if (!allowedAsAgent && !allowedAsCreator) return mcpError("Forbidden", 403);
     }
 
-    // Use getAgentStatus to filter hidden test details for agent-facing consumers
+    // Use getAgentStatus for agent-facing verification output.
     const result = await ctx.runQuery(internal.verifications.getAgentStatus, {
       verificationId: vId,
     });
 
     if (!result) return mcpError("Verification not found", 404);
     return mcpJson({ verification: result });
+  }),
+});
+
+// --- Verifications: Search persisted verification logs ---
+http.route({
+  path: "/api/mcp/verifications/logs",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
+
+    const body = await request.json();
+    const {
+      verificationId,
+      submissionId,
+      bountyId,
+      agentId: bodyAgentId,
+      source,
+      level,
+      eventType,
+      gate,
+      visibility,
+      limit,
+    } = body as {
+      verificationId?: string;
+      submissionId?: string;
+      bountyId?: string;
+      agentId?: string;
+      source?: "verification_result_callback" | "verification_lifecycle" | "verification_timeout" | "system";
+      level?: "info" | "warning" | "error";
+      eventType?: string;
+      gate?: string;
+      visibility?: "public" | "hidden";
+      limit?: number;
+    };
+
+    const effectiveAgentId = auth.authMethod === "api_key" ? auth.userId! : bodyAgentId;
+
+    if (auth.authMethod === "api_key" && auth.userId) {
+      const user = await ctx.runQuery(internal.users.getByIdInternal, {
+        userId: auth.userId as Id<"users">,
+      });
+      const isAdmin = user?.role === "admin";
+
+      let allowed = false;
+      if (verificationId) {
+        const verification = await ctx.runQuery(internal.verifications.getByIdInternal, {
+          verificationId: verificationId as Id<"verifications">,
+        });
+        if (!verification) return mcpError("Verification not found", 404);
+        const submission = await ctx.runQuery(internal.submissions.getByIdInternal, {
+          submissionId: verification.submissionId,
+        });
+        const creatorAccess = await isBountyCreator(ctx, auth.userId, verification.bountyId);
+        const agentAccess = submission?.agentId === auth.userId;
+        allowed = !!(isAdmin || creatorAccess || agentAccess);
+      } else if (submissionId) {
+        const submission = await ctx.runQuery(internal.submissions.getByIdInternal, {
+          submissionId: submissionId as Id<"submissions">,
+        });
+        if (!submission) return mcpError("Submission not found", 404);
+        const creatorAccess = await isBountyCreator(ctx, auth.userId, submission.bountyId);
+        const agentAccess = submission.agentId === auth.userId;
+        allowed = !!(isAdmin || creatorAccess || agentAccess);
+      } else if (bountyId) {
+        const creatorAccess = await isBountyCreator(ctx, auth.userId, bountyId as Id<"bounties">);
+        if (creatorAccess || isAdmin) {
+          allowed = true;
+        } else {
+          const submissions = await ctx.runQuery(internal.submissions.listByAgentId, {
+            agentId: auth.userId as Id<"users">,
+            bountyId: bountyId as Id<"bounties">,
+          });
+          allowed = submissions.length > 0;
+        }
+      } else if (effectiveAgentId) {
+        allowed = isAdmin || effectiveAgentId === auth.userId;
+      }
+
+      if (!allowed && !isAdmin) {
+        return mcpError(
+          "Forbidden: provide verificationId, submissionId, bountyId, or your own agentId",
+          403,
+        );
+      }
+    }
+
+    const logs = await ctx.runQuery(internal.verifications.searchLogsInternal, {
+      verificationId: verificationId ? (verificationId as Id<"verifications">) : undefined,
+      submissionId: submissionId ? (submissionId as Id<"submissions">) : undefined,
+      bountyId: bountyId ? (bountyId as Id<"bounties">) : undefined,
+      agentId: effectiveAgentId ? (effectiveAgentId as Id<"users">) : undefined,
+      source,
+      level,
+      eventType,
+      gate,
+      visibility,
+      limit,
+    });
+
+    return mcpJson({ logs });
   }),
 });
 
@@ -1329,10 +1503,20 @@ http.route({
       { bountyId: typedBountyId }
     );
 
+    const latestAgentStatus = await ctx.runQuery(internal.verifications.getAgentStatus, {
+      verificationId: latestVerification._id,
+    });
+    const hiddenFailureMechanisms: HiddenFailureMechanism[] = Array.isArray(
+      latestAgentStatus?.hiddenFailureMechanisms,
+    )
+      ? latestAgentStatus.hiddenFailureMechanisms as HiddenFailureMechanism[]
+      : [];
+
     return mcpJson({
       feedbackJson: latestVerification.feedbackJson ?? null,
       verificationStatus: latestVerification.status,
       attemptNumber: allVerifications.length,
+      hiddenFailureMechanisms,
     });
   }),
 });
@@ -1883,6 +2067,7 @@ http.route({
         workspaceStatus: ws.status,
         workerHost: ws.workerHost || null,
         workspaceError: ws.errorMessage ?? null,
+        ...parseWorkspaceBootDiagnostics(ws.errorMessage, workerHealth?.checks),
         expiresAt: ws.expiresAt,
         workerHealth,
       },
@@ -2322,6 +2507,15 @@ const GATE_STATUS_MAP: Record<string, string> = {
   warn: "warning",
 };
 
+function stringifyLogDetails(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
 http.route({
   path: "/api/verification/result",
   method: "POST",
@@ -2385,6 +2579,24 @@ http.route({
         return mcpError("Verification not found for submission", 404);
       }
       const verificationId = verification._id;
+      const submission = await ctx.runQuery(
+        internal.submissions.getByIdInternal,
+        { submissionId }
+      );
+      const activeClaim = submission
+        ? await ctx.runQuery(internal.bountyClaims.getByAgentAndBounty, {
+            agentId: submission.agentId,
+            bountyId,
+          })
+        : null;
+      const activeClaimId = activeClaim?._id;
+      const baseLog = {
+        verificationId,
+        submissionId,
+        bountyId,
+        agentId: submission?.agentId,
+        claimId: activeClaimId,
+      };
 
       // SECURITY (H6): Verify per-job HMAC token — mandatory.
       // This prevents forged results even if WORKER_SHARED_SECRET is compromised.
@@ -2449,6 +2661,17 @@ http.route({
       // already been timed out by the cron. This closes the race window
       // between worker result arrival and cron timeout marking.
       if (verification.status === "failed" || verification.status === "passed") {
+        await ctx.runMutation(internal.verifications.recordLogInternal, {
+          ...baseLog,
+          source: "verification_result_callback",
+          level: "warning",
+          eventType: "callback_ignored_terminal_verification",
+          message: `Ignored callback because verification is already terminal: ${verification.status}`,
+          detailsJson: stringifyLogDetails({
+            jobId: body.jobId,
+            overallStatus: body.overallStatus,
+          }),
+        });
         return mcpJson({
           success: false,
           reason: `Verification already in terminal state: ${verification.status}`,
@@ -2456,7 +2679,34 @@ http.route({
         });
       }
 
+      await ctx.runMutation(internal.verifications.recordLogInternal, {
+        ...baseLog,
+        source: "verification_result_callback",
+        level: "info",
+        eventType: "callback_received",
+        message: `Verification callback received with overallStatus=${body.overallStatus}`,
+        detailsJson: stringifyLogDetails({
+          jobId: body.jobId,
+          totalDurationMs: body.totalDurationMs,
+          gateCount: body.gates.length,
+          stepCount: body.steps?.length ?? 0,
+        }),
+      });
+
       // 1. Record each gate result (skip "test" gate — those are steps)
+      const gateLogs: Array<{
+        verificationId: Id<"verifications">;
+        submissionId: Id<"submissions">;
+        bountyId: Id<"bounties">;
+        agentId?: Id<"users">;
+        claimId?: Id<"bountyClaims">;
+        source: "verification_result_callback";
+        level: "info" | "warning" | "error";
+        eventType: string;
+        gate?: string;
+        message: string;
+        detailsJson?: string;
+      }> = [];
       for (const gate of body.gates) {
         const gateType = GATE_TYPE_MAP[gate.gate];
         const gateStatus = GATE_STATUS_MAP[gate.status];
@@ -2473,6 +2723,27 @@ http.route({
             detailsJson,
           });
         }
+        gateLogs.push({
+          ...baseLog,
+          source: "verification_result_callback",
+          level: gate.status === "pass" || gate.status === "passed"
+            ? "info"
+            : gate.status === "warning" || gate.status === "warn"
+              ? "warning"
+              : "error",
+          eventType: "gate_result",
+          gate: gate.gate,
+          message: `${gate.gate} => ${gate.status}: ${gate.summary}`,
+          detailsJson: stringifyLogDetails({
+            durationMs: gate.durationMs,
+            details: gate.details,
+          }),
+        });
+      }
+      if (gateLogs.length > 0) {
+        await ctx.runMutation(internal.verifications.recordLogsBatchInternal, {
+          logs: gateLogs,
+        });
       }
 
       // 2. Record step results (batch insert)
@@ -2487,6 +2758,22 @@ http.route({
             output: step.output,
             stepNumber: step.stepNumber,
             visibility: step.visibility,
+          })),
+        });
+
+        await ctx.runMutation(internal.verifications.recordLogsBatchInternal, {
+          logs: body.steps.map((step) => ({
+            ...baseLog,
+            source: "verification_result_callback" as const,
+            level: step.status === "pass" || step.status === "skip" ? "info" : "error",
+            eventType: "test_step_result",
+            visibility: step.visibility,
+            message: `${step.featureName} > ${step.scenarioName} => ${step.status}`,
+            detailsJson: stringifyLogDetails({
+              executionTimeMs: step.executionTimeMs,
+              stepNumber: step.stepNumber,
+              output: step.output,
+            }),
           })),
         });
       }
@@ -2519,8 +2806,40 @@ http.route({
         });
       }
 
+      const hiddenSteps = (body.steps ?? []).filter((step) => step.visibility === "hidden");
+      await ctx.runMutation(internal.verifications.recordLogInternal, {
+        ...baseLog,
+        source: "verification_lifecycle",
+        level: body.overallStatus === "pass" ? "info" : "error",
+        eventType: "verification_result_persisted",
+        message: `Verification persisted with status=${verificationStatus}`,
+        detailsJson: stringifyLogDetails({
+          overallStatus: body.overallStatus,
+          totalDurationMs: body.totalDurationMs,
+          hiddenSummary: {
+            total: hiddenSteps.length,
+            passed: hiddenSteps.filter((step) => step.status === "pass").length,
+            failed: hiddenSteps.filter((step) => step.status === "fail" || step.status === "error").length,
+            skipped: hiddenSteps.filter((step) => step.status === "skip").length,
+          },
+          feedbackJson: body.feedbackJson,
+        }),
+      });
+
       // 6. If passed, trigger payout
       if (body.overallStatus === "pass") {
+        await ctx.runMutation(internal.verifications.recordLogInternal, {
+          ...baseLog,
+          source: "verification_lifecycle",
+          level: "info",
+          eventType: "payout_trigger_scheduled",
+          message: "Scheduled triggerPayoutOnVerificationPass after passed verification",
+          detailsJson: stringifyLogDetails({
+            verificationId,
+            submissionId,
+            bountyId,
+          }),
+        });
         await ctx.scheduler.runAfter(
           0,
           internal.verifications.triggerPayoutOnVerificationPass,

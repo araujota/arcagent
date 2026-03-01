@@ -49,6 +49,27 @@ export interface ExecResult {
   exitCode: number;
 }
 
+interface FirecrackerProcessExit {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  processError?: string;
+}
+
+interface RootfsReadabilityCheck {
+  readable: boolean;
+  reason: "ok" | "permission_denied" | "stat_failed" | "invalid_jailer_identity";
+  path: string;
+  resolvedPath: string;
+  jailerUid: string;
+  jailerGid: string;
+  mode?: string;
+  ownerUid?: number;
+  ownerGid?: number;
+  error?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -67,6 +88,8 @@ const TAP_PREFIX = "fc-tap-";
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000; // 2 minutes
 /** Enable vsock-based communication (set to "false" to fall back to SSH). */
 const USE_VSOCK = process.env.FC_USE_VSOCK !== "false";
+/** Launch through jailer by default; set FC_USE_JAILER=false to run Firecracker directly. */
+const USE_JAILER = process.env.FC_USE_JAILER !== "false";
 /** Vsock guest init path inside rootfs (can be overridden for compatibility). */
 const DEFAULT_VSOCK_INIT_PATH = process.env.FC_VSOCK_INIT_PATH ?? "/usr/local/bin/vsock-agent";
 /** Reject tiny placeholder scripts when validating rootfs vsock agent binaries. */
@@ -76,8 +99,7 @@ const SSH_KEY_PATH = process.env.FC_SSH_KEY_PATH ?? "/root/.ssh/id_ed25519";
 /** SSH port on guest (when vsock is disabled). */
 const GUEST_SSH_PORT = parseInt(process.env.FC_GUEST_SSH_PORT ?? "22", 10);
 const EXECUTION_BACKEND = (process.env.WORKER_EXECUTION_BACKEND ?? "firecracker").toLowerCase();
-const ALLOW_UNSAFE_PROCESS_BACKEND =
-  process.env.NODE_ENV !== "production" && process.env.ALLOW_UNSAFE_PROCESS_BACKEND === "true";
+const ALLOW_UNSAFE_PROCESS_BACKEND = process.env.ALLOW_UNSAFE_PROCESS_BACKEND === "true";
 
 // ---------------------------------------------------------------------------
 // VM lifecycle
@@ -99,8 +121,8 @@ export async function createFirecrackerVM(
   if (EXECUTION_BACKEND === "process") {
     if (!ALLOW_UNSAFE_PROCESS_BACKEND) {
       throw new Error(
-        "Process backend is disabled for deployed runtimes. " +
-        "Use WORKER_EXECUTION_BACKEND=firecracker, or set ALLOW_UNSAFE_PROCESS_BACKEND=true in local non-production only.",
+        "Process backend is disabled. " +
+        "Use WORKER_EXECUTION_BACKEND=firecracker, or set ALLOW_UNSAFE_PROCESS_BACKEND=true.",
       );
     }
     return createProcessVM(opts);
@@ -125,9 +147,12 @@ export async function createFirecrackerVM(
   let dnsResolver: DnsResolverHandle | null = null;
   let egressProxy: EgressProxyHandle | null = null;
   let overlayPath = "";
+  let overlayType: "encrypted" | "unencrypted" = "unencrypted";
   let encryptedOverlay: EncryptedOverlayHandle | null = null;
   let vmSshKeyPath: string | undefined;
   let configPath: string | undefined;
+  let firecrackerPid: number | undefined;
+  let vmProcessRef: Promise<FirecrackerProcessExit> | undefined;
 
   try {
 
@@ -190,8 +215,9 @@ export async function createFirecrackerVM(
   if (USE_VSOCK) {
     // Use encrypted overlay — protects repo code from host-level access
     try {
-      encryptedOverlay = await createEncryptedOverlay(vmId, rootfsPath);
+      encryptedOverlay = await createEncryptedOverlay(vmId, rootfsPath, JAILER_UID, JAILER_GID);
       overlayPath = encryptedOverlay.devicePath;
+      overlayType = "encrypted";
       logger.info("Using encrypted overlay", { vmId });
     } catch (err) {
       // Fallback to unencrypted if dm-crypt unavailable (dev environments)
@@ -201,10 +227,12 @@ export async function createFirecrackerVM(
       });
       overlayPath = `/tmp/fc-overlay-${vmId}.ext4`;
       await execFileAsync("cp", ["--reflink=auto", rootfsPath, overlayPath]);
+      overlayType = "unencrypted";
     }
   } else {
     overlayPath = `/tmp/fc-overlay-${vmId}.ext4`;
     await execFileAsync("cp", ["--reflink=auto", rootfsPath, overlayPath]);
+    overlayType = "unencrypted";
   }
 
   // 2a. Generate per-VM SSH keypair (only if not using vsock)
@@ -217,6 +245,32 @@ export async function createFirecrackerVM(
 
   // 3. Validate vsock init binary and build Firecracker config
   const vsockInitPath = USE_VSOCK ? await resolveVsockInitPath(rootfsPath) : undefined;
+  const readabilityUid = USE_JAILER ? JAILER_UID : String(process.getuid?.() ?? 0);
+  const readabilityGid = USE_JAILER ? JAILER_GID : String(process.getgid?.() ?? 0);
+  const rootfsReadability = await checkRootfsReadableByJailer(overlayPath, readabilityUid, readabilityGid);
+  logger.info("Rootfs readability check before jailer launch", {
+    vmId,
+    overlayType,
+    rootfsPath: overlayPath,
+    rootfsAccessCheck: rootfsReadability.reason,
+    jailerUid: readabilityUid,
+    jailerGid: readabilityGid,
+    launchMode: USE_JAILER ? "jailer" : "direct",
+    mode: rootfsReadability.mode,
+    ownerUid: rootfsReadability.ownerUid,
+    ownerGid: rootfsReadability.ownerGid,
+    resolvedPath: rootfsReadability.resolvedPath,
+    error: rootfsReadability.error,
+  });
+  if (!rootfsReadability.readable) {
+    throw new Error(
+      `EACCES rootfs (vmBootStage=rootfs_access_check, rootfsAccessCheck=${rootfsReadability.reason}, ` +
+      `path=${rootfsReadability.path}, resolvedPath=${rootfsReadability.resolvedPath}, ` +
+      `jailerUid=${readabilityUid}, jailerGid=${readabilityGid}, mode=${rootfsReadability.mode ?? "unknown"}, ` +
+      `owner=${rootfsReadability.ownerUid ?? "unknown"}:${rootfsReadability.ownerGid ?? "unknown"}, ` +
+      `error=${rootfsReadability.error ?? "none"})`,
+    );
+  }
 
   // Build Firecracker config (with vsock device if enabled)
   const config = buildVMConfig({
@@ -242,37 +296,101 @@ export async function createFirecrackerVM(
     // The socket itself will have restrictive permissions
   }
 
-  // 4. Launch Firecracker via jailer (raw execFile to capture PID)
-  const fcChild = execFile(JAILER_BIN, [
-    "--id",
-    vmId,
-    "--exec-file",
-    FIRECRACKER_BIN,
-    "--uid",
-    JAILER_UID,
-    "--gid",
-    JAILER_GID,
-    "--",
-    "--config-file",
-    configPath,
-    "--no-api",
-  ]);
-  const firecrackerPid = fcChild.pid;
+  // 4. Launch Firecracker (via jailer by default, direct mode for emergency compatibility)
+  const launchCmd = USE_JAILER ? JAILER_BIN : FIRECRACKER_BIN;
+  const launchArgs = USE_JAILER
+    ? [
+      "--id",
+      vmId,
+      "--exec-file",
+      FIRECRACKER_BIN,
+      "--uid",
+      JAILER_UID,
+      "--gid",
+      JAILER_GID,
+      "--",
+      "--config-file",
+      configPath,
+      "--no-api",
+    ]
+    : [
+      "--config-file",
+      configPath,
+      "--no-api",
+    ];
+  const fcChild = execFile(launchCmd, launchArgs);
+  firecrackerPid = fcChild.pid;
 
-  const vmProcessRef = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    let stdout = "", stderr = "";
-    fcChild.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
-    fcChild.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
-    fcChild.on("close", (code) => code === 0 ? resolve({ stdout, stderr }) : reject(new Error(`Firecracker exited ${code}: ${stderr}`)));
-    fcChild.on("error", reject);
+  logger.info("Launching Firecracker", {
+    vmId,
+    launchMode: USE_JAILER ? "jailer" : "direct",
+    launchCmd,
+    configPath,
+    overlayType,
+    rootfsPath: overlayPath,
+    rootfsAccessCheck: rootfsReadability.reason,
+    jailerUid: readabilityUid,
+    jailerGid: readabilityGid,
   });
-  // Prevent unhandledRejection if Firecracker crashes — we handle the error
-  // via destroyFirecrackerVM or process monitoring, not via this promise.
-  vmProcessRef.catch(() => {});
+
+  let firecrackerStdout = "";
+  let firecrackerStderr = "";
+  vmProcessRef = new Promise<FirecrackerProcessExit>((resolve) => {
+    fcChild.stdout?.on("data", (d: Buffer) => { firecrackerStdout += d.toString(); });
+    fcChild.stderr?.on("data", (d: Buffer) => { firecrackerStderr += d.toString(); });
+    fcChild.on("close", (code, signal) => resolve({
+      exitCode: code,
+      signal,
+      stdout: firecrackerStdout,
+      stderr: firecrackerStderr,
+    }));
+    fcChild.on("error", (err) => resolve({
+      exitCode: null,
+      signal: null,
+      stdout: firecrackerStdout,
+      stderr: firecrackerStderr,
+      processError: err.message,
+    }));
+  });
 
   // 5. Wait for communication channel
   if (USE_VSOCK) {
-    await waitForVsock(vsockSocketPath, vmId);
+    try {
+      const bootState = await Promise.race([
+        waitForVsock(vsockSocketPath, vmId).then(() => ({ state: "ready" as const })),
+        vmProcessRef!.then((exit) => ({ state: "exited" as const, exit })),
+      ]);
+      if (bootState.state === "exited") {
+        throw buildVmBootError({
+          vmId,
+          vmBootStage: "vsock_wait",
+          rootfsAccessCheck: rootfsReadability.reason,
+          processExit: bootState.exit,
+        });
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith("VM boot failed for")) {
+        throw err;
+      }
+      const earlyExit = await waitForProcessExitBriefly(vmProcessRef!, 200);
+      if (earlyExit) {
+        throw buildVmBootError({
+          vmId,
+          vmBootStage: "vsock_wait",
+          rootfsAccessCheck: rootfsReadability.reason,
+          processExit: earlyExit,
+          cause: err,
+        });
+      }
+      throw buildVmBootError({
+        vmId,
+        vmBootStage: "vsock_wait",
+        rootfsAccessCheck: rootfsReadability.reason,
+        cause: err,
+        stdoutTail: firecrackerStdout,
+        stderrTail: firecrackerStderr,
+      });
+    }
     // Set socket permissions to 0600
     await chmod(vsockSocketPath, 0o600).catch(() => {});
   } else {
@@ -352,6 +470,9 @@ export async function createFirecrackerVM(
 
   } catch (err) {
     // Best-effort cleanup for partial VM creation failures.
+    if (firecrackerPid) {
+      await terminateFirecrackerProcess(firecrackerPid, vmProcessRef).catch(() => {});
+    }
     if (egressProxy) {
       await removeProxyRedirect(tapDevice, egressProxy.port).catch(() => {});
       await stopEgressProxy(egressProxy).catch(() => {});
@@ -534,7 +655,7 @@ interface VMHandleInternal extends VMHandle {
   __overlayPath?: string;
   __configPath?: string;
   __sshKeyPath?: string;
-  __processRef?: Promise<{ stdout: string; stderr: string }>;
+  __processRef?: Promise<FirecrackerProcessExit>;
   __firecrackerPid?: number;
   __vsockSocketPath?: string;
   __encryptedOverlay?: EncryptedOverlayHandle;
@@ -605,6 +726,149 @@ async function statPathInExt4(
   }
 }
 
+async function checkRootfsReadableByJailer(
+  rootfsPath: string,
+  jailerUid: string,
+  jailerGid: string,
+): Promise<RootfsReadabilityCheck> {
+  if (!/^\d+$/.test(jailerUid) || !/^\d+$/.test(jailerGid)) {
+    return {
+      readable: false,
+      reason: "invalid_jailer_identity",
+      path: rootfsPath,
+      resolvedPath: rootfsPath,
+      jailerUid,
+      jailerGid,
+      error: "jailer uid/gid must be numeric",
+    };
+  }
+
+  const uid = parseInt(jailerUid, 10);
+  const gid = parseInt(jailerGid, 10);
+
+  try {
+    const { stdout: resolvedStdout } = await execFileAsync("readlink", ["-f", rootfsPath]);
+    const resolvedPath = resolvedStdout.trim() || rootfsPath;
+    const { stat } = await import("node:fs/promises");
+    const fsStat = await stat(resolvedPath);
+    const modeBits = fsStat.mode & 0o777;
+    const mode = modeBits.toString(8).padStart(3, "0");
+
+    const readable =
+      uid === 0 ||
+      (uid === fsStat.uid && (modeBits & 0o400) !== 0) ||
+      (gid === fsStat.gid && (modeBits & 0o040) !== 0) ||
+      (modeBits & 0o004) !== 0;
+
+    return {
+      readable,
+      reason: readable ? "ok" : "permission_denied",
+      path: rootfsPath,
+      resolvedPath,
+      jailerUid,
+      jailerGid,
+      mode,
+      ownerUid: fsStat.uid,
+      ownerGid: fsStat.gid,
+    };
+  } catch (err) {
+    return {
+      readable: false,
+      reason: "stat_failed",
+      path: rootfsPath,
+      resolvedPath: rootfsPath,
+      jailerUid,
+      jailerGid,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function tailForLog(input: string, maxChars = 1200): string {
+  const compact = input.replace(/\s+/g, " ").replace(/,/g, ";").trim();
+  if (!compact) return "";
+  return compact.length <= maxChars ? compact : compact.slice(-maxChars);
+}
+
+async function waitForProcessExitBriefly(
+  processRef: Promise<FirecrackerProcessExit>,
+  timeoutMs: number,
+): Promise<FirecrackerProcessExit | null> {
+  return Promise.race([
+    processRef.then((result) => result),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+  ]);
+}
+
+async function terminateFirecrackerProcess(
+  firecrackerPid: number,
+  processRef?: Promise<FirecrackerProcessExit>,
+): Promise<void> {
+  const alreadyExited = processRef ? await waitForProcessExitBriefly(processRef, 0) : null;
+  if (alreadyExited) return;
+
+  try {
+    process.kill(firecrackerPid, "SIGTERM");
+  } catch {
+    return;
+  }
+
+  if (processRef) {
+    const exitedAfterTerm = await waitForProcessExitBriefly(processRef, 500);
+    if (exitedAfterTerm) return;
+  } else {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  try {
+    process.kill(firecrackerPid, "SIGKILL");
+  } catch {
+    // already gone
+  }
+}
+
+function buildVmBootError(params: {
+  vmId: string;
+  vmBootStage: "rootfs_access_check" | "jailer_launch" | "vsock_wait";
+  rootfsAccessCheck: RootfsReadabilityCheck["reason"] | string;
+  processExit?: FirecrackerProcessExit;
+  cause?: unknown;
+  stdoutTail?: string;
+  stderrTail?: string;
+}): Error {
+  const { vmId, vmBootStage, rootfsAccessCheck, processExit, cause, stdoutTail, stderrTail } = params;
+  const firecrackerExitCode =
+    processExit?.exitCode !== undefined && processExit?.exitCode !== null
+      ? String(processExit.exitCode)
+      : processExit
+        ? "unknown"
+        : "not_exited";
+  const firecrackerStdoutTail = tailForLog(processExit?.stdout ?? stdoutTail ?? "");
+  const firecrackerStderrTailRaw = tailForLog(processExit?.stderr ?? stderrTail ?? "");
+  const firecrackerDiagnosticTail = firecrackerStderrTailRaw || firecrackerStdoutTail;
+  const signal = processExit?.signal ? String(processExit.signal) : undefined;
+  const processError = processExit?.processError ? tailForLog(processExit.processError) : undefined;
+  const causeMessage =
+    cause instanceof Error ? tailForLog(cause.message) : cause ? tailForLog(String(cause)) : undefined;
+
+  const details = [
+    `vmBootStage=${vmBootStage}`,
+    `rootfsAccessCheck=${rootfsAccessCheck}`,
+    `firecrackerExitCode=${firecrackerExitCode}`,
+    signal ? `firecrackerSignal=${signal}` : null,
+    firecrackerDiagnosticTail ? `firecrackerStderrTail=${firecrackerDiagnosticTail}` : null,
+    firecrackerStderrTailRaw && firecrackerStdoutTail
+      ? `firecrackerStdoutTail=${firecrackerStdoutTail}`
+      : null,
+    processError ? `firecrackerProcessError=${processError}` : null,
+    causeMessage ? `lastError=${causeMessage}` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  return new Error(`VM boot failed for ${vmId} (${details})`);
+}
+
 /**
  * SECURITY (P2-1): Apply iptables FORWARD rules on TAP device.
  * Only allows DNS (53) + HTTPS (443) egress; drops all else.
@@ -614,8 +878,8 @@ async function applyEgressFiltering(tapDevice: string): Promise<void> {
   // TCP 80 (HTTP) is dropped to prevent MitM on package downloads.
   // All package managers and git support HTTPS.
   const rules: string[][] = [
-    // Allow established/related connections back in
-    ["FORWARD", "-i", tapDevice, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+    // Allow return traffic from allowed outbound flows back into the VM.
+    ["FORWARD", "-o", tapDevice, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
     // Allow DNS (UDP 53)
     ["FORWARD", "-i", tapDevice, "-p", "udp", "--dport", "53", "-j", "ACCEPT"],
     // Allow HTTPS (TCP 443)
@@ -638,7 +902,7 @@ async function removeEgressFiltering(tapDevice: string): Promise<void> {
   // Remove all FORWARD rules referencing this TAP device.
   // Run multiple times since there are multiple rules.
   for (let i = 0; i < 5; i++) {
-    await execFileAsync("iptables", ["-D", "FORWARD", "-i", tapDevice, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"]).catch(() => {});
+    await execFileAsync("iptables", ["-D", "FORWARD", "-o", tapDevice, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"]).catch(() => {});
     await execFileAsync("iptables", ["-D", "FORWARD", "-i", tapDevice, "-p", "udp", "--dport", "53", "-j", "ACCEPT"]).catch(() => {});
     await execFileAsync("iptables", ["-D", "FORWARD", "-i", tapDevice, "-p", "tcp", "--dport", "443", "-j", "ACCEPT"]).catch(() => {});
     await execFileAsync("iptables", ["-D", "FORWARD", "-i", tapDevice, "-j", "DROP"]).catch(() => {});

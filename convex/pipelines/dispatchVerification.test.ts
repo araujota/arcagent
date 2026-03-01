@@ -21,12 +21,16 @@ beforeEach(() => {
   globalThis.fetch = mockFetch as unknown as typeof fetch;
   process.env.WORKER_API_URL = "http://localhost:3001";
   process.env.WORKER_SHARED_SECRET = "test-secret";
+  delete process.env.GITHUB_APP_ID;
+  delete process.env.GITHUB_APP_PRIVATE_KEY;
 });
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
   delete process.env.WORKER_API_URL;
   delete process.env.WORKER_SHARED_SECRET;
+  delete process.env.GITHUB_APP_ID;
+  delete process.env.GITHUB_APP_PRIVATE_KEY;
 });
 
 // ---------------------------------------------------------------------------

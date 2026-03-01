@@ -44,6 +44,7 @@ import {
   createEncryptedOverlay,
   destroyEncryptedOverlay,
   cleanupStaleCryptDevices,
+  ensureRootfsDeviceReadableByJailer,
   type EncryptedOverlayHandle,
 } from "./encryptedOverlay";
 
@@ -103,6 +104,9 @@ describe("createEncryptedOverlay", () => {
     expect(calls.some((c) => c.cmd === "cryptsetup" && c.args.includes("open"))).toBe(true);
     // 4. dd
     expect(calls.some((c) => c.cmd === "dd")).toBe(true);
+    // 5. chown/chmod mapper device for jailer access
+    expect(calls.some((c) => c.cmd === "chown")).toBe(true);
+    expect(calls.some((c) => c.cmd === "chmod")).toBe(true);
   });
 
   it("returns handle with correct loopDevice, cryptName, devicePath, backingFile", async () => {
@@ -161,6 +165,19 @@ describe("createEncryptedOverlay", () => {
 
     // Should have unlinked backing file
     expect(mockUnlink).toHaveBeenCalledWith("/tmp/fc-overlay-vm-fail.ext4");
+  });
+});
+
+describe("ensureRootfsDeviceReadableByJailer", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupExecFileSuccess();
+  });
+
+  it("rejects non-numeric jailer identity", async () => {
+    await expect(
+      ensureRootfsDeviceReadableByJailer("/dev/mapper/fc-crypt-vm-test", "arcagent", "1001"),
+    ).rejects.toThrow(/Invalid jailer uid\/gid/);
   });
 });
 

@@ -55,9 +55,43 @@ export interface ProvisionOptions {
   bountyId: string;
   agentId: string;
   repoUrl: string;
+  repoAuthToken?: string;
   commitSha: string;
   language: string;
   expiresAt: number;
+}
+
+function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } | null {
+  const match = repoUrl.match(/^(?:https?:\/\/github\.com\/|git@github\.com:)([^/]+)\/([^/]+?)(?:\.git)?$/i);
+  if (!match) return null;
+  return { owner: match[1], repo: match[2] };
+}
+
+function buildAuthenticatedCloneRepoUrl(
+  repoUrl: string,
+  repoAuthToken?: string,
+): { url: string; tokenForRedaction?: string } {
+  const parsed = parseGitHubRepo(repoUrl);
+  if (parsed && !repoAuthToken) {
+    throw new Error("Missing repoAuthToken for GitHub repository clone");
+  }
+
+  if (!repoAuthToken) return { url: repoUrl };
+  if (!/^[A-Za-z0-9_-]+$/.test(repoAuthToken)) {
+    throw new Error("Invalid repoAuthToken format");
+  }
+
+  if (!parsed) return { url: repoUrl };
+
+  return {
+    url: `https://x-access-token:${repoAuthToken}@github.com/${parsed.owner}/${parsed.repo}.git`,
+    tokenForRedaction: repoAuthToken,
+  };
+}
+
+function redactToken(value: string, token?: string): string {
+  if (!token) return value;
+  return value.split(token).join("<redacted>");
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +108,150 @@ const ERROR_SESSION_CLEANUP_MS = 5 * 60 * 1000; // 5 min
 const PROVISIONING_TIMEOUT_MS = 10 * 60 * 1000; // 10 min — provisioning that takes longer is stuck
 const MAX_DIFF_SIZE = 10 * 1024 * 1024; // 10 MiB
 const MAX_CHANGED_FILES = 500;
+const DEFAULT_DIFF_EXCLUDE_GLOBS = [
+  // JS/TS package manager caches
+  ".npm/_cacache/**",
+  ".npm/_logs/**",
+  ".npm/_npx/**",
+  ".npm/_update-notifier-last-checked",
+  "node_modules/**",
+  ".pnpm-store/**",
+  ".yarn/cache/**",
+  // Common build artifacts and local caches
+  ".next/**",
+  "dist/**",
+  "coverage/**",
+  ".cache/**",
+  "tmp/**",
+  // Common Python caches
+  "__pycache__/**",
+  ".pytest_cache/**",
+  ".mypy_cache/**",
+  ".ruff_cache/**",
+];
+const DIFF_EXCLUDE_GLOBS = parseDiffExcludeGlobs(process.env.WORKSPACE_DIFF_EXCLUDE_GLOBS);
+const GIT_PATHSPEC_GLOB_PATTERN = /^[A-Za-z0-9_./*?{}\[\]-]+$/;
+
+function parseDiffExcludeGlobs(raw: string | undefined): string[] {
+  if (raw === undefined) return DEFAULT_DIFF_EXCLUDE_GLOBS;
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  return trimmed
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function sanitizeDiffExcludeGlob(glob: string): string {
+  if (!GIT_PATHSPEC_GLOB_PATTERN.test(glob)) {
+    throw new Error(`Invalid WORKSPACE_DIFF_EXCLUDE_GLOBS entry: ${glob}`);
+  }
+  return `':(glob)${glob}'`;
+}
+
+export interface CapacityStats {
+  maxDevVms: number;
+  totalSessions: number;
+  activeForCapacity: number;
+  byStatus: Record<WorkspaceSession["status"] | "unknown", number>;
+  sessions: Array<{
+    workspaceId: string;
+    status: WorkspaceSession["status"];
+    createdAt: number;
+    readyAt?: number;
+    expiresAt: number;
+    lastActivityAt: number;
+    claimId: string;
+    bountyId: string;
+    agentId: string;
+  }>;
+}
+
+function isProvisionCapacityActive(session: WorkspaceSession, now: number): boolean {
+  if (session.status === "ready") {
+    return session.expiresAt > now;
+  }
+  if (session.status === "provisioning") {
+    return now - session.createdAt <= PROVISIONING_TIMEOUT_MS;
+  }
+  return false;
+}
+
+function getCapacityStats(now: number = Date.now()): CapacityStats {
+  const allSessions = Array.from(sessions.values()).filter(
+    (s) => s.status !== "destroyed",
+  );
+  const byStatus: CapacityStats["byStatus"] = {
+    provisioning: 0,
+    ready: 0,
+    error: 0,
+    destroyed: 0,
+    unknown: 0,
+  };
+
+  for (const session of allSessions) {
+    byStatus[session.status] = (byStatus[session.status] || 0) + 1;
+  }
+
+  return {
+    maxDevVms: MAX_DEV_VMS,
+    totalSessions: allSessions.length,
+    activeForCapacity: allSessions.filter((s) => isProvisionCapacityActive(s, now)).length,
+    byStatus,
+    sessions: allSessions.map((session) => ({
+      workspaceId: session.workspaceId,
+      status: session.status,
+      createdAt: session.createdAt,
+      readyAt: session.readyAt,
+      expiresAt: session.expiresAt,
+      lastActivityAt: session.lastActivityAt,
+      claimId: session.claimId,
+      bountyId: session.bountyId,
+      agentId: session.agentId,
+    })),
+  };
+}
+
+export function getCapacityStatsSnapshot(): CapacityStats {
+  return getCapacityStats();
+}
+
+async function pruneStaleSessionsForCapacity(now: number = Date.now()): Promise<void> {
+  const stale: string[] = [];
+  for (const [workspaceId, session] of sessions) {
+    if (
+      session.status === "ready" &&
+      (session.expiresAt <= now || now - session.lastActivityAt > WORKSPACE_IDLE_TIMEOUT_MS)
+    ) {
+      stale.push(workspaceId);
+      continue;
+    }
+
+    if (
+      session.status === "provisioning" &&
+      now - session.createdAt > PROVISIONING_TIMEOUT_MS
+    ) {
+      stale.push(workspaceId);
+      continue;
+    }
+
+    if (session.status === "error" && now - session.createdAt > ERROR_SESSION_CLEANUP_MS) {
+      stale.push(workspaceId);
+    }
+  }
+
+  for (const workspaceId of stale) {
+    logger.info("Pruning stale session during capacity check", {
+      workspaceId,
+    });
+    await destroyWorkspace(workspaceId, "error_cleanup").catch((err) => {
+      logger.error("Failed to prune stale workspace during capacity check", {
+        workspaceId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Session store
@@ -131,12 +309,18 @@ export async function provisionWorkspace(
     return existing;
   }
 
-  // Capacity check — include retry info based on nearest expiry
-  const activeSessions = Array.from(sessions.values()).filter(
-    (s) => s.status !== "destroyed",
+  const now = Date.now();
+  await pruneStaleSessionsForCapacity(now);
+
+  // Capacity check — count only capacity-bearing sessions (ready or active provisioning)
+  const activeSessions = Array.from(sessions.values()).filter((s) =>
+    isProvisionCapacityActive(s, now),
   );
+
+  const capacityStats = getCapacityStats(now);
+  logger.debug("Capacity snapshot before provision", capacityStats);
+
   if (activeSessions.length >= MAX_DEV_VMS) {
-    const now = Date.now();
     // Find the nearest TTL expiry for a retry hint
     const nearestExpiry = activeSessions
       .filter((s) => s.expiresAt > now)
@@ -227,13 +411,15 @@ export async function provisionWorkspace(
     session.vmHandle = vm;
 
     // Clone repo (as root for initial setup)
-    const safeRepoUrl = sanitizeShellArg(opts.repoUrl, "repoUrl", "repoUrl");
+    const cloneRepo = buildAuthenticatedCloneRepoUrl(opts.repoUrl, opts.repoAuthToken);
+    const safeRepoUrl = sanitizeShellArg(cloneRepo.url, "repoCloneUrl", "repoUrl");
     const safeCommitSha = sanitizeShellArg(opts.commitSha, "commitSha", "commitSha");
 
     const cloneCmd = `git clone ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`;
     const cloneResult = await vm.exec(cloneCmd, 300_000); // 5 min for large repos
     if (cloneResult.exitCode !== 0) {
-      throw new Error(`Failed to clone repo: ${cloneResult.stderr.slice(0, 500)}`);
+      const combined = `${cloneResult.stderr}\n${cloneResult.stdout}`.trim();
+      throw new Error(`Failed to clone repo: ${redactToken(combined, cloneRepo.tokenForRedaction).slice(0, 500)}`);
     }
 
     // Set ownership to agent user
@@ -393,31 +579,51 @@ export async function extractDiff(
 
   const vm = session.vmHandle;
 
-  // Single exec call: stage + diff + stat + names using delimiter-separated output
-  // Reduces 4 sequential vsock round-trips to 1
+  // Single exec call: stage + unstage noise + diff + stat + names using delimiter-separated output
+  // Reduces multiple sequential vsock round-trips to 1 while filtering common cache/build artifacts.
+  const excludePathspecArgs = DIFF_EXCLUDE_GLOBS
+    .map((glob) => sanitizeDiffExcludeGlob(glob))
+    .join(" ");
+  const unstageNoiseCmd = excludePathspecArgs.length > 0
+    ? ` && (git reset -q HEAD -- ${excludePathspecArgs} || true)`
+    : "";
   const combinedCmd =
-    `cd /workspace && git add -A && ` +
+    `cd /workspace && git add -A${unstageNoiseCmd} && ` +
     `echo '---DIFF---' && git diff --cached HEAD && ` +
     `echo '---STAT---' && git diff --cached --stat HEAD && ` +
     `echo '---NAMES---' && git diff --cached --name-only HEAD`;
 
   const combinedResult = await vm.exec(combinedCmd, 60_000, "agent");
+  if (combinedResult.exitCode !== 0) {
+    const stderr = combinedResult.stderr.trim();
+    throw new Error(
+      `Failed to extract workspace diff (exit ${combinedResult.exitCode})${
+        stderr ? `: ${stderr}` : ""
+      }`,
+    );
+  }
   const output = combinedResult.stdout;
 
   // Split on delimiter markers
   const diffStart = output.indexOf("---DIFF---\n");
   const statStart = output.indexOf("---STAT---\n");
   const namesStart = output.indexOf("---NAMES---\n");
+  const markersValid =
+    diffStart >= 0 &&
+    statStart > diffStart &&
+    namesStart > statStart;
+  if (!markersValid) {
+    throw new Error(
+      "Failed to parse workspace diff output (missing delimiter markers). " +
+      "The output may be truncated; reduce workspace noise and retry.",
+    );
+  }
 
-  const diffPatch = diffStart >= 0 && statStart >= 0
-    ? output.substring(diffStart + "---DIFF---\n".length, statStart).trimEnd()
-    : "";
-  const diffStat = statStart >= 0 && namesStart >= 0
-    ? output.substring(statStart + "---STAT---\n".length, namesStart).trimEnd()
-    : "";
-  const namesRaw = namesStart >= 0
-    ? output.substring(namesStart + "---NAMES---\n".length).trimEnd()
-    : "";
+  // Preserve exact patch bytes (including trailing newline) so `git apply`
+  // receives a syntactically valid unified diff.
+  const diffPatch = output.substring(diffStart + "---DIFF---\n".length, statStart);
+  const diffStat = output.substring(statStart + "---STAT---\n".length, namesStart).trimEnd();
+  const namesRaw = output.substring(namesStart + "---NAMES---\n".length).trimEnd();
 
   const changedFiles = namesRaw.split("\n").filter(Boolean);
 

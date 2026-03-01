@@ -1,9 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { requireAuthUser, requireScope } from "../lib/context";
-import { getWorkspaceForAgent } from "../workspace/cache";
+import { getWorkspaceForAgent, invalidateWorkspaceCache } from "../workspace/cache";
 import { callWorker } from "../worker/client";
 import { registerTool } from "../lib/toolHelper";
+import { isMissingWorkspaceSessionError, staleWorkspaceSessionMessage } from "../workspace/workerErrors";
 
 export function registerWorkspaceStatus(server: McpServer): void {
   registerTool(
@@ -72,8 +73,38 @@ export function registerWorkspaceStatus(server: McpServer): void {
         };
       }
 
+      let displayStatus = ws.status;
+      let workerSessionAvailable = ws.status === "ready";
+      let availabilityWarning: string | null = null;
+
+      if (ws.status === "ready") {
+        try {
+          const live = await callWorker<{ status: string }>(
+            ws.workerHost,
+            "/api/workspace/status",
+            { workspaceId: ws.workspaceId },
+            8_000,
+          );
+          if (live.status !== "ready") {
+            workerSessionAvailable = false;
+            displayStatus = `ready (worker reports ${live.status})`;
+            invalidateWorkspaceCache(user.userId, args.bountyId);
+            availabilityWarning =
+              `Worker reports this workspace as \`${live.status}\`, so interactive commands may fail.\n\n` +
+              "Control-plane cache was invalidated and will refresh on next lookup.";
+          }
+        } catch (err) {
+          if (isMissingWorkspaceSessionError(err)) {
+            workerSessionAvailable = false;
+            displayStatus = "ready (stale)";
+            invalidateWorkspaceCache(user.userId, args.bountyId);
+            availabilityWarning = staleWorkspaceSessionMessage();
+          }
+        }
+      }
+
       const parts: string[] = [];
-      parts.push(`## Workspace Status: **${ws.status}**`);
+      parts.push(`## Workspace Status: **${displayStatus}**`);
       parts.push(`- **Workspace ID:** ${ws.workspaceId}`);
 
       const remaining = ws.expiresAt - Date.now();
@@ -106,8 +137,13 @@ export function registerWorkspaceStatus(server: McpServer): void {
         };
       }
 
+      if (availabilityWarning) {
+        parts.push("\n### Availability Warning");
+        parts.push(availabilityWarning);
+      }
+
       // Show directory tree if requested
-      if (args.showTree === "true") {
+      if (args.showTree === "true" && workerSessionAvailable) {
         try {
           const treeResult = await callWorker<{
             stdout: string;
@@ -127,13 +163,20 @@ export function registerWorkspaceStatus(server: McpServer): void {
         } catch {
           parts.push("\n*(Could not fetch directory listing)*");
         }
+      } else if (args.showTree === "true") {
+        parts.push("\n*(Directory listing skipped because worker session is currently unavailable)*");
       }
 
       parts.push("\n### Available Commands");
-      parts.push("- `workspace_exec` — Run shell commands");
-      parts.push("- `workspace_read_file` — Read source files");
-      parts.push("- `workspace_write_file` — Write/create files");
-      parts.push("- `submit_solution` — Submit changes for verification");
+      if (workerSessionAvailable) {
+        parts.push("- `workspace_exec` — Run shell commands");
+        parts.push("- `workspace_read_file` — Read source files");
+        parts.push("- `workspace_write_file` — Write/create files");
+        parts.push("- `submit_solution` — Submit changes for verification");
+      } else {
+        parts.push("- Worker session is unavailable; commands will fail until workspace is reprovisioned.");
+        parts.push("- Use `workspace_startup_log` for diagnostics.");
+      }
 
       return {
         content: [{ type: "text" as const, text: parts.join("\n") }],

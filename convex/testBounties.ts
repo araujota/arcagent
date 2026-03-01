@@ -1,6 +1,12 @@
 import { internalAction, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import {
+  findGitHubInstallationForRepo,
+  isGitHubAppConfigured,
+  resolveGitHubTokenForRepo,
+} from "./lib/githubApp";
+import { verifyBddStepCoverage } from "./lib/bddStepVerifier";
 
 const DEFAULT_REPOSITORY_URL = "https://github.com/araujota/arcagent";
 const DEFAULT_BRANCH = "main";
@@ -71,9 +77,13 @@ const HIDDEN_STEP_DEFS = JSON.stringify([
       "  assert.ok(fs.existsSync(SIDEBAR), `Missing sidebar: ${SIDEBAR}`);",
       "});",
       "",
-      "Then('the sidebar includes a navigation link to /agenthellos', function () {",
+      "Then(/the sidebar includes a navigation link to \\/agenthellos/, function () {",
       "  const content = fs.readFileSync(SIDEBAR, 'utf-8');",
       "  assert.match(content, /\\/agenthellos/, 'Expected /agenthellos navigation link');",
+      "});",
+      "",
+      "Given('the agenthellos route exists', function () {",
+      "  assert.ok(fs.existsSync(PAGE), `Missing route: ${PAGE}`);",
       "});",
       "",
       "Then('the agenthellos page is client only', function () {",
@@ -102,25 +112,83 @@ async function resolveCommitSha(repositoryUrl: string, branch: string): Promise<
     throw new Error("TEST_BOUNTY_COMMIT_SHA is required for non-GitHub repository URLs");
   }
 
-  const response = await fetch(
-    `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/commits/${encodeURIComponent(branch)}`,
-    {
+  const appToken = await resolveGitHubTokenForRepo({
+    repositoryUrl,
+    writeAccess: false,
+  });
+  const token = appToken?.token ?? process.env.GITHUB_API_TOKEN?.trim();
+  const endpoint = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/commits/${encodeURIComponent(branch)}`;
+  const maxAttempts = 3;
+  const baseRetryDelayMs = 200;
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const response = await fetch(endpoint, {
       headers: {
         Accept: "application/vnd.github+json",
+        "User-Agent": "arcagent",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-    },
-  );
+    });
 
-  if (!response.ok) {
-    throw new Error(`Failed to resolve test bounty commit SHA (${response.status})`);
+    const textBody = await response.text();
+    if (response.ok) {
+      const payload = safeParseJson(textBody) as { sha?: string };
+      if (!payload.sha) {
+        throw new Error("GitHub commit response did not include sha");
+      }
+      return payload.sha;
+    }
+
+    const githubMessage = extractGitHubErrorMessage(textBody);
+    const rateLimitRemaining = response.headers.get("x-ratelimit-remaining");
+    const rateLimitReset = response.headers.get("x-ratelimit-reset");
+    const rateLimitResetIso = rateLimitReset && /^\d+$/.test(rateLimitReset)
+      ? new Date(parseInt(rateLimitReset, 10) * 1000).toISOString()
+      : null;
+    const remediation =
+      "Set TEST_BOUNTY_COMMIT_SHA to a known-good commit, install the Arcagent GitHub App on the repository, or configure GITHUB_API_TOKEN for authenticated API access.";
+    const details = [
+      `status=${response.status}`,
+      githubMessage ? `githubMessage=${githubMessage}` : null,
+      `rateLimitRemaining=${rateLimitRemaining ?? "unknown"}`,
+      `rateLimitReset=${rateLimitResetIso ?? rateLimitReset ?? "unknown"}`,
+      `authMode=${token ? "authenticated" : "unauthenticated"}`,
+    ].filter(Boolean).join(", ");
+
+    lastError = new Error(`Failed to resolve test bounty commit SHA (${details}). ${remediation}`);
+
+    const shouldRetry =
+      attempt < maxAttempts &&
+      (response.status === 403 || response.status === 429 || response.status >= 500);
+    if (!shouldRetry) {
+      break;
+    }
+    await sleep(baseRetryDelayMs * attempt);
   }
 
-  const payload = (await response.json()) as { sha?: string };
-  if (!payload.sha) {
-    throw new Error("GitHub commit response did not include sha");
-  }
+  throw lastError ?? new Error("Failed to resolve test bounty commit SHA");
+}
 
-  return payload.sha;
+function safeParseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
+function extractGitHubErrorMessage(body: string): string | null {
+  const parsed = safeParseJson(body) as { message?: string };
+  if (typeof parsed.message === "string" && parsed.message.trim()) {
+    return parsed.message.trim();
+  }
+  const compact = body.trim().replace(/\s+/g, " ");
+  return compact ? compact.slice(0, 240) : null;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export const ensureTestCreator = internalMutation({
@@ -157,8 +225,26 @@ export const createArtifacts = internalMutation({
     repo: v.string(),
     defaultBranch: v.string(),
     commitSha: v.string(),
+    githubInstallationId: v.number(),
+    githubInstallationAccountLogin: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const staticTemplateVerification = verifyBddStepCoverage({
+      gherkinPublic: PUBLIC_GHERKIN,
+      gherkinHidden: HIDDEN_GHERKIN,
+      stepDefinitionPayloads: [
+        { label: "public", serialized: PUBLIC_STEP_DEFS },
+        { label: "hidden", serialized: HIDDEN_STEP_DEFS },
+      ],
+    });
+    if (!staticTemplateVerification.valid) {
+      throw new Error(
+        `Test bounty Gherkin/step templates failed verification: ${staticTemplateVerification.issues
+          .slice(0, 5)
+          .join("; ")}`,
+      );
+    }
+
     const bountyId = await ctx.db.insert("bounties", {
       title: `Test Bounty: Agent Hello (${args.agentIdentifier})`,
       description:
@@ -196,6 +282,8 @@ export const createArtifacts = internalMutation({
       lastIndexedAt: Date.now(),
       dockerfilePath: "Dockerfile",
       dockerfileSource: "repo",
+      githubInstallationId: args.githubInstallationId,
+      githubInstallationAccountLogin: args.githubInstallationAccountLogin,
     });
 
     await ctx.db.patch(bountyId, { repoConnectionId });
@@ -256,6 +344,18 @@ export const createAndClaim = internalAction({
     if (!parsed) {
       throw new Error("TEST_BOUNTY_REPOSITORY_URL must be a GitHub repo URL");
     }
+    if (!isGitHubAppConfigured()) {
+      throw new Error(
+        "GitHub App is not configured in this environment. Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY before creating test bounties."
+      );
+    }
+
+    const installation = await findGitHubInstallationForRepo(parsed.owner, parsed.repo);
+    if (!installation) {
+      throw new Error(
+        "GitHub App installation is required for TEST_BOUNTY_REPOSITORY_URL. Install the Arcagent GitHub App on the repo or owning organization."
+      );
+    }
 
     const commitSha = await resolveCommitSha(repositoryUrl, defaultBranch);
     const creatorId = await ctx.runMutation(internal.testBounties.ensureTestCreator, {});
@@ -268,6 +368,8 @@ export const createAndClaim = internalAction({
       repo: parsed.repo,
       defaultBranch,
       commitSha,
+      githubInstallationId: installation.installationId,
+      githubInstallationAccountLogin: installation.accountLogin,
     });
 
     const claimId = await ctx.runMutation(internal.bountyClaims.create, {

@@ -15,20 +15,26 @@ variable "environment" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type — must be .metal for KVM/Firecracker support"
+  description = "EC2 instance type for the worker host"
   type        = string
-  default     = "c6i.metal"
-
-  validation {
-    condition     = can(regex("\\.metal$", var.instance_type))
-    error_message = "Instance type must be a .metal variant for KVM support."
-  }
+  default     = "c8i.large"
 }
 
 variable "worker_count" {
   description = "Number of worker instances to deploy"
   type        = number
   default     = 1
+}
+
+variable "worker_role" {
+  description = "Worker runtime role (api)"
+  type        = string
+  default     = "api"
+
+  validation {
+    condition     = var.worker_role == "api"
+    error_message = "worker_role must be set to \"api\"."
+  }
 }
 
 variable "allocate_eip" {

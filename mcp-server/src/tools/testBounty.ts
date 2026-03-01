@@ -52,8 +52,14 @@ export function registerTestBounty(server: McpServer): void {
         return { content: [{ type: "text" as const, text }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to create test bounty";
+        const isCommitResolutionFailure =
+          message.includes("Failed to resolve test bounty commit SHA") ||
+          message.includes("rateLimitRemaining=");
+        const suffix = isCommitResolutionFailure
+          ? "\n\nRemediation: set TEST_BOUNTY_COMMIT_SHA to a known-good commit and/or configure GITHUB_API_TOKEN for authenticated GitHub API access."
+          : "";
         return {
-          content: [{ type: "text" as const, text: `Failed to create test bounty: ${message}` }],
+          content: [{ type: "text" as const, text: `Failed to create test bounty: ${message}${suffix}` }],
           isError: true,
         };
       }

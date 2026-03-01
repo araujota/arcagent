@@ -99,6 +99,7 @@ function makeProvisionOpts(overrides?: Partial<ProvisionOptions>): ProvisionOpti
     bountyId: "bounty-xyz",
     agentId: "agent-007",
     repoUrl: "https://github.com/test-org/test-repo",
+    repoAuthToken: "ghs_mocktoken",
     commitSha: "abc1234def5678",
     language: "typescript",
     expiresAt: Date.now() + 3_600_000, // 1 hour from now
@@ -126,6 +127,15 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe("provisionWorkspace", () => {
+  it("requires repoAuthToken for GitHub workspace clones", async () => {
+    const mockVM = createMockVMHandle();
+    vi.mocked(createFirecrackerVM).mockResolvedValue(mockVM);
+    const opts = makeProvisionOpts({ repoAuthToken: undefined });
+    await expect(provisionWorkspace(opts)).rejects.toThrow("Missing repoAuthToken for GitHub repository clone");
+    expect(createFirecrackerVM).toHaveBeenCalledOnce();
+    expect(destroyFirecrackerVM).toHaveBeenCalledWith(mockVM);
+  });
+
   it("provisions workspace and returns ready session", async () => {
     const mockVM = createMockVMHandle();
     vi.mocked(createFirecrackerVM).mockResolvedValue(mockVM);
@@ -195,6 +205,32 @@ describe("provisionWorkspace", () => {
     await expect(provisionWorkspace(overflowOpts)).rejects.toThrow(
       "Worker at capacity",
     );
+  });
+
+  it("prunes stale capacity sessions before enforcing the limit", async () => {
+    const mockVM = createMockVMHandle();
+    vi.mocked(createFirecrackerVM).mockResolvedValue(mockVM);
+
+    const expiredAt = Date.now() - 60_000;
+    for (let i = 0; i < 10; i++) {
+      const opts = makeProvisionOpts({
+        workspaceId: `ws-stale-${i}`,
+        expiresAt: expiredAt,
+      });
+      await provisionWorkspace(opts);
+    }
+
+    const overflowOpts = makeProvisionOpts({
+      workspaceId: "ws-stale-overflow",
+      expiresAt: Date.now() + 3_600_000,
+    });
+
+    await expect(provisionWorkspace(overflowOpts)).resolves.toMatchObject({
+      workspaceId: "ws-stale-overflow",
+    });
+
+    // Old implementation rejects here because stale sessions were counted
+    // and prevented this call. After the capacity-prune fix, it should proceed.
   });
 
   it("installs dependencies based on language", async () => {
@@ -268,6 +304,45 @@ describe("extractDiff", () => {
     // Calling extractDiff on a workspaceId that does not exist should throw
     await expect(extractDiff("ws-nonexistent")).rejects.toThrow(
       "Workspace not ready",
+    );
+  });
+
+  it("throws when combined diff command fails", async () => {
+    const mockVM = createMockVMHandle();
+    vi.mocked(mockVM.exec).mockImplementation(async (command: string): Promise<ExecResult> => {
+      if (command.includes("---DIFF---")) {
+        return {
+          stdout: "",
+          stderr: "fatal: ambiguous argument 'HEAD'",
+          exitCode: 128,
+        };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    vi.mocked(createFirecrackerVM).mockResolvedValue(mockVM);
+
+    const opts = makeProvisionOpts();
+    await provisionWorkspace(opts);
+
+    await expect(extractDiff(opts.workspaceId)).rejects.toThrow(
+      "Failed to extract workspace diff",
+    );
+  });
+
+  it("throws when delimiter markers are missing", async () => {
+    const mockVM = createMockVMHandle();
+    vi.mocked(mockVM.exec).mockResolvedValue({
+      stdout: "unexpected output without markers",
+      stderr: "",
+      exitCode: 0,
+    });
+    vi.mocked(createFirecrackerVM).mockResolvedValue(mockVM);
+
+    const opts = makeProvisionOpts();
+    await provisionWorkspace(opts);
+
+    await expect(extractDiff(opts.workspaceId)).rejects.toThrow(
+      "missing delimiter markers",
     );
   });
 });

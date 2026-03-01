@@ -15,6 +15,7 @@ vi.mock("./tools/workspaceWriteFile", () => ({ registerWorkspaceWriteFile: vi.fn
 vi.mock("./tools/workspaceStatus", () => ({ registerWorkspaceStatus: vi.fn() }));
 vi.mock("./tools/submitSolution", () => ({ registerSubmitSolution: vi.fn() }));
 vi.mock("./tools/getVerificationStatus", () => ({ registerGetVerificationStatus: vi.fn() }));
+vi.mock("./tools/getVerificationLogs", () => ({ registerGetVerificationLogs: vi.fn() }));
 vi.mock("./tools/listMySubmissions", () => ({ registerListMySubmissions: vi.fn() }));
 vi.mock("./tools/createBounty", () => ({ registerCreateBounty: vi.fn() }));
 vi.mock("./tools/getBountyGenerationStatus", () => ({ registerGetBountyGenerationStatus: vi.fn() }));
@@ -61,6 +62,7 @@ import { registerWorkspaceWriteFile } from "./tools/workspaceWriteFile";
 import { registerWorkspaceStatus } from "./tools/workspaceStatus";
 import { registerSubmitSolution } from "./tools/submitSolution";
 import { registerGetVerificationStatus } from "./tools/getVerificationStatus";
+import { registerGetVerificationLogs } from "./tools/getVerificationLogs";
 import { registerListMySubmissions } from "./tools/listMySubmissions";
 import { registerCreateBounty } from "./tools/createBounty";
 import { registerGetBountyGenerationStatus } from "./tools/getBountyGenerationStatus";
@@ -129,6 +131,7 @@ describe("createMcpServer", () => {
       registerWorkspaceExecStream,
       registerSubmitSolution,
       registerGetVerificationStatus,
+      registerGetVerificationLogs,
       registerGetSubmissionFeedback,
       registerListMySubmissions,
       registerCreateBounty,
@@ -154,7 +157,7 @@ describe("createMcpServer", () => {
       registerTestBounty,
     ];
 
-    expect(allRegisterFns).toHaveLength(43);
+    expect(allRegisterFns).toHaveLength(44);
 
     for (const fn of allRegisterFns) {
       expect(fn).toHaveBeenCalledTimes(1);

@@ -490,6 +490,8 @@ export const runAutonomousGeneration = internalAction({
             gherkinPublic: generatedTest.gherkinPublic,
             gherkinHidden: generatedTest.gherkinHidden,
             stepDefinitions: generatedTest.stepDefinitions || "",
+            stepDefinitionsPublic: generatedTest.stepDefinitionsPublic || undefined,
+            stepDefinitionsHidden: generatedTest.stepDefinitionsHidden || undefined,
             extractedCriteria,
           }
         );

@@ -87,7 +87,14 @@ describe("check_worker_status tool", () => {
         JSON.stringify({
           status: "ok",
           timestamp: "2026-02-26T04:00:00.000Z",
-          checks: { redis: "ok", firecracker: "ok" },
+          checks: {
+            redis: "ok",
+            firecracker: "ok",
+            kvmDevice: "ok",
+            vhostVsockDevice: "ok",
+            jailerUid: "1001",
+            jailerCanReadEncryptedRootfsSample: "ok",
+          },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -98,6 +105,9 @@ describe("check_worker_status tool", () => {
     expect(result.content[0].text).toContain("HTTP status: 200");
     expect(result.content[0].text).toContain("Health status: ok");
     expect(result.content[0].text).toContain("redis: ok");
+    expect(result.content[0].text).toContain("/dev/kvm: ok");
+    expect(result.content[0].text).toContain("/dev/vhost-vsock: ok");
+    expect(result.content[0].text).toContain("Jailer UID: 1001");
     expect(mockFetch).toHaveBeenCalledWith(
       "https://worker.example.com/api/health",
       expect.objectContaining({ method: "GET" }),

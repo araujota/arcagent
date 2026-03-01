@@ -1,6 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, chmod, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { v4 as uuidv4 } from "uuid";
 import type { FirecrackerVMOptions, ExecResult, VMHandle } from "./firecracker";
@@ -14,6 +24,15 @@ const DEFAULT_PATH = process.env.PROCESS_BACKEND_PATH ?? "/usr/local/sbin:/usr/l
 interface ProcessSession {
   cwd: string;
 }
+
+interface ProcessWorkspaceFile {
+  path: string;
+  relativePath: string;
+  mtimeMs: number;
+}
+
+const DEFAULT_GLOB_MAX_RESULTS = 500;
+const DEFAULT_GREP_MAX_RESULTS = 200;
 
 export interface ProcessVMHandle extends VMHandle {
   __backend: "process";
@@ -212,6 +231,376 @@ async function runCommand(
   }
 }
 
+function toPosixPath(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+function escapeRegexChar(char: string): string {
+  return char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+}
+
+function findMatchingBrace(pattern: string, start: number): number {
+  let depth = 0;
+  for (let i = start; i < pattern.length; i += 1) {
+    if (pattern[i] === "{") {
+      depth += 1;
+    } else if (pattern[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function splitTopLevel(
+  pattern: string,
+  delimiter: string,
+  start = 0,
+): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let last = start;
+  for (let i = start; i < pattern.length; i += 1) {
+    const char = pattern[i];
+    if (char === "{") depth += 1;
+    if (char === "}") depth -= 1;
+    if (char === delimiter && depth === 0) {
+      parts.push(pattern.slice(last, i));
+      last = i + 1;
+    }
+  }
+  parts.push(pattern.slice(last));
+  return parts;
+}
+
+function globSegmentToRegex(pattern: string): string {
+  let regex = "";
+  let i = 0;
+  while (i < pattern.length) {
+    const char = pattern[i];
+    if (char === "*") {
+      regex += "[^/]*";
+      i += 1;
+      continue;
+    }
+    if (char === "?") {
+      regex += "[^/]";
+      i += 1;
+      continue;
+    }
+    if (char === "[") {
+      const end = pattern.indexOf("]", i + 1);
+      if (end === -1) {
+        regex += "\\[";
+        i += 1;
+        continue;
+      }
+      regex += `[${pattern.slice(i + 1, end)}]`;
+      i = end + 1;
+      continue;
+    }
+    if (char === "{") {
+      const end = findMatchingBrace(pattern, i);
+      if (end === -1) {
+        regex += "\\{";
+        i += 1;
+        continue;
+      }
+      const alternatives = splitTopLevel(pattern.slice(i + 1, end), ",").map((alt) =>
+        globSegmentToRegex(alt),
+      );
+      regex += `(?:${alternatives.join("|")})`;
+      i = end + 1;
+      continue;
+    }
+    regex += escapeRegexChar(char);
+    i += 1;
+  }
+  return regex;
+}
+
+const globSegmentRegexCache = new Map<string, RegExp>();
+
+function segmentMatches(pattern: string, target: string): boolean {
+  let compiled = globSegmentRegexCache.get(pattern);
+  if (!compiled) {
+    compiled = new RegExp(`^${globSegmentToRegex(pattern)}$`);
+    globSegmentRegexCache.set(pattern, compiled);
+  }
+  return compiled.test(target);
+}
+
+function matchGlobPattern(pattern: string, target: string): boolean {
+  const normalizedPattern = toPosixPath(pattern).replace(/^\/+/, "");
+  const normalizedTarget = toPosixPath(target);
+  const patternParts = normalizedPattern.split("/").filter((p) => p.length > 0);
+  const targetParts = normalizedTarget.split("/").filter((p) => p.length > 0);
+
+  const memo = new Map<string, boolean>();
+
+  const matchParts = (patternIndex: number, targetIndex: number): boolean => {
+    const key = `${patternIndex}:${targetIndex}`;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+
+    if (patternIndex >= patternParts.length) {
+      return targetIndex >= targetParts.length;
+    }
+
+    const part = patternParts[patternIndex];
+    if (part === "**") {
+      // ** matches any number of segments, including zero.
+      for (let skip = 0; targetIndex + skip <= targetParts.length; skip += 1) {
+        if (matchParts(patternIndex + 1, targetIndex + skip)) {
+          memo.set(key, true);
+          return true;
+        }
+      }
+      memo.set(key, false);
+      return false;
+    }
+
+    if (targetIndex >= targetParts.length) {
+      memo.set(key, false);
+      return false;
+    }
+
+    if (!segmentMatches(part, targetParts[targetIndex])) {
+      memo.set(key, false);
+      return false;
+    }
+
+    const matches = matchParts(patternIndex + 1, targetIndex + 1);
+    memo.set(key, matches);
+    return matches;
+  };
+
+  return matchParts(0, 0);
+}
+
+function isBinaryBuffer(content: Buffer): boolean {
+  const sample = content.subarray(0, Math.min(content.length, 4096));
+  return sample.includes(0);
+}
+
+async function collectWorkspaceFiles(basePath: string): Promise<ProcessWorkspaceFile[]> {
+  const normalizedBase = toPosixPath(await realpath(basePath));
+  const files: ProcessWorkspaceFile[] = [];
+  const seen = new Set<string>();
+
+  const walk = async (current: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const childPath = toPosixPath(`${current}/${entry.name}`);
+      let stats;
+      try {
+        stats = await stat(childPath);
+      } catch {
+        continue;
+      }
+
+      const inodeKey = `${stats.dev}:${stats.ino}`;
+      if (seen.has(inodeKey)) continue;
+      seen.add(inodeKey);
+
+      if (stats.isDirectory()) {
+        let resolvedDir: string;
+        try {
+          resolvedDir = toPosixPath(await realpath(childPath));
+        } catch {
+          continue;
+        }
+        if (!resolvedDir.startsWith(`${normalizedBase}/`) && resolvedDir !== normalizedBase) {
+          continue;
+        }
+        await walk(childPath);
+        continue;
+      }
+
+      if (!stats.isFile()) continue;
+
+      let resolvedPath: string;
+      try {
+        resolvedPath = toPosixPath(await realpath(childPath));
+      } catch {
+        continue;
+      }
+
+      if (!resolvedPath.startsWith(`${normalizedBase}/`) && resolvedPath !== normalizedBase) {
+        continue;
+      }
+
+      const relativePath = relative(normalizedBase, resolvedPath).split("/").join("/");
+      if (relativePath.startsWith("..")) {
+        continue;
+      }
+      files.push({
+        path: resolvedPath,
+        relativePath,
+        mtimeMs: stats.mtimeMs,
+      });
+    }
+  };
+
+  await walk(normalizedBase);
+  return files;
+}
+
+async function handleFileGlobRequest(
+  handle: ProcessVMHandle,
+  request: VsockRequest,
+): Promise<VsockResponse> {
+  const pattern = request.pattern ?? "";
+  if (!pattern) {
+    return { type: "error", error: "missing pattern" };
+  }
+
+  const searchPath = normalizeVmPath(request.path ?? handle.__workspaceDir, handle.__workspaceDir);
+  if (!searchPath.startsWith(handle.__workspaceDir)) {
+    return { type: "error", error: "Path must be within /workspace" };
+  }
+
+  const maxResults = request.maxResults && request.maxResults > 0
+    ? request.maxResults
+    : DEFAULT_GLOB_MAX_RESULTS;
+
+  const files = await collectWorkspaceFiles(searchPath);
+  const matched = files.filter((file) => matchGlobPattern(pattern, file.relativePath));
+  const sorted = matched.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const truncated = sorted.length > maxResults;
+  const selected = truncated ? sorted.slice(0, maxResults) : sorted;
+
+  return {
+    type: "file_result",
+    files: selected.map((entry) => entry.path),
+    totalMatches: sorted.length,
+    truncated,
+  };
+}
+
+async function handleFileGrepRequest(
+  handle: ProcessVMHandle,
+  request: VsockRequest,
+): Promise<VsockResponse> {
+  const pattern = request.pattern ?? "";
+  if (!pattern) {
+    return { type: "error", error: "missing pattern" };
+  }
+
+  const searchPath = normalizeVmPath(request.path ?? handle.__workspaceDir, handle.__workspaceDir);
+  if (!searchPath.startsWith(handle.__workspaceDir)) {
+    return { type: "error", error: "Path must be within /workspace" };
+  }
+
+  const maxResults = request.maxResults && request.maxResults > 0
+    ? request.maxResults
+    : DEFAULT_GREP_MAX_RESULTS;
+  const contextLines = Math.max(0, request.contextLines ?? 0);
+  const caseSensitive = request.caseSensitive ?? true;
+  const outputMode = request.outputMode ?? "content";
+  const fileGlob = request.glob;
+
+  let searchRegex: RegExp;
+  try {
+    searchRegex = caseSensitive ? new RegExp(pattern) : new RegExp(pattern, "i");
+  } catch (err) {
+    return {
+      type: "error",
+      error: err instanceof Error ? err.message : "invalid pattern",
+    };
+  }
+
+  const files = await collectWorkspaceFiles(searchPath);
+  const fileMatchCounts = new Map<string, number>();
+  const grepMatches: NonNullable<VsockResponse["matches"]> = [];
+  let totalMatches = 0;
+
+  for (const file of files) {
+    if (fileGlob && !matchGlobPattern(fileGlob, file.relativePath)) {
+      continue;
+    }
+
+    const contentBuffer = await readFile(file.path);
+    if (isBinaryBuffer(contentBuffer)) continue;
+    const fileContent = contentBuffer.toString("utf-8");
+    const lines = fileContent.split(/\r?\n/);
+
+    let matchedInFile = 0;
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex];
+      if (searchRegex.global) {
+        searchRegex.lastIndex = 0;
+      }
+      if (!searchRegex.test(line)) {
+        continue;
+      }
+      matchedInFile += 1;
+      totalMatches += 1;
+      fileMatchCounts.set(file.path, (fileMatchCounts.get(file.path) ?? 0) + 1);
+
+      if (outputMode === "content" && grepMatches.length < maxResults) {
+        const beforeStart = Math.max(lineIndex - contextLines, 0);
+        const afterEnd = Math.min(lineIndex + contextLines + 1, lines.length);
+        const before = lines
+          .slice(beforeStart, lineIndex)
+          .map((text) => text.replace(/\r?\n$/, ""));
+        const after = lines
+          .slice(lineIndex + 1, afterEnd)
+          .map((text) => text.replace(/\r?\n$/, ""));
+
+        grepMatches.push({
+          file: file.path,
+          line: lineIndex + 1,
+          text: line.replace(/\r?\n$/, ""),
+          contextBefore: before,
+          contextAfter: after,
+        });
+      }
+    }
+
+  }
+
+  const truncated = totalMatches > maxResults;
+
+  if (outputMode === "files_with_matches") {
+    const filesWithMatches = Array.from(fileMatchCounts.keys());
+    return {
+      type: "file_result",
+      files: filesWithMatches,
+      totalMatches,
+      truncated,
+    };
+  }
+
+  if (outputMode === "count") {
+    const counts = Array.from(fileMatchCounts.entries()).map(([file, count]) => ({
+      file,
+      line: 0,
+      text: String(count),
+    }));
+
+    return {
+      type: "file_result",
+      matches: counts,
+      totalMatches,
+      truncated,
+    };
+  }
+
+  return {
+    type: "file_result",
+    matches: grepMatches,
+    totalMatches,
+    truncated,
+  };
+}
+
 async function handleSessionRequest(
   handle: ProcessVMHandle,
   request: VsockRequest,
@@ -348,14 +737,17 @@ export async function createProcessVM(opts: FirecrackerVMOptions): Promise<VMHan
     __executionUser: executionUser,
     __dropPrivileges: dropPrivileges,
 
-    async exec(command: string, timeoutMs = DEFAULT_EXEC_TIMEOUT_MS): Promise<ExecResult> {
+    async exec(command: string, timeoutMs = DEFAULT_EXEC_TIMEOUT_MS, user?: string): Promise<ExecResult> {
+      const requestedRoot = user === "root";
+      const commandUser = requestedRoot ? "root" : executionUser;
+      const commandDropsPrivileges = requestedRoot ? false : dropPrivileges;
       return runCommand(
         command,
         workspaceDir,
         timeoutMs,
         workspaceDir,
-        executionUser,
-        dropPrivileges,
+        commandUser,
+        commandDropsPrivileges,
       );
     },
 
@@ -363,16 +755,24 @@ export async function createProcessVM(opts: FirecrackerVMOptions): Promise<VMHan
       command: string,
       stdin: string,
       timeoutMs = DEFAULT_EXEC_TIMEOUT_MS,
+      user?: string,
     ): Promise<ExecResult> {
+      const requestedRoot = user === "root";
+      const commandUser = requestedRoot ? "root" : executionUser;
+      const commandDropsPrivileges = requestedRoot ? false : dropPrivileges;
       const rewritten = rewriteWorkspacePaths(command, workspaceDir);
       const stdinEscaped = shellEscape(stdin);
+      // Apply stdin redirection to the entire command chain.
+      // Without grouping, `<<<` binds only to the last simple command (e.g. chown),
+      // which can leave earlier commands like `cat > file` waiting on stdin.
+      const commandWithStdin = `( ${rewritten} ) <<< ${stdinEscaped}`;
       return runCommand(
-        `${rewritten} <<< ${stdinEscaped}`,
+        commandWithStdin,
         workspaceDir,
         timeoutMs,
         workspaceDir,
-        executionUser,
-        dropPrivileges,
+        commandUser,
+        commandDropsPrivileges,
       );
     },
 
@@ -402,6 +802,14 @@ export async function createProcessVM(opts: FirecrackerVMOptions): Promise<VMHan
 
         if (request.type === "file_edit") {
           return handleFileEditRequest(handle, request);
+        }
+
+        if (request.type === "file_glob") {
+          return handleFileGlobRequest(handle, request);
+        }
+
+        if (request.type === "file_grep") {
+          return handleFileGrepRequest(handle, request);
         }
 
         if (request.type === "heartbeat") {

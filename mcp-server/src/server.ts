@@ -14,6 +14,7 @@ import { registerWorkspaceWriteFile } from "./tools/workspaceWriteFile";
 import { registerWorkspaceStatus } from "./tools/workspaceStatus";
 import { registerSubmitSolution } from "./tools/submitSolution";
 import { registerGetVerificationStatus } from "./tools/getVerificationStatus";
+import { registerGetVerificationLogs } from "./tools/getVerificationLogs";
 import { registerListMySubmissions } from "./tools/listMySubmissions";
 import { registerCreateBounty } from "./tools/createBounty";
 import { registerGetBountyGenerationStatus } from "./tools/getBountyGenerationStatus";
@@ -57,7 +58,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
 
   const server = new McpServer({
     name: "arcagent",
-    version: "0.1.0",
+    version: "0.1.11",
   });
 
   // Registration tool (available without pre-existing credentials)
@@ -76,6 +77,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
   registerReleaseClaim(server);
   registerSubmitSolution(server);
   registerGetVerificationStatus(server);
+  registerGetVerificationLogs(server);
   registerGetSubmissionFeedback(server);
   registerListMySubmissions(server);
   registerCreateBounty(server);

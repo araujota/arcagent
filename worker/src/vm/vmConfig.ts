@@ -39,7 +39,7 @@ const configs: Record<string, VMResourceConfig> = {
   typescript: {
     rootfsImage: "node-20.ext4",
     vcpuCount: 2,
-    memSizeMib: 1024,
+    memSizeMib: 2048,
     defaultGateTimeoutMs: 120_000,
     vsockPort: 5000,
     allowedDomains: [...COMMON_DOMAINS, "registry.npmjs.org", "*.npmjs.org"],
@@ -47,7 +47,7 @@ const configs: Record<string, VMResourceConfig> = {
   javascript: {
     rootfsImage: "node-20.ext4",
     vcpuCount: 2,
-    memSizeMib: 1024,
+    memSizeMib: 2048,
     defaultGateTimeoutMs: 120_000,
     vsockPort: 5000,
     allowedDomains: [...COMMON_DOMAINS, "registry.npmjs.org", "*.npmjs.org"],

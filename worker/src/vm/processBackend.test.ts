@@ -103,6 +103,93 @@ describe("process backend (Cloudflare mode)", () => {
     }
   });
 
+  it("supports file_glob via vsockRequest and returns files sorted by mtime", async () => {
+    const handle = await mkHandle();
+    try {
+      await handle.exec("printf 'root\\n' > /workspace/root.txt");
+      await handle.exec("mkdir -p /workspace/src/nested");
+      await handle.exec("printf 'nested\\n' > /workspace/src/nested/child.txt");
+
+      await handle.exec("touch -d '1 hour ago' /workspace/root.txt");
+      await handle.exec("touch -d '1 minute ago' /workspace/src/nested/child.txt");
+
+      const result = await handle.vsockRequest!({
+        type: "file_glob",
+        pattern: "**/*.txt",
+        path: "/workspace",
+        maxResults: 20,
+      });
+
+      expect(result.type).toBe("file_result");
+      expect(result.files).toHaveLength(2);
+      expect(result.files?.[0] ?? "").toContain("child.txt");
+      expect(result.files?.[1] ?? "").toContain("root.txt");
+      expect(result.totalMatches).toBe(2);
+      expect(result.truncated).toBe(false);
+    } finally {
+      await destroyProcessVM(handle);
+    }
+  });
+
+  it("supports file_grep in content mode", async () => {
+    const handle = await mkHandle();
+    try {
+      await handle.exec("mkdir -p /workspace/src");
+      await handle.exec("printf 'apple pie\\n' > /workspace/src/a.txt");
+      await handle.exec("printf 'banana\\n' > /workspace/src/b.txt");
+      await handle.exec("printf 'Apple crumble\\n' > /workspace/src/c.txt");
+
+      const result = await handle.vsockRequest!({
+        type: "file_grep",
+        pattern: "apple",
+        path: "/workspace",
+        caseSensitive: false,
+        outputMode: "content",
+      });
+
+      expect(result.type).toBe("file_result");
+      expect((result.matches ?? []).length).toBe(2);
+      expect(result.totalMatches).toBe(2);
+      expect(result.truncated).toBe(false);
+    } finally {
+      await destroyProcessVM(handle);
+    }
+  });
+
+  it("supports file_grep output modes", async () => {
+    const handle = await mkHandle();
+    try {
+      await handle.exec("mkdir -p /workspace/src");
+      await handle.exec("printf 'apple pie\\napple tart\\n' > /workspace/src/a.txt");
+      await handle.exec("printf 'apple cider\\n' > /workspace/src/b.txt");
+
+      const filesResult = await handle.vsockRequest!({
+        type: "file_grep",
+        pattern: "apple",
+        path: "/workspace",
+        outputMode: "files_with_matches",
+      });
+
+      expect(filesResult.type).toBe("file_result");
+      expect(filesResult.files).toHaveLength(2);
+      expect(filesResult.totalMatches).toBe(3);
+
+      const countResult = await handle.vsockRequest!({
+        type: "file_grep",
+        pattern: "apple",
+        path: "/workspace",
+        outputMode: "count",
+      });
+
+      expect(countResult.type).toBe("file_result");
+      expect(countResult.matches).toHaveLength(2);
+      expect(countResult.matches?.[0].text).toBeDefined();
+      expect(countResult.totalMatches).toBe(3);
+    } finally {
+      await destroyProcessVM(handle);
+    }
+  });
+
   it("destroy removes the isolated root directory", async () => {
     const handle = await mkHandle();
     const rootDir = handle.__rootDir;
