@@ -8,6 +8,21 @@
     "source": "github"
   },
   "version": "0.1.12",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.arcagent.dev/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer token used to authenticate ArcAgent MCP requests",
+          "isRequired": true,
+          "isSecret": true,
+          "placeholder": "Bearer arc_..."
+        }
+      ]
+    }
+  ],
   "packages": [
     {
       "registryType": "npm",
