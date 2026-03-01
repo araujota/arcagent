@@ -153,8 +153,7 @@ Create `worker/.env`.
 | `CONVEX_HTTP_ACTIONS_URL` | Recommended | Convex HTTP actions URL (`.convex.site`) used for `/api/*` callbacks | Derive from `CONVEX_URL` by replacing `.cloud` with `.site` |
 | `WORKER_SHARED_SECRET` | Yes | Auth with Convex HTTP endpoints | Must match value set in Convex env |
 | `WORKER_ROLE` | No | Worker runtime role (`api`) | Default `api` |
-| `WORKER_EXECUTION_BACKEND` | No | Execution backend | Must be `firecracker` in deployed runtimes; `process` is blocked unless explicit unsafe local override |
-| `ALLOW_UNSAFE_PROCESS_BACKEND` | No | Local escape hatch for non-KVM development only | Set `true` only for local non-production debugging |
+| `WORKER_EXECUTION_BACKEND` | No | Execution backend | Default is `process` (recommended). `firecracker` is legacy-only. |
 | `WORKSPACE_ISOLATION_MODE` | No | `shared_worker` | Workspace orchestration mode (`shared_worker` in current runtime) |
 | `REDIS_URL` | Yes | Redis for BullMQ job queue | `redis://localhost:6379` locally, or Redis cloud connection string |
 | `PORT` | No | Express server port (default: `3001`) | Set if port 3001 is taken |
@@ -189,7 +188,7 @@ npm run env:bootstrap:secrets
 | `SONARQUBE_URL` | No | SonarQube server endpoint | `http://localhost:9000` for local process backend, `https://...` in hardened/prod |
 | `SONARQUBE_TOKEN` | No | SonarQube auth token | SonarQube > Administration > Security > Users > Generate token |
 
-### Firecracker VM (Linux host only)
+### Legacy Firecracker Options (optional)
 
 | Variable | Required | Description | How to get it |
 |----------|----------|-------------|---------------|
@@ -198,7 +197,7 @@ npm run env:bootstrap:secrets
 | `FC_KERNEL_IMAGE` | No | Kernel image path (default: `/var/lib/firecracker/vmlinux`) | Build or download from firecracker docs |
 | `FC_ROOTFS_DIR` | No | Root filesystem directory (default: `/var/lib/firecracker/rootfs`) | Build per-language rootfs images |
 | `FC_USE_VSOCK` | No | Use vsock instead of SSH (default: `"true"`) | Set `"false"` to fallback to SSH |
-| `FC_HARDEN_EGRESS` | No | Enable strict egress filtering (default: `"false"`) | Set `"true"` in production |
+| `FC_HARDEN_EGRESS` | No | Enable strict egress filtering (default: production-enabled) | Set `"true"` when using Firecracker in hardened environments |
 | `GITHUB_API_TOKEN` | No | GitHub API token for language detection | Reuse the Convex `GITHUB_API_TOKEN` value or create a dedicated token |
 | `GITHUB_APP_ID` | Recommended | GitHub App ID for repo-scoped installation tokens | GitHub App settings |
 | `GITHUB_APP_PRIVATE_KEY` | Recommended | GitHub App private key (PEM, `\\n` escaped accepted) | GitHub App settings > Generate private key |
@@ -261,15 +260,39 @@ Deploy MCP server HTTP runtime and expose it as `https://mcp.arcagent.dev`:
 | `CONVEX_HTTP_ACTIONS_URL` | Yes | Convex HTTP actions URL (`.convex.site`) | `https://...convex.site` |
 | `WORKER_SHARED_SECRET` | Yes for workspace tools | Worker auth secret | `...` |
 
-### Package publishing (still required)
+### Package publishing
 
 Before agents can `npx arcagent-mcp`:
 
 1. **Set `DEFAULT_CONVEX_URL`** in `mcp-server/src/config.ts` to your production Convex HTTP actions URL (`.convex.site`)
 2. **Build**: `cd mcp-server && npm run build`
-3. **Publish**: `cd mcp-server && npm publish`
+3. **Publish**: `cd mcp-server && npm publish` (or use CI automation below)
 
 The same package version supports both self-hosted and operator-hosted deployments.
+
+### Main-merge deployment automation
+
+`.github/workflows/deploy-main-surfaces.yml` deploys changed surfaces on every merge to `main`:
+
+- `convex/**` changes: deploys Convex (`npx convex deploy -y --typecheck=disable`)
+- `mcp-server/**` changes: builds/pushes MCP image and rolls ECS Fargate service, then publishes `arcagent-mcp` via npm trusted publishing
+- `worker/**` changes: builds/pushes worker image and rolls ECS service
+
+Configure these GitHub Actions settings:
+
+- **Secrets**
+  - `AWS_DEPLOY_ROLE_ARN` (OIDC-assumable role for ECR/ECS deploy)
+  - `CONVEX_DEPLOY_KEY` (Convex production deploy key)
+- **Repository variables**
+  - `AWS_REGION` (for example `us-east-1`)
+  - `MCP_ECR_REPOSITORY`
+  - `MCP_ECS_CLUSTER`
+  - `MCP_ECS_SERVICE`
+  - `MCP_ECS_CONTAINER_NAME` (optional, default `mcp-server`)
+  - `WORKER_ECR_REPOSITORY`
+  - `WORKER_ECS_CLUSTER`
+  - `WORKER_ECS_SERVICE`
+  - `WORKER_ECS_CONTAINER_NAME` (optional, default `worker`)
 
 ---
 
@@ -346,7 +369,7 @@ The `<SignIn />` and `<SignUp />` components automatically render all enabled so
 | `Invalid ARCAGENT_API_KEY` or `API key validation failed` | API key revoked, expired, or incorrect | Generate a new key in Settings > API Keys |
 | `WORKER_SHARED_SECRET` / HMAC verification failed | Secret mismatch between worker and Convex | Regenerate: `openssl rand -hex 32`, set in both Convex env and `worker/.env` |
 | `connect ECONNREFUSED 127.0.0.1:6379` | Redis not running | Start Redis: `redis-server` or `brew services start redis` |
-| `Cannot find module 'firecracker'` / Firecracker timeout | Missing Firecracker binary or not on Linux | Firecracker requires a Linux host with KVM. See worker Firecracker env vars above. |
+| `Unsupported execution backend` | Invalid `WORKER_EXECUTION_BACKEND` value | Set `WORKER_EXECUTION_BACKEND=process` (recommended) or `firecracker` (legacy) |
 
 ### Validation Checklist
 

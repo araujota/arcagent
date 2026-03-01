@@ -17,7 +17,8 @@ const PUBLIC_GHERKIN = `Feature: Agent Hello Onboarding
     Given the agenthellos route exists
     Then the agenthellos page is a TypeScript route file
     And the page contains hello from text with the agent identifier
-    And the page imports at least one existing UI component library`;
+    And the page imports at least one existing UI component library
+    And the page stores hello entries in local client code`;
 
 const HIDDEN_GHERKIN = `Feature: Agent Hello Hidden Checks
 
@@ -27,7 +28,9 @@ const HIDDEN_GHERKIN = `Feature: Agent Hello Hidden Checks
 
   Scenario: Keep the page client-rendered
     Given the agenthellos route exists
-    Then the agenthellos page is client only`;
+    Then the agenthellos page is client only
+    And the agenthellos page does not import convex client APIs
+    And the agenthellos page does not read agent hellos from convex`;
 
 const PUBLIC_STEP_DEFS = JSON.stringify([
   {
@@ -56,6 +59,11 @@ const PUBLIC_STEP_DEFS = JSON.stringify([
       "Then('the page imports at least one existing UI component library', function () {",
       "  const content = fs.readFileSync(PAGE, 'utf-8');",
       "  assert.match(content, /@\\/components\\/ui\\//, 'Expected import from existing UI library');",
+      "});",
+      "",
+      "Then('the page stores hello entries in local client code', function () {",
+      "  const content = fs.readFileSync(PAGE, 'utf-8');",
+      "  assert.match(content, /(AGENT_HELLOS|agentHellos)/, 'Expected local hello entries in page code');",
       "});",
       "",
     ].join('\\n'),
@@ -90,6 +98,20 @@ const HIDDEN_STEP_DEFS = JSON.stringify([
       "  const content = fs.readFileSync(PAGE, 'utf-8');",
       "  assert.match(content, /['\\\"]use client['\\\"]/i, 'Expected client component page');",
       "  assert.ok(!/use server/i.test(content), 'Page should not be a server action file');",
+      "});",
+      "",
+      "Then('the agenthellos page does not import convex client APIs', function () {",
+      "  const content = fs.readFileSync(PAGE, 'utf-8');",
+      "  assert.ok(!/from ['\\\"]convex\\/react['\\\"]/.test(content), 'Expected no convex/react import on page');",
+      "  assert.ok(!/convex\\/_generated\\/api/.test(content), 'Expected no generated convex api import on page');",
+      "  assert.ok(!/useProductAnalytics/.test(content), 'Expected no analytics hook that depends on Convex');",
+      "});",
+      "",
+      "Then('the agenthellos page does not read agent hellos from convex', function () {",
+      "  const content = fs.readFileSync(PAGE, 'utf-8');",
+      "  assert.ok(!/useQuery\\s*\\(/.test(content), 'Expected no useQuery hook on page');",
+      "  assert.ok(!/agentHellos\\.listRecent/.test(content), 'Expected no agentHellos list query on page');",
+      "  assert.ok(!/api\\.agentHellos/.test(content), 'Expected no api.agentHellos usage on page');",
       "});",
       "",
     ].join('\\n'),
@@ -248,7 +270,7 @@ export const createArtifacts = internalMutation({
     const bountyId = await ctx.db.insert("bounties", {
       title: `Test Bounty: Agent Hello (${args.agentIdentifier})`,
       description:
-        "Onboarding test bounty: add /agenthellos page with a simple hello container and unique agent identifier.",
+        "Onboarding test bounty: keep /agenthellos as a client-code-only hello feed (no Convex reads) with a unique agent identifier.",
       creatorId: args.creatorId,
       status: "active",
       reward: 25,
