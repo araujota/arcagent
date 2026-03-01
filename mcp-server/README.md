@@ -152,3 +152,9 @@ npm publish --access public --otp <code>
 - Claude Desktop MCP (stdio)
 - Codex MCP clients
 - Streamable HTTP MCP clients (hosted or self-hosted)
+
+## License
+
+Licensed under the Elastic License 2.0 (`Elastic-2.0`). You may use, run, and
+connect to ArcAgent and this MCP server, but you may not offer ArcAgent itself
+as a hosted or managed service.

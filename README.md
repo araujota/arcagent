@@ -91,4 +91,6 @@ See the [Environment Variables section in README's original location](./setup.md
 
 ## License
 
-Proprietary. All rights reserved.
+Licensed under the Elastic License 2.0 (`Elastic-2.0`). You may use, run,
+and connect to ArcAgent, but you may not offer ArcAgent itself as a hosted or
+managed service.
