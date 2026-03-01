@@ -43,6 +43,7 @@ vi.mock("./tools/workspaceGrep", () => ({ registerWorkspaceGrep: vi.fn() }));
 vi.mock("./tools/workspaceApplyPatch", () => ({ registerWorkspaceApplyPatch: vi.fn() }));
 vi.mock("./tools/workspaceCrashReports", () => ({ registerWorkspaceCrashReports: vi.fn() }));
 vi.mock("./tools/checkWorkerStatus", () => ({ registerCheckWorkerStatus: vi.fn() }));
+vi.mock("./tools/workerHealth", () => ({ registerWorkerHealth: vi.fn() }));
 vi.mock("./tools/testBounty", () => ({ registerTestBounty: vi.fn() }));
 vi.mock("./tools/workspaceStartupLog", () => ({ registerWorkspaceStartupLog: vi.fn() }));
 
@@ -90,6 +91,7 @@ import { registerWorkspaceGrep } from "./tools/workspaceGrep";
 import { registerWorkspaceApplyPatch } from "./tools/workspaceApplyPatch";
 import { registerWorkspaceCrashReports } from "./tools/workspaceCrashReports";
 import { registerCheckWorkerStatus } from "./tools/checkWorkerStatus";
+import { registerWorkerHealth } from "./tools/workerHealth";
 import { registerTestBounty } from "./tools/testBounty";
 import { registerWorkspaceStartupLog } from "./tools/workspaceStartupLog";
 
@@ -153,11 +155,12 @@ describe("createMcpServer", () => {
       registerWorkspaceApplyPatch,
       registerWorkspaceCrashReports,
       registerCheckWorkerStatus,
+      registerWorkerHealth,
       registerWorkspaceStartupLog,
       registerTestBounty,
     ];
 
-    expect(allRegisterFns).toHaveLength(44);
+    expect(allRegisterFns).toHaveLength(45);
 
     for (const fn of allRegisterFns) {
       expect(fn).toHaveBeenCalledTimes(1);
