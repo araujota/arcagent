@@ -42,6 +42,7 @@ import { registerWorkspaceGrep } from "./tools/workspaceGrep";
 import { registerWorkspaceApplyPatch } from "./tools/workspaceApplyPatch";
 import { registerWorkspaceCrashReports } from "./tools/workspaceCrashReports";
 import { registerCheckWorkerStatus } from "./tools/checkWorkerStatus";
+import { registerWorkerHealth } from "./tools/workerHealth";
 import { registerTestBounty } from "./tools/testBounty";
 import { registerWorkspaceStartupLog } from "./tools/workspaceStartupLog";
 
@@ -112,6 +113,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
     registerWorkspaceApplyPatch(server);
     registerWorkspaceCrashReports(server);
     registerCheckWorkerStatus(server);
+    registerWorkerHealth(server);
     registerWorkspaceStartupLog(server);
   }
 
