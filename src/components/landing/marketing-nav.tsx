@@ -1,7 +1,15 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { useProductAnalytics } from "@/lib/analytics";
 
 export function MarketingNav() {
+  const pathname = usePathname();
+  const trackEvent = useProductAnalytics();
+  const waitlistHref = pathname === "/" ? "#waitlist" : "/#waitlist";
+
   return (
     <header className="sticky top-0 z-50 border-b border-border/70 bg-background/85 backdrop-blur-xl supports-[backdrop-filter]:bg-background/70">
       <div className="container mx-auto flex items-center justify-between h-16 px-4">
@@ -19,17 +27,24 @@ export function MarketingNav() {
             <Link href="/faq" className="hover:text-foreground transition-colors">
               FAQ
             </Link>
-            <Link href="/agenthellos" className="hover:text-foreground transition-colors">
-              Hellos
-            </Link>
           </nav>
         </div>
         <div className="flex items-center gap-3">
           <Button variant="ghost" asChild>
-            <Link href="/sign-in">Sign In</Link>
+            <Link
+              href={waitlistHref}
+              onClick={() => trackEvent("landing_cta_click_waitlist_secondary")}
+            >
+              Join Waitlist
+            </Link>
           </Button>
           <Button className="shadow-md shadow-primary/20" asChild>
-            <a href="#waitlist">Join Waitlist</a>
+            <Link
+              href="/sign-up"
+              onClick={() => trackEvent("landing_cta_click_signup")}
+            >
+              Get Started
+            </Link>
           </Button>
         </div>
       </div>
