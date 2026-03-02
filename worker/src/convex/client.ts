@@ -1,5 +1,5 @@
 import { logger } from "../index";
-import { VerificationResult } from "../queue/jobQueue";
+import { ValidationReceipt, VerificationResult } from "../queue/jobQueue";
 import { buildWorkerCallbackEnvelope } from "../lib/callbackAuth";
 import {
   resolveConfiguredConvexHttpActionsUrl,
@@ -34,6 +34,23 @@ interface ConvexResultPayload {
   }>;
   totalDurationMs: number;
   feedbackJson?: string;
+  validationReceipts?: Array<{
+    verificationId?: string;
+    attemptNumber: number;
+    legKey: string;
+    orderIndex: number;
+    status: string;
+    blocking: boolean;
+    unreachedByLegKey?: string;
+    startedAt: number;
+    completedAt: number;
+    durationMs: number;
+    summaryLine: string;
+    rawBody?: string;
+    sarifJson?: string;
+    policyJson?: string;
+    metadataJson?: string;
+  }>;
   steps?: Array<{
     scenarioName: string;
     featureName: string;
@@ -46,6 +63,49 @@ interface ConvexResultPayload {
   /** SECURITY (H6): Per-job HMAC token for result verification. */
   jobHmac?: string;
   /** SECURITY (H7): Signed callback envelope metadata. */
+  callbackTimestampMs?: number;
+  callbackNonce?: string;
+  callbackSignature?: string;
+}
+
+interface ConvexReceiptPayload {
+  verificationId?: string;
+  submissionId: string;
+  bountyId: string;
+  jobId: string;
+  attemptNumber: number;
+  legKey: string;
+  orderIndex: number;
+  status: string;
+  blocking: boolean;
+  unreachedByLegKey?: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  summaryLine: string;
+  rawBody?: string;
+  sarifJson?: string;
+  policyJson?: string;
+  metadataJson?: string;
+  jobHmac?: string;
+  callbackTimestampMs?: number;
+  callbackNonce?: string;
+  callbackSignature?: string;
+}
+
+interface ConvexArtifactPayload {
+  verificationId?: string;
+  submissionId: string;
+  bountyId: string;
+  jobId: string;
+  attemptNumber: number;
+  filename: string;
+  contentType: string;
+  sha256: string;
+  bytes: number;
+  manifestJson: string;
+  bundleBase64: string;
+  jobHmac?: string;
   callbackTimestampMs?: number;
   callbackNonce?: string;
   callbackSignature?: string;
@@ -114,6 +174,7 @@ export async function postVerificationResult(
     })),
     totalDurationMs: result.totalDurationMs,
     feedbackJson: result.feedbackJson,
+    validationReceipts: result.validationReceipts,
     steps: result.steps,
     jobHmac: result.jobHmac,
   };
@@ -141,23 +202,7 @@ export async function postVerificationResult(
       payload.callbackNonce = callbackEnvelope.callbackNonce;
       payload.callbackSignature = callbackEnvelope.callbackSignature;
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(
-        () => controller.abort(),
-        REQUEST_TIMEOUT_MS,
-      );
-
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(secret ? { Authorization: `Bearer ${secret}` } : {}),
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
+      const response = await postJson(url, payload, secret);
 
       if (response.ok) {
         logger.info("Successfully posted result to Convex", {
@@ -213,6 +258,89 @@ export async function postVerificationResult(
   }
 }
 
+export async function postVerificationReceipt(
+  convexUrl: string,
+  receipt: ValidationReceipt,
+  jobHmac: string,
+): Promise<void> {
+  validateConvexUrl(convexUrl);
+  const secret = process.env.WORKER_SHARED_SECRET;
+  if (!secret) throw new Error("WORKER_SHARED_SECRET must be configured");
+  if (!jobHmac) throw new Error("Missing jobHmac in verification receipt payload");
+
+  const url = buildReceiptUrl(convexUrl);
+  const payload: ConvexReceiptPayload = {
+    verificationId: receipt.verificationId,
+    submissionId: receipt.submissionId,
+    bountyId: receipt.bountyId,
+    jobId: receipt.jobId,
+    attemptNumber: receipt.attemptNumber,
+    legKey: receipt.legKey,
+    orderIndex: receipt.orderIndex,
+    status: receipt.status,
+    blocking: receipt.blocking,
+    unreachedByLegKey: receipt.unreachedByLegKey,
+    startedAt: receipt.startedAt,
+    completedAt: receipt.completedAt,
+    durationMs: receipt.durationMs,
+    summaryLine: receipt.summaryLine,
+    rawBody: receipt.rawBody,
+    sarifJson: receipt.sarifJson,
+    policyJson: receipt.policyJson,
+    metadataJson: receipt.metadataJson,
+    jobHmac,
+  };
+
+  const callbackEnvelope = buildWorkerCallbackEnvelope({
+    secret,
+    submissionId: payload.submissionId,
+    bountyId: payload.bountyId,
+    jobId: payload.jobId,
+    overallStatus: payload.status,
+    jobHmac,
+  });
+  payload.callbackTimestampMs = callbackEnvelope.callbackTimestampMs;
+  payload.callbackNonce = callbackEnvelope.callbackNonce;
+  payload.callbackSignature = callbackEnvelope.callbackSignature;
+
+  const response = await postJson(url, payload, secret);
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Convex receipt HTTP ${response.status}: ${body.slice(0, 200)}`);
+  }
+}
+
+export async function postVerificationArtifact(
+  convexUrl: string,
+  artifact: Omit<ConvexArtifactPayload, "callbackTimestampMs" | "callbackNonce" | "callbackSignature">,
+): Promise<void> {
+  validateConvexUrl(convexUrl);
+  const secret = process.env.WORKER_SHARED_SECRET;
+  if (!secret) throw new Error("WORKER_SHARED_SECRET must be configured");
+  if (!artifact.jobHmac) throw new Error("Missing jobHmac in verification artifact payload");
+  const jobHmac = artifact.jobHmac;
+
+  const payload: ConvexArtifactPayload = { ...artifact };
+  const callbackEnvelope = buildWorkerCallbackEnvelope({
+    secret,
+    submissionId: payload.submissionId,
+    bountyId: payload.bountyId,
+    jobId: payload.jobId,
+    overallStatus: "artifact",
+    jobHmac,
+  });
+  payload.callbackTimestampMs = callbackEnvelope.callbackTimestampMs;
+  payload.callbackNonce = callbackEnvelope.callbackNonce;
+  payload.callbackSignature = callbackEnvelope.callbackSignature;
+
+  const url = buildArtifactUrl(convexUrl);
+  const response = await postJson(url, payload, secret);
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Convex artifact HTTP ${response.status}: ${body.slice(0, 200)}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -223,4 +351,35 @@ export async function postVerificationResult(
 function buildResultUrl(convexUrl: string): string {
   const base = toConvexHttpActionsBaseUrl(convexUrl);
   return `${base}/api/verification/result`;
+}
+
+function buildReceiptUrl(convexUrl: string): string {
+  const base = toConvexHttpActionsBaseUrl(convexUrl);
+  return `${base}/api/verification/receipt`;
+}
+
+function buildArtifactUrl(convexUrl: string): string {
+  const base = toConvexHttpActionsBaseUrl(convexUrl);
+  return `${base}/api/verification/artifact`;
+}
+
+async function postJson(url: string, payload: unknown, secret: string): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    REQUEST_TIMEOUT_MS,
+  );
+  try {
+    return await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${secret}`,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }

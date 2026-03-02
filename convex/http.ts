@@ -1205,7 +1205,7 @@ http.route({
         featureBranchName: claim.featureBranchName,
         featureBranchRepo: claim.featureBranchRepo,
         submissionCount: submissions.length,
-        maxSubmissions: 3,
+        maxSubmissions: 20,
       },
     });
   }),
@@ -2637,6 +2637,15 @@ const GATE_STATUS_MAP: Record<string, string> = {
   warn: "warning",
 };
 
+const RECEIPT_STATUS_MAP: Record<string, "pass" | "fail" | "error" | "warning" | "unreached" | "skipped_policy"> = {
+  pass: "pass",
+  fail: "fail",
+  error: "error",
+  warning: "warning",
+  unreached: "unreached",
+  skipped_policy: "skipped_policy",
+};
+
 function stringifyLogDetails(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   try {
@@ -2675,6 +2684,23 @@ http.route({
       }>;
       totalDurationMs: number;
       feedbackJson?: string;
+      validationReceipts?: Array<{
+        verificationId?: string;
+        attemptNumber: number;
+        legKey: string;
+        orderIndex: number;
+        status: string;
+        blocking: boolean;
+        unreachedByLegKey?: string;
+        startedAt: number;
+        completedAt: number;
+        durationMs: number;
+        summaryLine: string;
+        rawBody?: string;
+        sarifJson?: string;
+        policyJson?: string;
+        metadataJson?: string;
+      }>;
       steps?: Array<{
         scenarioName: string;
         featureName: string;
@@ -2819,9 +2845,43 @@ http.route({
           jobId: body.jobId,
           totalDurationMs: body.totalDurationMs,
           gateCount: body.gates.length,
+          receiptCount: body.validationReceipts?.length ?? 0,
           stepCount: body.steps?.length ?? 0,
         }),
       });
+
+      if (body.validationReceipts && body.validationReceipts.length > 0) {
+        const receiptApi = internal as unknown as {
+          verificationReceipts: { recordInternal: unknown };
+        };
+
+        for (const receipt of body.validationReceipts) {
+          const mappedStatus = RECEIPT_STATUS_MAP[receipt.status];
+          if (!mappedStatus) continue;
+          await ctx.runMutation(receiptApi.verificationReceipts.recordInternal as never, {
+            verificationId,
+            submissionId,
+            bountyId,
+            agentId: submission?.agentId,
+            claimId: activeClaimId,
+            attemptNumber: receipt.attemptNumber,
+            legKey: receipt.legKey,
+            orderIndex: receipt.orderIndex,
+            status: mappedStatus,
+            blocking: receipt.blocking,
+            unreachedByLegKey: receipt.unreachedByLegKey,
+            startedAt: receipt.startedAt,
+            completedAt: receipt.completedAt,
+            durationMs: receipt.durationMs,
+            summaryLine: receipt.summaryLine,
+            rawBody: receipt.rawBody,
+            sarifJson: receipt.sarifJson,
+            policyJson: receipt.policyJson,
+            metadataJson: receipt.metadataJson,
+            createdAt: Date.now(),
+          });
+        }
+      }
 
       // 1. Record each gate result (skip "test" gate — those are steps)
       const gateLogs: Array<{
@@ -2929,9 +2989,13 @@ http.route({
         { verificationId }
       );
       if (job) {
+        const lastReceipt = body.validationReceipts && body.validationReceipts.length > 0
+          ? [...body.validationReceipts].sort((a, b) => b.orderIndex - a.orderIndex)[0]
+          : undefined;
         await ctx.runMutation(internal.verificationJobs.updateStatus, {
           jobId: job._id,
           status: body.overallStatus === "pass" ? "completed" : "failed",
+          currentGate: lastReceipt?.legKey,
           completedAt: Date.now(),
         });
       }
@@ -2985,6 +3049,353 @@ http.route({
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to process verification result";
       console.error(`[verification/result] Error: ${message}`);
+      return mcpError(message, 500);
+    }
+  }),
+});
+
+http.route({
+  path: "/api/verification/receipt",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!verifyWorkerSecret(request)) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    let body: {
+      verificationId?: string;
+      submissionId: string;
+      bountyId: string;
+      jobId: string;
+      attemptNumber: number;
+      legKey: string;
+      orderIndex: number;
+      status: string;
+      blocking: boolean;
+      unreachedByLegKey?: string;
+      startedAt: number;
+      completedAt: number;
+      durationMs: number;
+      summaryLine: string;
+      rawBody?: string;
+      sarifJson?: string;
+      policyJson?: string;
+      metadataJson?: string;
+      jobHmac?: string;
+      callbackTimestampMs?: number;
+      callbackNonce?: string;
+      callbackSignature?: string;
+    };
+
+    try {
+      body = await request.json();
+    } catch {
+      return mcpError("Invalid JSON body", 400);
+    }
+
+    if (!body.submissionId || !body.bountyId || !body.legKey || !body.status || body.orderIndex === undefined) {
+      return mcpError("Missing required receipt fields", 400);
+    }
+
+    const receiptStatus = RECEIPT_STATUS_MAP[body.status];
+    if (!receiptStatus) return mcpError("Invalid receipt status", 400);
+
+    try {
+      const submissionId = body.submissionId as Id<"submissions">;
+      const bountyId = body.bountyId as Id<"bounties">;
+      const verification = await ctx.runQuery(internal.verifications.getBySubmissionInternal, {
+        submissionId,
+      });
+      if (!verification) return mcpError("Verification not found for submission", 404);
+      const verificationId = verification._id;
+
+      if (!body.jobHmac) return mcpError("Missing required job HMAC token", 403);
+      const hmacValid = await verifyJobHmac(
+        body.jobHmac,
+        verificationId,
+        body.submissionId,
+        body.bountyId,
+      );
+      if (!hmacValid) return mcpError("Invalid job HMAC token", 403);
+
+      if (
+        body.callbackTimestampMs === undefined ||
+        !body.callbackNonce ||
+        !body.callbackSignature
+      ) {
+        return mcpError(
+          "Missing callback auth envelope fields: callbackTimestampMs, callbackNonce, callbackSignature",
+          403,
+        );
+      }
+      if (!isFreshWorkerCallbackTimestamp(body.callbackTimestampMs)) {
+        return mcpError("Stale or invalid callback timestamp", 403);
+      }
+      const callbackSignatureValid = await verifyWorkerCallbackSignature(
+        body.callbackSignature,
+        {
+          submissionId: body.submissionId,
+          bountyId: body.bountyId,
+          jobId: body.jobId,
+          overallStatus: body.status,
+          jobHmac: body.jobHmac,
+          callbackTimestampMs: body.callbackTimestampMs,
+          callbackNonce: body.callbackNonce,
+        },
+      );
+      if (!callbackSignatureValid) {
+        return mcpError("Invalid callback signature", 403);
+      }
+
+      const callbackNonceApi = internal as unknown as {
+        workerCallbackNonces: { consume: unknown };
+      };
+      const nonceResult = await ctx.runMutation(
+        callbackNonceApi.workerCallbackNonces.consume as never,
+        {
+          nonce: body.callbackNonce,
+          verificationId,
+          ttlMs: 10 * 60 * 1000,
+        },
+      );
+      if (!nonceResult.accepted) {
+        return mcpError("Callback nonce already used", 409);
+      }
+
+      if (verification.status === "failed" || verification.status === "passed") {
+        return mcpJson({
+          success: false,
+          reason: `Verification already in terminal state: ${verification.status}`,
+          verificationId,
+        });
+      }
+
+      const submission = await ctx.runQuery(internal.submissions.getByIdInternal, {
+        submissionId,
+      });
+      const activeClaim = submission
+        ? await ctx.runQuery(internal.bountyClaims.getByAgentAndBounty, {
+            agentId: submission.agentId,
+            bountyId,
+          })
+        : null;
+
+      const receiptApi = internal as unknown as {
+        verificationReceipts: { recordInternal: unknown };
+      };
+      await ctx.runMutation(receiptApi.verificationReceipts.recordInternal as never, {
+        verificationId,
+        submissionId,
+        bountyId,
+        agentId: submission?.agentId,
+        claimId: activeClaim?._id,
+        attemptNumber: body.attemptNumber,
+        legKey: body.legKey,
+        orderIndex: body.orderIndex,
+        status: receiptStatus,
+        blocking: body.blocking,
+        unreachedByLegKey: body.unreachedByLegKey,
+        startedAt: body.startedAt,
+        completedAt: body.completedAt,
+        durationMs: body.durationMs,
+        summaryLine: body.summaryLine,
+        rawBody: body.rawBody,
+        sarifJson: body.sarifJson,
+        policyJson: body.policyJson,
+        metadataJson: body.metadataJson,
+        createdAt: Date.now(),
+      });
+
+      const verificationJob = await ctx.runQuery(
+        internal.verificationJobs.getByVerificationIdInternal,
+        { verificationId },
+      );
+      if (verificationJob) {
+        await ctx.runMutation(internal.verificationJobs.updateStatus, {
+          jobId: verificationJob._id,
+          status: "running",
+          currentGate: body.legKey,
+          startedAt: verificationJob.startedAt ?? Date.now(),
+        });
+      }
+
+      await ctx.runMutation(internal.verifications.recordLogInternal, {
+        verificationId,
+        submissionId,
+        bountyId,
+        agentId: submission?.agentId,
+        claimId: activeClaim?._id,
+        source: "verification_result_callback",
+        level: receiptStatus === "pass"
+          ? "info"
+          : receiptStatus === "warning"
+            ? "warning"
+            : "error",
+        eventType: "validation_receipt",
+        gate: body.legKey,
+        message: `${body.legKey} => ${receiptStatus}: ${body.summaryLine}`,
+        detailsJson: stringifyLogDetails({
+          orderIndex: body.orderIndex,
+          blocking: body.blocking,
+          unreachedByLegKey: body.unreachedByLegKey,
+        }),
+      });
+
+      return mcpJson({ success: true, verificationId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to process verification receipt";
+      return mcpError(message, 500);
+    }
+  }),
+});
+
+http.route({
+  path: "/api/verification/artifact",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!verifyWorkerSecret(request)) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    let body: {
+      verificationId?: string;
+      submissionId: string;
+      bountyId: string;
+      jobId: string;
+      attemptNumber: number;
+      filename: string;
+      contentType: string;
+      sha256: string;
+      bytes: number;
+      manifestJson: string;
+      bundleBase64: string;
+      jobHmac?: string;
+      callbackTimestampMs?: number;
+      callbackNonce?: string;
+      callbackSignature?: string;
+    };
+
+    try {
+      body = await request.json();
+    } catch {
+      return mcpError("Invalid JSON body", 400);
+    }
+
+    if (!body.submissionId || !body.bountyId || !body.bundleBase64 || !body.filename) {
+      return mcpError("Missing required artifact fields", 400);
+    }
+
+    try {
+      const submissionId = body.submissionId as Id<"submissions">;
+      const bountyId = body.bountyId as Id<"bounties">;
+      const verification = await ctx.runQuery(internal.verifications.getBySubmissionInternal, {
+        submissionId,
+      });
+      if (!verification) return mcpError("Verification not found for submission", 404);
+      const verificationId = verification._id;
+
+      if (!body.jobHmac) return mcpError("Missing required job HMAC token", 403);
+      const hmacValid = await verifyJobHmac(
+        body.jobHmac,
+        verificationId,
+        body.submissionId,
+        body.bountyId,
+      );
+      if (!hmacValid) return mcpError("Invalid job HMAC token", 403);
+
+      if (
+        body.callbackTimestampMs === undefined ||
+        !body.callbackNonce ||
+        !body.callbackSignature
+      ) {
+        return mcpError(
+          "Missing callback auth envelope fields: callbackTimestampMs, callbackNonce, callbackSignature",
+          403,
+        );
+      }
+      if (!isFreshWorkerCallbackTimestamp(body.callbackTimestampMs)) {
+        return mcpError("Stale or invalid callback timestamp", 403);
+      }
+      const callbackSignatureValid = await verifyWorkerCallbackSignature(
+        body.callbackSignature,
+        {
+          submissionId: body.submissionId,
+          bountyId: body.bountyId,
+          jobId: body.jobId,
+          overallStatus: "artifact",
+          jobHmac: body.jobHmac,
+          callbackTimestampMs: body.callbackTimestampMs,
+          callbackNonce: body.callbackNonce,
+        },
+      );
+      if (!callbackSignatureValid) {
+        return mcpError("Invalid callback signature", 403);
+      }
+
+      const callbackNonceApi = internal as unknown as {
+        workerCallbackNonces: { consume: unknown };
+      };
+      const nonceResult = await ctx.runMutation(
+        callbackNonceApi.workerCallbackNonces.consume as never,
+        {
+          nonce: body.callbackNonce,
+          verificationId,
+          ttlMs: 10 * 60 * 1000,
+        },
+      );
+      if (!nonceResult.accepted) {
+        return mcpError("Callback nonce already used", 409);
+      }
+
+      const binary = atob(body.bundleBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: body.contentType || "application/zip" });
+      const storageId = await ctx.storage.store(blob);
+
+      const submission = await ctx.runQuery(internal.submissions.getByIdInternal, {
+        submissionId,
+      });
+      const activeClaim = submission
+        ? await ctx.runQuery(internal.bountyClaims.getByAgentAndBounty, {
+            agentId: submission.agentId,
+            bountyId,
+          })
+        : null;
+
+      const artifactApi = internal as unknown as {
+        verificationArtifacts: { recordInternal: unknown };
+      };
+      const expiresAt = Date.now() + 180 * 24 * 60 * 60 * 1000;
+      await ctx.runMutation(artifactApi.verificationArtifacts.recordInternal as never, {
+        verificationId,
+        submissionId,
+        bountyId,
+        agentId: submission?.agentId,
+        claimId: activeClaim?._id,
+        attemptNumber: body.attemptNumber,
+        storageId,
+        filename: body.filename,
+        contentType: body.contentType || "application/zip",
+        sha256: body.sha256,
+        bytes: body.bytes,
+        manifestJson: body.manifestJson,
+        status: "stored",
+        createdAt: Date.now(),
+        expiresAt,
+      });
+
+      return mcpJson({ success: true, verificationId, storageId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to process verification artifact";
       return mcpError(message, 500);
     }
   }),

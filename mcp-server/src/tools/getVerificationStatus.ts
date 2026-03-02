@@ -69,6 +69,39 @@ export function registerGetVerificationStatus(server: McpServer): void {
           }
         }
 
+        if (Array.isArray(v.validationReceipts) && v.validationReceipts.length > 0) {
+          text += `\n## Validation Receipts\n\n`;
+          const ordered = [...v.validationReceipts].sort((a, b) => a.orderIndex - b.orderIndex);
+          for (const receipt of ordered) {
+            const status = receipt.status.toUpperCase();
+            text += `### [${receipt.orderIndex}] ${receipt.legKey} — ${status}\n`;
+            text += `- Blocking: ${receipt.blocking ? "yes" : "no"}\n`;
+            text += `- Duration: ${receipt.durationMs}ms\n`;
+            if (receipt.unreachedByLegKey) {
+              text += `- Unreached by: ${receipt.unreachedByLegKey}\n`;
+            }
+
+            if (receipt.status === "pass") {
+              text += `- PASS\n\n`;
+              continue;
+            }
+
+            text += `- Summary: ${receipt.summaryLine}\n`;
+
+            if (receipt.rawBody) {
+              text += `\n\`\`\`\n${receipt.rawBody.slice(0, 8000)}\n\`\`\`\n`;
+            }
+
+            if (receipt.policy) {
+              text += `\n**Policy:**\n\`\`\`json\n${JSON.stringify(receipt.policy, null, 2).slice(0, 4000)}\n\`\`\`\n`;
+            }
+            if (receipt.sarif) {
+              text += `\n**SARIF:**\n\`\`\`json\n${JSON.stringify(receipt.sarif, null, 2).slice(0, 4000)}\n\`\`\`\n`;
+            }
+            text += `\n`;
+          }
+        }
+
         // Test results with verbose output for both public and hidden scenarios.
         const steps = v.steps ?? [];
         if (steps.length > 0) {

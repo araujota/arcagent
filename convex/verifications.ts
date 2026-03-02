@@ -508,7 +508,7 @@ export const getAgentStatus = internalQuery({
     const verification = await ctx.db.get(args.verificationId);
     if (!verification) return null;
 
-    const [gates, steps, job] = await Promise.all([
+    const [gates, steps, job, receipts] = await Promise.all([
       ctx.db
         .query("sanityGates")
         .withIndex("by_verificationId", (q) =>
@@ -527,6 +527,12 @@ export const getAgentStatus = internalQuery({
           q.eq("verificationId", args.verificationId)
         )
         .first(),
+      ctx.db
+        .query("verificationReceipts")
+        .withIndex("by_verificationId_and_orderIndex", (q) =>
+          q.eq("verificationId", args.verificationId)
+        )
+        .collect(),
     ]);
 
     const allVisibleSteps = steps.map((s) => ({
@@ -564,6 +570,24 @@ export const getAgentStatus = internalQuery({
         skipped: hiddenSteps.filter((s) => s.status === "skip").length,
       },
       hiddenFailureMechanisms,
+      validationReceipts: receipts
+        .sort((a, b) => a.orderIndex - b.orderIndex)
+        .map((r) => ({
+          attemptNumber: r.attemptNumber,
+          legKey: r.legKey,
+          orderIndex: r.orderIndex,
+          status: r.status,
+          blocking: r.blocking,
+          unreachedByLegKey: r.unreachedByLegKey,
+          startedAt: r.startedAt,
+          completedAt: r.completedAt,
+          durationMs: r.durationMs,
+          summaryLine: r.summaryLine,
+          rawBody: r.rawBody,
+          sarif: r.sarifJson ? safeParseJson(r.sarifJson) : undefined,
+          policy: r.policyJson ? safeParseJson(r.policyJson) : undefined,
+          metadata: r.metadataJson ? safeParseJson(r.metadataJson) : undefined,
+        })),
       feedbackJson: verification.feedbackJson,
       job: job
         ? {

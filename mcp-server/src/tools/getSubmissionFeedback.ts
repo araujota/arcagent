@@ -93,6 +93,14 @@ export function registerGetSubmissionFeedback(server: McpServer): void {
           }
         }
 
+        if (Array.isArray(feedback.validationReceipts) && feedback.validationReceipts.length > 0) {
+          text += `\n## Validation Receipts\n\n`;
+          const ordered = [...feedback.validationReceipts].sort((a, b) => a.orderIndex - b.orderIndex);
+          for (const receipt of ordered) {
+            text += `- [${receipt.orderIndex}] ${receipt.legKey}: ${String(receipt.status).toUpperCase()} — ${receipt.summaryLine}\n`;
+          }
+        }
+
         const hiddenMechanisms = Array.isArray(feedback.hiddenFailureMechanisms) &&
           feedback.hiddenFailureMechanisms.length > 0
           ? feedback.hiddenFailureMechanisms

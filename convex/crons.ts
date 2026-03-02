@@ -2,6 +2,9 @@ import { cronJobs } from "convex/server";
 import { internal } from "./_generated/api";
 
 const crons = cronJobs();
+const verificationArtifactsApi = (internal as unknown as {
+  verificationArtifacts: { expireOldInternal: unknown };
+}).verificationArtifacts;
 
 crons.interval(
   "expire stale bounty claims",
@@ -67,6 +70,12 @@ crons.interval(
   "prune expired worker callback nonces",
   { minutes: 15 },
   internal.workerCallbackNonces.pruneExpired,
+);
+
+crons.interval(
+  "expire verification artifacts",
+  { hours: 6 },
+  verificationArtifactsApi.expireOldInternal as never,
 );
 
 export default crons;

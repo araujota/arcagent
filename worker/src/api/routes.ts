@@ -148,6 +148,7 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
       // not from the request body.
       const configuredConvexHttpActionsUrl = resolveConfiguredConvexHttpActionsUrl();
       const jobData: VerificationJobData = {
+        verificationId: body.verificationId,
         jobId,
         submissionId: body.submissionId,
         bountyId: body.bountyId,

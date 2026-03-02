@@ -98,6 +98,23 @@ export interface HiddenFailureMechanism {
   guidance: string;
 }
 
+export interface ValidationReceipt {
+  attemptNumber: number;
+  legKey: string;
+  orderIndex: number;
+  status: "pass" | "fail" | "error" | "warning" | "unreached" | "skipped_policy";
+  blocking: boolean;
+  unreachedByLegKey?: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  summaryLine: string;
+  rawBody?: string;
+  sarif?: unknown;
+  policy?: unknown;
+  metadata?: unknown;
+}
+
 /** Agent-facing verification status — all scenarios visible with verbose output. */
 export interface ConvexAgentVerification {
   _id: string;
@@ -117,6 +134,7 @@ export interface ConvexAgentVerification {
     skipped: number;
   };
   hiddenFailureMechanisms?: HiddenFailureMechanism[];
+  validationReceipts?: ValidationReceipt[];
   feedbackJson?: string;
   job: {
     status: string;
