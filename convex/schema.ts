@@ -367,6 +367,34 @@ export default defineSchema({
     ),
     trackedBranch: v.optional(v.string()),
     webhookId: v.optional(v.string()),
+    webhookStatus: v.optional(
+      v.union(
+        v.literal("unconfigured"),
+        v.literal("active"),
+        v.literal("failing"),
+        v.literal("disabled"),
+      ),
+    ),
+    providerAccountId: v.optional(v.string()),
+    providerAccountName: v.optional(v.string()),
+    externalRepoId: v.optional(v.string()),
+    authMode: v.optional(
+      v.union(
+        v.literal("github_app"),
+        v.literal("oauth"),
+        v.literal("api_token"),
+        v.literal("app_password"),
+        v.literal("none"),
+      ),
+    ),
+    tokenRef: v.optional(v.string()),
+    capabilities: v.optional(v.object({
+      supportsWebhookPush: v.boolean(),
+      supportsNativePr: v.boolean(),
+      supportsAutoBranchWrite: v.boolean(),
+    })),
+    lastSeenCommit: v.optional(v.string()),
+    lastWebhookEventAt: v.optional(v.number()),
     githubInstallationId: v.optional(v.number()),
     githubInstallationAccountLogin: v.optional(v.string()),
     detectedFeatureFiles: v.optional(v.array(v.object({
@@ -553,6 +581,7 @@ export default defineSchema({
     apiTokenHash: v.string(),
     apiTokenPrefix: v.string(),
     authMethod: v.union(v.literal("api_token"), v.literal("oauth")),
+    apiTokenEncrypted: v.optional(v.string()),
     oauthAccessToken: v.optional(v.string()),
     oauthRefreshToken: v.optional(v.string()),
     oauthExpiresAt: v.optional(v.number()),
@@ -562,6 +591,31 @@ export default defineSchema({
     .index("by_userId", ["userId"])
     .index("by_userId_and_status", ["userId", "status"])
     .index("by_userId_and_provider", ["userId", "provider"]),
+
+  providerConnections: defineTable({
+    userId: v.id("users"),
+    provider: v.union(
+      v.literal("github"),
+      v.literal("gitlab"),
+      v.literal("bitbucket"),
+      v.literal("jira"),
+      v.literal("linear"),
+    ),
+    accountId: v.optional(v.string()),
+    accountName: v.optional(v.string()),
+    domain: v.optional(v.string()),
+    accessTokenEncrypted: v.string(),
+    refreshTokenEncrypted: v.optional(v.string()),
+    tokenType: v.optional(v.string()),
+    expiresAt: v.optional(v.number()),
+    scope: v.optional(v.string()),
+    status: v.union(v.literal("active"), v.literal("revoked")),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_userId_and_provider", ["userId", "provider"])
+    .index("by_userId_and_provider_and_status", ["userId", "provider", "status"]),
 
   bountyClaims: defineTable({
     bountyId: v.id("bounties"),

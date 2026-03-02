@@ -63,6 +63,11 @@ describe("getVMConfig", () => {
       "github.com",
       "*.github.com",
       "objects.githubusercontent.com",
+      "gitlab.com",
+      "*.gitlab.com",
+      "bitbucket.org",
+      "*.bitbucket.org",
+      "api.bitbucket.org",
     ];
     for (const lang of getSupportedLanguages()) {
       const cfg = getVMConfig(lang);

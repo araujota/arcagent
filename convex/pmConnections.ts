@@ -1,6 +1,7 @@
 import { internalQuery, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { getCurrentUser, requireAuth } from "./lib/utils";
+import { decryptSecret, encryptSecret } from "./lib/secretCrypto";
 
 /**
  * Hash an API token with SHA-256 for storage.
@@ -23,7 +24,7 @@ const providerValidator = v.union(
 
 /**
  * Create a new PM tool connection.
- * Token is hashed before storage — the raw token is used immediately and never stored.
+ * Token is hashed for lookup safety and encrypted for reuse in import workflows.
  */
 export const create = mutation({
   args: {
@@ -44,6 +45,7 @@ export const create = mutation({
 
     const apiTokenHash = await hashToken(args.apiToken);
     const apiTokenPrefix = args.apiToken.slice(0, 8);
+    const apiTokenEncrypted = await encryptSecret(args.apiToken);
 
     return await ctx.db.insert("pmConnections", {
       userId: user._id,
@@ -53,6 +55,7 @@ export const create = mutation({
       email: args.email,
       apiTokenHash,
       apiTokenPrefix,
+      apiTokenEncrypted,
       authMethod: "api_token",
       status: "active",
       createdAt: Date.now(),
@@ -116,7 +119,23 @@ export const getByIdInternal = internalQuery({
   },
 });
 
-// NOTE: testConnection was removed because tokens are hashed at storage time
-// and cannot be reversed for API validation. Real-time connection testing
-// requires encrypted (not hashed) token storage, which is a planned future feature.
-// For now, token validity is verified implicitly when the connection is used.
+/**
+ * Internal query that returns a decrypted API token when available.
+ */
+export const getDecryptedByIdInternal = internalQuery({
+  args: { connectionId: v.id("pmConnections") },
+  handler: async (ctx, args) => {
+    const conn = await ctx.db.get(args.connectionId);
+    if (!conn) return null;
+
+    let apiToken: string | undefined;
+    if (conn.apiTokenEncrypted) {
+      apiToken = await decryptSecret(conn.apiTokenEncrypted);
+    }
+
+    return {
+      ...conn,
+      apiToken,
+    };
+  },
+});

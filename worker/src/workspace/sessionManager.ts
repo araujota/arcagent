@@ -13,6 +13,7 @@ import { vmPool } from "../vm/vmPool";
 import { sessionStore } from "./sessionStore";
 import { workspaceHeartbeat } from "./heartbeat";
 import { cleanupStreamJobs } from "./routes";
+import { buildAuthenticatedCloneRepoUrl } from "../lib/repoProviderAuth";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,37 +57,10 @@ export interface ProvisionOptions {
   agentId: string;
   repoUrl: string;
   repoAuthToken?: string;
+  repoAuthUsername?: string;
   commitSha: string;
   language: string;
   expiresAt: number;
-}
-
-function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } | null {
-  const match = repoUrl.match(/^(?:https?:\/\/github\.com\/|git@github\.com:)([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (!match) return null;
-  return { owner: match[1], repo: match[2] };
-}
-
-function buildAuthenticatedCloneRepoUrl(
-  repoUrl: string,
-  repoAuthToken?: string,
-): { url: string; tokenForRedaction?: string } {
-  const parsed = parseGitHubRepo(repoUrl);
-  if (parsed && !repoAuthToken) {
-    throw new Error("Missing repoAuthToken for GitHub repository clone");
-  }
-
-  if (!repoAuthToken) return { url: repoUrl };
-  if (!/^[A-Za-z0-9_-]+$/.test(repoAuthToken)) {
-    throw new Error("Invalid repoAuthToken format");
-  }
-
-  if (!parsed) return { url: repoUrl };
-
-  return {
-    url: `https://x-access-token:${repoAuthToken}@github.com/${parsed.owner}/${parsed.repo}.git`,
-    tokenForRedaction: repoAuthToken,
-  };
 }
 
 function redactToken(value: string, token?: string): string {
@@ -411,7 +385,11 @@ export async function provisionWorkspace(
     session.vmHandle = vm;
 
     // Clone repo (as root for initial setup)
-    const cloneRepo = buildAuthenticatedCloneRepoUrl(opts.repoUrl, opts.repoAuthToken);
+    const cloneRepo = buildAuthenticatedCloneRepoUrl(
+      opts.repoUrl,
+      opts.repoAuthToken,
+      opts.repoAuthUsername,
+    );
     const safeRepoUrl = sanitizeShellArg(cloneRepo.url, "repoCloneUrl", "repoUrl");
     const safeCommitSha = sanitizeShellArg(opts.commitSha, "commitSha", "commitSha");
 

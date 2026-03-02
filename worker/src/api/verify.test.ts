@@ -275,4 +275,26 @@ describe("POST /api/verify/publish-pr", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("repoAuthToken");
   });
+
+  it("rejects unsupported repository hosts", async () => {
+    const res = await supertest(app)
+      .post("/api/verify/publish-pr")
+      .set("Authorization", AUTH_HEADER)
+      .send({
+        verificationId: "verif_1",
+        submissionId: "sub_1",
+        bountyId: "bounty_1",
+        repoUrl: "https://example.com/org/repo",
+        repoAuthToken: "token123",
+        baseCommitSha: "abc1234",
+        baseBranch: "main",
+        featureBranchName: "arcagent/verified-1234abcd",
+        diffPatch: "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1 @@\n+hello",
+        prTitle: "Test",
+        prBody: "Test body",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Unsupported repository URL");
+  });
 });
