@@ -27,7 +27,11 @@ interface StepConfigProps {
 
 function isValidRepoUrl(url: string): boolean {
   if (!url) return true; // Empty is valid (optional)
-  return /^https?:\/\/(github\.com|gitlab\.com|bitbucket\.org)\/[\w.-]+\/[\w.-]+/.test(url);
+  return (
+    /^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?\/?$/i.test(url) ||
+    /^https?:\/\/gitlab\.com\/[\w.-]+(?:\/[\w.-]+)+(?:\.git)?\/?$/i.test(url) ||
+    /^https?:\/\/bitbucket\.org\/[\w.-]+\/[\w.-]+(?:\.git)?\/?$/i.test(url)
+  );
 }
 
 function getProviderLabel(url: string): string {

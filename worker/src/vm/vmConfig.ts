@@ -33,6 +33,11 @@ const COMMON_DOMAINS = [
   "github.com",
   "*.github.com",
   "objects.githubusercontent.com",
+  "gitlab.com",
+  "*.gitlab.com",
+  "bitbucket.org",
+  "*.bitbucket.org",
+  "api.bitbucket.org",
 ];
 
 const configs: Record<string, VMResourceConfig> = {

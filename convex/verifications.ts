@@ -3,10 +3,11 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { getCurrentUser, requireAuth } from "./lib/utils";
 import { calculatePlatformFee, PLATFORM_FEE_RATE } from "./lib/fees";
-import { requiresGitHubInstallationToken, resolveGitHubTokenForRepo } from "./lib/githubApp";
 import { fetchWithRetry } from "./lib/httpRetry";
 import { buildBountyResolvedEmail, getBountyResolvedEmailConfig } from "./lib/bountyResolvedEmail";
 import { sendResendEmail } from "./lib/waitlistEmail";
+import { requiresWriteAuthToken, resolveRepoAuth } from "./lib/repoAuth";
+import { detectProvider } from "./lib/repoProviders";
 
 type HiddenFailureMechanismKey =
   | "assertion_mismatch"
@@ -1146,26 +1147,35 @@ export const triggerPayoutOnVerificationPass = internalAction({
                 internal.repoConnections.getByBountyIdInternal,
                 { bountyId: args.bountyId },
               );
-              const repoAuthTokenResult = await resolveGitHubTokenForRepo({
+              const providerName = detectProvider(workspace.repositoryUrl);
+              const providerAuthConnection =
+                providerName && providerName !== "github"
+                  ? await ctx.runQuery(internal.providerConnections.getActiveAuthByUserAndProviderInternal, {
+                      userId: bounty.creatorId,
+                      provider: providerName,
+                    })
+                  : null;
+              const repoAuthResult = await resolveRepoAuth({
                 repositoryUrl: workspace.repositoryUrl,
-                preferredInstallationId: repoConnection?.githubInstallationId,
+                preferredGitHubInstallationId: repoConnection?.githubInstallationId,
                 writeAccess: true,
+                providerToken: providerAuthConnection?.accessToken,
               });
-              if (requiresGitHubInstallationToken(workspace.repositoryUrl) && !repoAuthTokenResult?.token) {
+              if (requiresWriteAuthToken(workspace.repositoryUrl) && !repoAuthResult?.repoAuthToken) {
                 throw new Error(
-                  "GitHub installation token is required for auto-PR publish. Install/repair the GitHub App for this repository.",
+                  "Repository auth token is required for auto-PR publish. Connect provider access before retrying.",
                 );
               }
               if (
                 repoConnection &&
-                repoAuthTokenResult &&
-                (repoAuthTokenResult.installationId !== repoConnection.githubInstallationId ||
-                  repoAuthTokenResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
+                repoAuthResult?.installationId &&
+                (repoAuthResult.installationId !== repoConnection.githubInstallationId ||
+                  repoAuthResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
               ) {
                 await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
                   repoConnectionId: repoConnection._id,
-                  githubInstallationId: repoAuthTokenResult.installationId,
-                  githubInstallationAccountLogin: repoAuthTokenResult.accountLogin,
+                  githubInstallationId: repoAuthResult.installationId,
+                  githubInstallationAccountLogin: repoAuthResult.accountLogin,
                 });
               }
               const baseBranch = repoConnection?.defaultBranch ?? "main";
@@ -1190,7 +1200,8 @@ export const triggerPayoutOnVerificationPass = internalAction({
                   submissionId: args.submissionId,
                   bountyId: args.bountyId,
                   repoUrl: workspace.repositoryUrl,
-                  repoAuthToken: repoAuthTokenResult?.token,
+                  repoAuthToken: repoAuthResult?.repoAuthToken,
+                  repoAuthUsername: repoAuthResult?.repoAuthUsername,
                   baseCommitSha: workspace.baseCommitSha,
                   baseBranch,
                   featureBranchName,

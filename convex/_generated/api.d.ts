@@ -44,8 +44,10 @@ import type * as lib_htmlToMarkdown from "../lib/htmlToMarkdown.js";
 import type * as lib_httpRetry from "../lib/httpRetry.js";
 import type * as lib_languageDetector from "../lib/languageDetector.js";
 import type * as lib_llm from "../lib/llm.js";
+import type * as lib_repoAuth from "../lib/repoAuth.js";
 import type * as lib_repoMapper from "../lib/repoMapper.js";
 import type * as lib_repoProviders from "../lib/repoProviders.js";
+import type * as lib_secretCrypto from "../lib/secretCrypto.js";
 import type * as lib_tierCalculation from "../lib/tierCalculation.js";
 import type * as lib_treeSitter from "../lib/treeSitter.js";
 import type * as lib_utils from "../lib/utils.js";
@@ -78,6 +80,7 @@ import type * as pipelines_retrieveContext from "../pipelines/retrieveContext.js
 import type * as pipelines_validateTests from "../pipelines/validateTests.js";
 import type * as platformStats from "../platformStats.js";
 import type * as pmConnections from "../pmConnections.js";
+import type * as providerConnections from "../providerConnections.js";
 import type * as repoConnections from "../repoConnections.js";
 import type * as repoMaps from "../repoMaps.js";
 import type * as sanityGates from "../sanityGates.js";
@@ -141,8 +144,10 @@ declare const fullApi: ApiFromModules<{
   "lib/httpRetry": typeof lib_httpRetry;
   "lib/languageDetector": typeof lib_languageDetector;
   "lib/llm": typeof lib_llm;
+  "lib/repoAuth": typeof lib_repoAuth;
   "lib/repoMapper": typeof lib_repoMapper;
   "lib/repoProviders": typeof lib_repoProviders;
+  "lib/secretCrypto": typeof lib_secretCrypto;
   "lib/tierCalculation": typeof lib_tierCalculation;
   "lib/treeSitter": typeof lib_treeSitter;
   "lib/utils": typeof lib_utils;
@@ -175,6 +180,7 @@ declare const fullApi: ApiFromModules<{
   "pipelines/validateTests": typeof pipelines_validateTests;
   platformStats: typeof platformStats;
   pmConnections: typeof pmConnections;
+  providerConnections: typeof providerConnections;
   repoConnections: typeof repoConnections;
   repoMaps: typeof repoMaps;
   sanityGates: typeof sanityGates;

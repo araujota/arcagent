@@ -8,8 +8,30 @@ import {
   getGitHubAppInstallUrl,
   isGitHubAppConfigured,
   parseGitHubRepoUrlSafe,
-  resolveGitHubTokenForRepo,
 } from "./lib/githubApp";
+import { resolveRepoAuth } from "./lib/repoAuth";
+
+function providerCapabilities(provider: "github" | "gitlab" | "bitbucket") {
+  return {
+    supportsWebhookPush: true,
+    supportsNativePr: true,
+    supportsAutoBranchWrite: true,
+  };
+}
+
+function redactConnectionForClient<T extends Record<string, unknown>>(conn: T): T {
+  const {
+    tokenRef: _tokenRef,
+    oauthAccessToken: _oauthAccessToken,
+    oauthRefreshToken: _oauthRefreshToken,
+    ...safe
+  } = conn as T & {
+    tokenRef?: string;
+    oauthAccessToken?: string;
+    oauthRefreshToken?: string;
+  };
+  return safe as T;
+}
 
 export const getByBountyId = query({
   args: { bountyId: v.id("bounties") },
@@ -26,10 +48,10 @@ export const getByBountyId = query({
     // Redact repositoryUrl for non-creators (users who claimed but didn't create the bounty)
     if (role === "agent") {
       const { repositoryUrl: _url, ...rest } = conn;
-      return { ...rest, repositoryUrl: "[redacted]" };
+      return { ...redactConnectionForClient(rest), repositoryUrl: "[redacted]" };
     }
 
-    return conn;
+    return redactConnectionForClient(conn);
   },
 });
 
@@ -92,6 +114,9 @@ export const create = mutation({
       repo: "",
       defaultBranch: "main",
       commitSha: "",
+      webhookStatus: "unconfigured",
+      authMode: detectedProvider === "github" ? "github_app" : "none",
+      capabilities: providerCapabilities(detectedProvider),
       status: "pending",
       githubInstallationId: args.githubInstallationId,
       githubInstallationAccountLogin: args.githubInstallationAccountLogin,
@@ -126,6 +151,9 @@ export const createInternal = internalMutation({
       repo: "",
       defaultBranch: "main",
       commitSha: "",
+      webhookStatus: "unconfigured",
+      authMode: provider === "github" ? "github_app" : "none",
+      capabilities: providerCapabilities(provider),
       status: "pending",
       githubInstallationId: args.githubInstallationId,
       githubInstallationAccountLogin: args.githubInstallationAccountLogin,
@@ -350,34 +378,55 @@ export const checkForUpdates = internalAction({
       const branch = conn.trackedBranch || conn.defaultBranch;
 
       try {
-        let provider: RepoProvider;
-        if (providerName === "github") {
-          const repoUrl = `https://github.com/${conn.owner}/${conn.repo}`;
-          const tokenResult = await resolveGitHubTokenForRepo({
-            repositoryUrl: repoUrl,
-            preferredInstallationId: conn.githubInstallationId,
-            writeAccess: false,
+        const repoUrl =
+          providerName === "github"
+            ? `https://github.com/${conn.owner}/${conn.repo}`
+            : providerName === "gitlab"
+              ? `https://gitlab.com/${conn.owner}/${conn.repo}`
+              : `https://bitbucket.org/${conn.owner}/${conn.repo}`;
+        const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+          bountyId: conn.bountyId,
+        });
+        const providerAuthConnection =
+          providerName !== "github" && bounty
+            ? await ctx.runQuery(internal.providerConnections.getActiveAuthByUserAndProviderInternal, {
+                userId: bounty.creatorId,
+                provider: providerName,
+              })
+            : null;
+        const auth = await resolveRepoAuth({
+          repositoryUrl: repoUrl,
+          preferredGitHubInstallationId: conn.githubInstallationId,
+          writeAccess: false,
+          providerToken: providerAuthConnection?.accessToken,
+        });
+
+        if (providerName === "github" && !auth.repoAuthToken) {
+          throw new Error(
+            "GitHub installation token is required for repository update checks. Install/repair the GitHub App for this repository.",
+          );
+        }
+        const provider: RepoProvider = getRepoProvider(providerName, {
+          githubToken: auth.provider === "github" ? auth.repoAuthToken : undefined,
+          gitlabToken: auth.provider === "gitlab" ? auth.repoAuthToken : undefined,
+          bitbucketCredentials:
+            auth.provider === "bitbucket"
+              ? {
+                  account: auth.repoAuthUsername,
+                  token: auth.repoAuthToken,
+                }
+              : undefined,
+        });
+        if (
+          auth.installationId &&
+          (auth.installationId !== conn.githubInstallationId ||
+            auth.accountLogin !== conn.githubInstallationAccountLogin)
+        ) {
+          await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
+            repoConnectionId: conn._id,
+            githubInstallationId: auth.installationId,
+            githubInstallationAccountLogin: auth.accountLogin,
           });
-
-          if (!tokenResult?.token) {
-            throw new Error(
-              "GitHub installation token is required for repository update checks. Install/repair the GitHub App for this repository.",
-            );
-          }
-
-          provider = getRepoProvider("github", { githubToken: tokenResult.token });
-          if (
-            tokenResult.installationId !== conn.githubInstallationId ||
-            tokenResult.accountLogin !== conn.githubInstallationAccountLogin
-          ) {
-            await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
-              repoConnectionId: conn._id,
-              githubInstallationId: tokenResult.installationId,
-              githubInstallationAccountLogin: tokenResult.accountLogin,
-            });
-          }
-        } else {
-          provider = getRepoProvider(providerName);
         }
         const headSha = await provider.fetchHeadCommitId(
           conn.owner,

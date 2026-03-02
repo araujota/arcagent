@@ -2,12 +2,10 @@ import { internalAction } from "../_generated/server";
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import { generateJobHmac } from "../lib/hmac";
-import {
-  parseGitHubRepoUrlSafe,
-  requiresGitHubInstallationToken,
-  resolveGitHubTokenForRepo,
-} from "../lib/githubApp";
+import { parseGitHubRepoUrlSafe } from "../lib/githubApp";
 import { fetchWithRetry } from "../lib/httpRetry";
+import { requiresCloneAuthToken, resolveRepoAuth } from "../lib/repoAuth";
+import { detectProvider } from "../lib/repoProviders";
 
 /**
  * Dispatch a verification job to the worker service.
@@ -93,14 +91,22 @@ export const dispatchVerification = internalAction({
       const stepDefinitionsPublic = generatedTests?.stepDefinitionsPublic ?? generatedTests?.stepDefinitions;
       const stepDefinitionsHidden = generatedTests?.stepDefinitionsHidden;
 
-      let repoAuthTokenResult:
-        | Awaited<ReturnType<typeof resolveGitHubTokenForRepo>>
-        | null = null;
+      const providerName = detectProvider(submission.repositoryUrl);
+      const providerAuthConnection =
+        providerName && providerName !== "github" && bounty
+          ? await ctx.runQuery(internal.providerConnections.getActiveAuthByUserAndProviderInternal, {
+              userId: bounty.creatorId,
+              provider: providerName,
+            })
+          : null;
+
+      let repoAuthResult: Awaited<ReturnType<typeof resolveRepoAuth>> | null = null;
       try {
-        repoAuthTokenResult = await resolveGitHubTokenForRepo({
+        repoAuthResult = await resolveRepoAuth({
           repositoryUrl: submission.repositoryUrl,
-          preferredInstallationId: repoConnection?.githubInstallationId,
+          preferredGitHubInstallationId: repoConnection?.githubInstallationId,
           writeAccess: false,
+          providerToken: providerAuthConnection?.accessToken,
         });
       } catch (err) {
         console.error(
@@ -109,24 +115,24 @@ export const dispatchVerification = internalAction({
           }`,
         );
       }
-      if (requiresGitHubInstallationToken(submission.repositoryUrl) && !repoAuthTokenResult?.token) {
+      if (requiresCloneAuthToken(submission.repositoryUrl) && !repoAuthResult?.repoAuthToken) {
         throw new Error(
           "GitHub installation token is required for verification clone. Install/repair the GitHub App for this repository.",
         );
       }
-      if (repoConnection && repoAuthTokenResult) {
+      if (repoConnection && repoAuthResult?.installationId) {
         const submissionRepo = parseGitHubRepoUrlSafe(submission.repositoryUrl);
         if (
           submissionRepo &&
           submissionRepo.owner.toLowerCase() === repoConnection.owner.toLowerCase() &&
           submissionRepo.repo.toLowerCase() === repoConnection.repo.toLowerCase() &&
-          (repoAuthTokenResult.installationId !== repoConnection.githubInstallationId ||
-            repoAuthTokenResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
+          (repoAuthResult.installationId !== repoConnection.githubInstallationId ||
+            repoAuthResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
         ) {
           await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
             repoConnectionId: repoConnection._id,
-            githubInstallationId: repoAuthTokenResult.installationId,
-            githubInstallationAccountLogin: repoAuthTokenResult.accountLogin,
+            githubInstallationId: repoAuthResult.installationId,
+            githubInstallationAccountLogin: repoAuthResult.accountLogin,
           });
         }
       }
@@ -152,7 +158,8 @@ export const dispatchVerification = internalAction({
           bountyId: args.bountyId,
           jobId,
           repoUrl: submission.repositoryUrl,
-          repoAuthToken: repoAuthTokenResult?.token,
+          repoAuthToken: repoAuthResult?.repoAuthToken,
+          repoAuthUsername: repoAuthResult?.repoAuthUsername,
           commitSha: submission.commitHash,
           baseCommitSha: repoConnection?.commitSha,
           testSuites: testSuites.map((ts) => ({
@@ -297,14 +304,22 @@ export const dispatchVerificationFromDiff = internalAction({
       const stepDefinitionsPublic = generatedTests?.stepDefinitionsPublic ?? generatedTests?.stepDefinitions;
       const stepDefinitionsHidden = generatedTests?.stepDefinitionsHidden;
 
-      let repoAuthTokenResult:
-        | Awaited<ReturnType<typeof resolveGitHubTokenForRepo>>
-        | null = null;
+      const providerName = detectProvider(args.baseRepoUrl);
+      const providerAuthConnection =
+        providerName && providerName !== "github" && bounty
+          ? await ctx.runQuery(internal.providerConnections.getActiveAuthByUserAndProviderInternal, {
+              userId: bounty.creatorId,
+              provider: providerName,
+            })
+          : null;
+
+      let repoAuthResult: Awaited<ReturnType<typeof resolveRepoAuth>> | null = null;
       try {
-        repoAuthTokenResult = await resolveGitHubTokenForRepo({
+        repoAuthResult = await resolveRepoAuth({
           repositoryUrl: args.baseRepoUrl,
-          preferredInstallationId: repoConnection?.githubInstallationId,
+          preferredGitHubInstallationId: repoConnection?.githubInstallationId,
           writeAccess: false,
+          providerToken: providerAuthConnection?.accessToken,
         });
       } catch (err) {
         console.error(
@@ -313,21 +328,21 @@ export const dispatchVerificationFromDiff = internalAction({
           }`,
         );
       }
-      if (requiresGitHubInstallationToken(args.baseRepoUrl) && !repoAuthTokenResult?.token) {
+      if (requiresCloneAuthToken(args.baseRepoUrl) && !repoAuthResult?.repoAuthToken) {
         throw new Error(
           "GitHub installation token is required for verification clone. Install/repair the GitHub App for this repository.",
         );
       }
       if (
         repoConnection &&
-        repoAuthTokenResult &&
-        (repoAuthTokenResult.installationId !== repoConnection.githubInstallationId ||
-          repoAuthTokenResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
+        repoAuthResult?.installationId &&
+        (repoAuthResult.installationId !== repoConnection.githubInstallationId ||
+          repoAuthResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
       ) {
         await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
           repoConnectionId: repoConnection._id,
-          githubInstallationId: repoAuthTokenResult.installationId,
-          githubInstallationAccountLogin: repoAuthTokenResult.accountLogin,
+          githubInstallationId: repoAuthResult.installationId,
+          githubInstallationAccountLogin: repoAuthResult.accountLogin,
         });
       }
 
@@ -353,7 +368,8 @@ export const dispatchVerificationFromDiff = internalAction({
           jobId,
           // Diff-based fields
           repoUrl: args.baseRepoUrl,
-          repoAuthToken: repoAuthTokenResult?.token,
+          repoAuthToken: repoAuthResult?.repoAuthToken,
+          repoAuthUsername: repoAuthResult?.repoAuthUsername,
           commitSha: args.baseCommitSha,
           baseCommitSha: args.baseCommitSha,
           diffPatch: args.diffPatch,

@@ -23,6 +23,7 @@ export interface VerificationJobData {
   bountyId: string;
   repoUrl: string;
   repoAuthToken?: string;
+  repoAuthUsername?: string;
   commitSha: string;
   /** Base commit SHA from the bounty's repoConnection for diff-scoped analysis. */
   baseCommitSha?: string;

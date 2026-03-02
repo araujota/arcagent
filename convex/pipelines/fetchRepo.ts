@@ -9,7 +9,7 @@ import {
   MAX_FILES,
   type RepoProvider,
 } from "../lib/repoProviders";
-import { resolveGitHubTokenForRepo } from "../lib/githubApp";
+import { resolveRepoAuth } from "../lib/repoAuth";
 
 /**
  * Fetch a repository's structure and contents via the appropriate provider.
@@ -48,46 +48,55 @@ export const fetchRepo = internalAction({
           `Unsupported repository URL: ${args.repositoryUrl}. Supported: github.com, gitlab.com, bitbucket.org`
         );
       }
+      const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+        bountyId: args.bountyId,
+      });
+      const providerAuthConnection =
+        providerName !== "github" && bounty
+          ? await ctx.runQuery(internal.providerConnections.getActiveAuthByUserAndProviderInternal, {
+              userId: bounty.creatorId,
+              provider: providerName,
+            })
+          : null;
       let owner = "";
       let repo = "";
-      let provider: RepoProvider;
-      if (providerName === "github") {
-        const tokenResult = await resolveGitHubTokenForRepo({
-          repositoryUrl: args.repositoryUrl,
-          preferredInstallationId: conn?.githubInstallationId,
-          writeAccess: false,
+      const auth = await resolveRepoAuth({
+        repositoryUrl: args.repositoryUrl,
+        preferredGitHubInstallationId: conn?.githubInstallationId,
+        writeAccess: false,
+        providerToken: providerAuthConnection?.accessToken,
+      });
+      if (providerName === "github" && !auth.repoAuthToken) {
+        throw new Error(
+          "GitHub installation token is required for repository indexing. Install/repair the GitHub App for this repository.",
+        );
+      }
+      const provider: RepoProvider = getRepoProvider(providerName, {
+        githubToken: auth.provider === "github" ? auth.repoAuthToken : undefined,
+        gitlabToken: auth.provider === "gitlab" ? auth.repoAuthToken : undefined,
+        bitbucketCredentials:
+          auth.provider === "bitbucket"
+            ? {
+                account: auth.repoAuthUsername,
+                token: auth.repoAuthToken,
+              }
+            : undefined,
+      });
+      const parsed = provider.parseUrl(args.repositoryUrl);
+      owner = parsed.owner;
+      repo = parsed.repo;
+
+      if (
+        conn &&
+        auth.installationId &&
+        (auth.installationId !== conn.githubInstallationId ||
+          auth.accountLogin !== conn.githubInstallationAccountLogin)
+      ) {
+        await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
+          repoConnectionId: args.repoConnectionId,
+          githubInstallationId: auth.installationId,
+          githubInstallationAccountLogin: auth.accountLogin,
         });
-
-        if (!tokenResult?.token) {
-          throw new Error(
-            "GitHub installation token is required for repository indexing. Install/repair the GitHub App for this repository.",
-          );
-        }
-
-        provider = getRepoProvider("github", {
-          githubToken: tokenResult.token,
-        });
-        const parsed = provider.parseUrl(args.repositoryUrl);
-        owner = parsed.owner;
-        repo = parsed.repo;
-
-        if (
-          conn &&
-          tokenResult &&
-          (tokenResult.installationId !== conn.githubInstallationId ||
-            tokenResult.accountLogin !== conn.githubInstallationAccountLogin)
-        ) {
-          await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
-            repoConnectionId: args.repoConnectionId,
-            githubInstallationId: tokenResult.installationId,
-            githubInstallationAccountLogin: tokenResult.accountLogin,
-          });
-        }
-      } else {
-        provider = getRepoProvider(providerName);
-        const parsed = provider.parseUrl(args.repositoryUrl);
-        owner = parsed.owner;
-        repo = parsed.repo;
       }
       // Fetch repository metadata
       const metadata = await provider.fetchMetadata(owner, repo);

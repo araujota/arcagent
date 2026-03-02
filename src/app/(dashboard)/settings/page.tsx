@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from "react";
 import { useMutation, useQuery, useAction } from "convex/react";
 import { useSearchParams } from "next/navigation";
 import { api } from "../../../../convex/_generated/api";
+import { Id } from "../../../../convex/_generated/dataModel";
 import { useCurrentUser } from "@/hooks/use-current-user";
 import { getStripeSettingsNotice } from "@/lib/stripe-settings-notice";
 import { Button } from "@/components/ui/button";
@@ -39,6 +40,9 @@ export default function SettingsPage() {
   const revokeApiKey = useMutation(api.apiKeys.revokeKey);
   const setupPaymentMethod = useAction(api.stripe.setupPaymentMethod);
   const setupPayoutAccount = useAction(api.stripe.setupPayoutAccount);
+  const providerConnections = useQuery(api.providerConnections.listMine);
+  const startProviderOAuth = useAction(api.providerConnections.startProviderOAuth);
+  const disconnectProvider = useMutation(api.providerConnections.disconnectProvider);
 
   const [name, setName] = useState("");
   const [walletAddress, setWalletAddress] = useState("");
@@ -53,12 +57,23 @@ export default function SettingsPage() {
   const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null);
   const [settingUpPayment, setSettingUpPayment] = useState(false);
   const [settingUpPayout, setSettingUpPayout] = useState(false);
+  const [connectingRepoProvider, setConnectingRepoProvider] = useState<"gitlab" | "bitbucket" | null>(null);
+  const [disconnectingProviderConnectionId, setDisconnectingProviderConnectionId] = useState<string | null>(null);
 
   const stripeNotice = useMemo(
     () => getStripeSettingsNotice(new URLSearchParams(searchParams.toString())),
     [searchParams]
   );
   const hasActiveApiKey = (apiKeys ?? []).some((key) => key.status === "active");
+  const oauthStatus = searchParams.get("oauth_status");
+  const oauthProvider = searchParams.get("oauth_provider");
+  const oauthMessage = searchParams.get("oauth_message");
+  const gitlabConnection = (providerConnections ?? []).find(
+    (connection) => connection.provider === "gitlab" && connection.status === "active",
+  );
+  const bitbucketConnection = (providerConnections ?? []).find(
+    (connection) => connection.provider === "bitbucket" && connection.status === "active",
+  );
 
   useEffect(() => {
     if (user) {
@@ -158,6 +173,34 @@ export default function SettingsPage() {
     }
   };
 
+  const handleConnectRepoProvider = async (provider: "gitlab" | "bitbucket") => {
+    setConnectingRepoProvider(provider);
+    try {
+      const result = await startProviderOAuth({
+        provider,
+        returnTo: "/settings",
+      });
+      window.location.href = result.authorizeUrl;
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : `Failed to connect ${provider === "gitlab" ? "GitLab" : "Bitbucket"}`
+      );
+      setConnectingRepoProvider(null);
+    }
+  };
+
+  const handleDisconnectRepoProvider = async (providerConnectionId: Id<"providerConnections">) => {
+    setDisconnectingProviderConnectionId(providerConnectionId);
+    try {
+      await disconnectProvider({ providerConnectionId });
+      toast.success("Provider connection disconnected");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to disconnect provider");
+    } finally {
+      setDisconnectingProviderConnectionId(null);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="space-y-4 max-w-2xl">
@@ -199,6 +242,30 @@ export default function SettingsPage() {
           </AlertDescription>
         </Alert>
       )}
+      {oauthStatus && oauthProvider && (
+        <Alert
+          className={
+            oauthStatus === "success"
+              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200"
+              : "border-amber-500/35 bg-amber-500/10 text-amber-900 dark:text-amber-200"
+          }
+        >
+          {oauthStatus === "success" ? (
+            <CheckCircle2 className="h-4 w-4" />
+          ) : (
+            <AlertTriangle className="h-4 w-4" />
+          )}
+          <AlertTitle>
+            {oauthStatus === "success" ? "Integration connected" : "Integration failed"}
+          </AlertTitle>
+          <AlertDescription className="text-current/90">
+            {oauthMessage ??
+              `${oauthProvider === "gitlab" ? "GitLab" : "Bitbucket"} ${
+                oauthStatus === "success" ? "connection completed." : "connection did not complete."
+              }`}
+          </AlertDescription>
+        </Alert>
+      )}
 
       <Card>
         <CardHeader>
@@ -226,6 +293,94 @@ export default function SettingsPage() {
               {hasActiveApiKey ? "Configured" : "Not configured"}
             </Badge>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Repository Integrations</CardTitle>
+          <CardDescription>
+            Connect GitLab and Bitbucket for native OAuth-based repo indexing, clone auth, and MR/PR publishing.
+            GitHub remains managed through the Arcagent GitHub App installation flow.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {providerConnections === undefined ? (
+            <div className="space-y-2">
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-16 w-full" />
+            </div>
+          ) : (
+            <>
+              <div className="rounded-lg border p-3 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">GitLab</p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {gitlabConnection
+                      ? `Connected as ${gitlabConnection.accountName || gitlabConnection.accountId || "account"}`
+                      : "No active GitLab connection"}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={gitlabConnection ? "default" : "secondary"}>
+                    {gitlabConnection ? "Connected" : "Not connected"}
+                  </Badge>
+                  {gitlabConnection ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleDisconnectRepoProvider(gitlabConnection._id as Id<"providerConnections">)}
+                      disabled={disconnectingProviderConnectionId === gitlabConnection._id}
+                    >
+                      Disconnect
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      onClick={() => handleConnectRepoProvider("gitlab")}
+                      disabled={connectingRepoProvider !== null}
+                    >
+                      {connectingRepoProvider === "gitlab" ? "Connecting..." : "Connect"}
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-lg border p-3 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">Bitbucket</p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {bitbucketConnection
+                      ? `Connected as ${bitbucketConnection.accountName || bitbucketConnection.accountId || "account"}`
+                      : "No active Bitbucket connection"}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={bitbucketConnection ? "default" : "secondary"}>
+                    {bitbucketConnection ? "Connected" : "Not connected"}
+                  </Badge>
+                  {bitbucketConnection ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleDisconnectRepoProvider(bitbucketConnection._id as Id<"providerConnections">)}
+                      disabled={disconnectingProviderConnectionId === bitbucketConnection._id}
+                    >
+                      Disconnect
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      onClick={() => handleConnectRepoProvider("bitbucket")}
+                      disabled={connectingRepoProvider !== null}
+                    >
+                      {connectingRepoProvider === "bitbucket" ? "Connecting..." : "Connect"}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
 

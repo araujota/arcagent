@@ -34,14 +34,22 @@ describe("sanitizeShellArg with repoUrl", () => {
     ).toThrow("Invalid repo URL");
   });
 
-  it("rejects non-GitHub hosts (https://gitlab.com/...)", () => {
-    expect(() =>
-      sanitizeShellArg(
-        "https://gitlab.com/owner/repo",
-        "repoUrl",
-        "repo URL",
-      ),
-    ).toThrow("Invalid repo URL");
+  it("accepts GitLab repository URLs (including nested groups)", () => {
+    const result = sanitizeShellArg(
+      "https://gitlab.com/group/subgroup/repo",
+      "repoUrl",
+      "repo URL",
+    );
+    expect(result).toBe("'https://gitlab.com/group/subgroup/repo'");
+  });
+
+  it("accepts Bitbucket repository URLs", () => {
+    const result = sanitizeShellArg(
+      "https://bitbucket.org/workspace/repo",
+      "repoUrl",
+      "repo URL",
+    );
+    expect(result).toBe("'https://bitbucket.org/workspace/repo'");
   });
 
   it("rejects URLs with semicolons", () => {
@@ -82,6 +90,29 @@ describe("sanitizeShellArg with repoUrl", () => {
         "repo URL",
       ),
     ).toThrow("Invalid repo URL");
+  });
+
+  it("accepts credentialed provider clone URLs for repoCloneUrl", () => {
+    const githubClone = sanitizeShellArg(
+      "https://x-access-token:ghs_token@github.com/owner/repo.git",
+      "repoCloneUrl",
+      "repo URL",
+    );
+    expect(githubClone).toBe("'https://x-access-token:ghs_token@github.com/owner/repo.git'");
+
+    const gitlabClone = sanitizeShellArg(
+      "https://oauth2:glpat-token@gitlab.com/group/repo.git",
+      "repoCloneUrl",
+      "repo URL",
+    );
+    expect(gitlabClone).toBe("'https://oauth2:glpat-token@gitlab.com/group/repo.git'");
+
+    const bitbucketClone = sanitizeShellArg(
+      "https://x-token-auth:bb_token@bitbucket.org/workspace/repo.git",
+      "repoCloneUrl",
+      "repo URL",
+    );
+    expect(bitbucketClone).toBe("'https://x-token-auth:bb_token@bitbucket.org/workspace/repo.git'");
   });
 });
 

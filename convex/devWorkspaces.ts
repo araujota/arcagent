@@ -1,8 +1,9 @@
 import { internalMutation, internalQuery, internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { requiresGitHubInstallationToken, resolveGitHubTokenForRepo } from "./lib/githubApp";
 import { fetchWithRetry } from "./lib/httpRetry";
+import { requiresCloneAuthToken, resolveRepoAuth } from "./lib/repoAuth";
+import { detectProvider } from "./lib/repoProviders";
 
 // ---------------------------------------------------------------------------
 // Mutations
@@ -209,35 +210,49 @@ export const provisionWorkspace = internalAction({
       const repoConnection = await ctx.runQuery(internal.repoConnections.getByBountyIdInternal, {
         bountyId: args.bountyId,
       });
+      const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+        bountyId: args.bountyId,
+      });
+      const providerName = detectProvider(args.repositoryUrl);
+      const providerAuthConnection =
+        providerName && providerName !== "github" && bounty
+          ? await ctx.runQuery(internal.providerConnections.getActiveAuthByUserAndProviderInternal, {
+              userId: bounty.creatorId,
+              provider: providerName,
+            })
+          : null;
       let repoAuthToken: string | undefined;
+      let repoAuthUsername: string | undefined;
       try {
-        const repoAuthTokenResult = await resolveGitHubTokenForRepo({
+        const repoAuthResult = await resolveRepoAuth({
           repositoryUrl: args.repositoryUrl,
-          preferredInstallationId: repoConnection?.githubInstallationId,
+          preferredGitHubInstallationId: repoConnection?.githubInstallationId,
           writeAccess: false,
+          providerToken: providerAuthConnection?.accessToken,
         });
-        repoAuthToken = repoAuthTokenResult?.token;
+        repoAuthToken = repoAuthResult?.repoAuthToken;
+        repoAuthUsername = repoAuthResult?.repoAuthUsername;
         if (
           repoConnection &&
-          repoAuthTokenResult &&
-          (repoAuthTokenResult.installationId !== repoConnection.githubInstallationId ||
-            repoAuthTokenResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
+          repoAuthResult?.installationId &&
+          (repoAuthResult.installationId !== repoConnection.githubInstallationId ||
+            repoAuthResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
         ) {
           await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
             repoConnectionId: repoConnection._id,
-            githubInstallationId: repoAuthTokenResult.installationId,
-            githubInstallationAccountLogin: repoAuthTokenResult.accountLogin,
+            githubInstallationId: repoAuthResult.installationId,
+            githubInstallationAccountLogin: repoAuthResult.accountLogin,
           });
         }
       } catch (err) {
         console.error(
-          `[devWorkspaces] Failed to resolve GitHub installation token: ${
+          `[devWorkspaces] Failed to resolve repository auth token: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
       }
 
-      if (requiresGitHubInstallationToken(args.repositoryUrl) && !repoAuthToken) {
+      if (requiresCloneAuthToken(args.repositoryUrl) && !repoAuthToken) {
         throw new Error(
           "GitHub installation token is required for workspace provisioning. Install/repair the GitHub App for this repository.",
         );
@@ -256,6 +271,7 @@ export const provisionWorkspace = internalAction({
           agentId: args.agentId,
           repoUrl: args.repositoryUrl,
           repoAuthToken,
+          repoAuthUsername,
           commitSha: args.commitSha,
           language: args.language,
           expiresAt: args.expiresAt,

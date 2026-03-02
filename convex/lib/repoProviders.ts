@@ -108,7 +108,14 @@ export function parseRepoUrl(url: string): ParsedRepoUrl {
  */
 export function getRepoProvider(
   provider: RepoProviderName,
-  options?: { githubToken?: string }
+  options?: {
+    githubToken?: string;
+    gitlabToken?: string;
+    bitbucketCredentials?: {
+      account?: string;
+      token?: string;
+    };
+  }
 ): RepoProvider {
   switch (provider) {
     case "github": {
@@ -117,19 +124,28 @@ export function getRepoProvider(
       return new GitHubProvider(token);
     }
     case "gitlab": {
-      const token = process.env.GITLAB_API_TOKEN;
+      const token =
+        options?.gitlabToken ??
+        process.env.GITLAB_FALLBACK_API_TOKEN ??
+        process.env.GITLAB_API_TOKEN;
       if (!token) throw new Error("GITLAB_API_TOKEN environment variable is not set");
       return new GitLabProvider(token);
     }
     case "bitbucket": {
-      const username = process.env.BITBUCKET_USERNAME;
-      const password = process.env.BITBUCKET_APP_PASSWORD;
-      if (!username || !password) {
+      const account =
+        options?.bitbucketCredentials?.account ??
+        process.env.BITBUCKET_FALLBACK_USERNAME ??
+        process.env.BITBUCKET_USERNAME;
+      const token =
+        options?.bitbucketCredentials?.token ??
+        process.env.BITBUCKET_FALLBACK_APP_PASSWORD ??
+        process.env.BITBUCKET_APP_PASSWORD;
+      if (!account || !token) {
         throw new Error(
           "BITBUCKET_USERNAME and BITBUCKET_APP_PASSWORD environment variables must be set"
         );
       }
-      return new BitbucketProvider(username, password);
+      return new BitbucketProvider(account, token);
     }
     default: {
       const _exhaustive: never = provider;

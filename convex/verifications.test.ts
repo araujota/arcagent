@@ -445,6 +445,16 @@ describe("triggerPayoutOnVerificationPass", () => {
         createdAt: Date.now(),
         expiresAt: Date.now() + 60_000,
       });
+      await ctx.db.insert("providerConnections" as any, {
+        userId: creatorId,
+        provider: "gitlab",
+        accountId: "gl_acme_creator",
+        accountName: "acme-creator",
+        accessTokenEncrypted: "glpat_test_token",
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
       return { verificationId, submissionId, bountyId };
     });
 

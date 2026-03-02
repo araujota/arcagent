@@ -25,35 +25,7 @@ import {
 } from "../convex/client";
 import { generateFeedback, VerificationFeedback } from "../lib/feedbackFormatter";
 import { execFileAsync } from "../lib/execFileAsync";
-
-function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } | null {
-  const match = repoUrl.match(/^(?:https?:\/\/github\.com\/|git@github\.com:)([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (!match) return null;
-  return { owner: match[1], repo: match[2] };
-}
-
-function buildAuthenticatedCloneRepoUrl(
-  repoUrl: string,
-  repoAuthToken?: string,
-): { url: string; tokenForRedaction?: string } {
-  const parsed = parseGitHubRepo(repoUrl);
-  if (parsed && !repoAuthToken) {
-    throw new Error("Missing repoAuthToken for GitHub repository clone");
-  }
-
-  if (!repoAuthToken) return { url: repoUrl };
-
-  if (!/^[A-Za-z0-9_-]+$/.test(repoAuthToken)) {
-    throw new Error("Invalid repoAuthToken format");
-  }
-
-  if (!parsed) return { url: repoUrl };
-
-  return {
-    url: `https://x-access-token:${repoAuthToken}@github.com/${parsed.owner}/${parsed.repo}.git`,
-    tokenForRedaction: repoAuthToken,
-  };
-}
+import { buildAuthenticatedCloneRepoUrl } from "../lib/repoProviderAuth";
 
 function redactToken(value: string, token?: string): string {
   if (!token) return value;
@@ -69,7 +41,11 @@ export async function processVerificationJob(
   let vm: VMHandle | null = null;
 
   try {
-    const cloneRepo = buildAuthenticatedCloneRepoUrl(data.repoUrl, data.repoAuthToken);
+    const cloneRepo = buildAuthenticatedCloneRepoUrl(
+      data.repoUrl,
+      data.repoAuthToken,
+      data.repoAuthUsername,
+    );
     const safeRepoUrl = sanitizeShellArg(cloneRepo.url, "repoCloneUrl", "repoUrl");
     const safeCommitSha = sanitizeShellArg(data.commitSha, "commitSha", "commitSha");
     if (data.baseCommitSha) {
@@ -281,7 +257,11 @@ export async function processVerificationFromDiff(
       throw new Error("diffPatch is required for diff-based verification");
     }
 
-    const cloneRepo = buildAuthenticatedCloneRepoUrl(data.repoUrl, data.repoAuthToken);
+    const cloneRepo = buildAuthenticatedCloneRepoUrl(
+      data.repoUrl,
+      data.repoAuthToken,
+      data.repoAuthUsername,
+    );
     const safeRepoUrl = sanitizeShellArg(cloneRepo.url, "repoCloneUrl", "repoUrl");
     const safeCommitSha = sanitizeShellArg(data.commitSha, "commitSha", "commitSha");
 

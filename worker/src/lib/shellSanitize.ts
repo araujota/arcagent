@@ -6,8 +6,9 @@
  */
 
 const PATTERNS: Record<string, RegExp> = {
-  repoUrl: /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+(\.git)?$/,
-  repoCloneUrl: /^https:\/\/(?:x-access-token:[A-Za-z0-9_-]+@)?github\.com\/[\w.-]+\/[\w.-]+(\.git)?$/,
+  repoUrl: /^https:\/\/(?:github\.com\/[\w.-]+\/[\w.-]+|gitlab\.com\/[\w.-]+(?:\/[\w.-]+)+|bitbucket\.org\/[\w.-]+\/[\w.-]+)(\.git)?$/,
+  repoCloneUrl:
+    /^https:\/\/(?:[A-Za-z0-9._%+-]+:[A-Za-z0-9._~%+\-=]+@)?(?:github\.com\/[\w.-]+\/[\w.-]+|gitlab\.com\/[\w.-]+(?:\/[\w.-]+)+|bitbucket\.org\/[\w.-]+\/[\w.-]+)(\.git)?$/,
   commitSha: /^[a-f0-9]{7,40}$/,
   // SECURITY (C5): File path pattern rejects shell metacharacters.
   // Only allows alphanumeric, hyphens, underscores, dots, forward slashes,

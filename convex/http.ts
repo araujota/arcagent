@@ -18,6 +18,36 @@ import {
 
 const http = httpRouter();
 
+const recentWebhookDeliveries = new Map<string, number>();
+const DEFAULT_WEBHOOK_REPLAY_TTL_MS = 10 * 60 * 1000;
+
+function getWebhookReplayTtlMs(): number {
+  const raw = process.env.WEBHOOK_REPLAY_TTL_SECONDS;
+  const seconds = raw ? Number(raw) : NaN;
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return Math.floor(seconds * 1000);
+  }
+  return DEFAULT_WEBHOOK_REPLAY_TTL_MS;
+}
+
+function isReplayWebhook(provider: string, deliveryId: string | null): boolean {
+  if (!deliveryId) return false;
+  const now = Date.now();
+  const ttlMs = getWebhookReplayTtlMs();
+  const key = `${provider}:${deliveryId}`;
+  const seenAt = recentWebhookDeliveries.get(key);
+  if (typeof seenAt === "number" && now - seenAt < ttlMs) {
+    return true;
+  }
+  recentWebhookDeliveries.set(key, now);
+  for (const [mapKey, timestamp] of recentWebhookDeliveries.entries()) {
+    if (now - timestamp > ttlMs) {
+      recentWebhookDeliveries.delete(mapKey);
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Clerk Webhook (existing)
 // ---------------------------------------------------------------------------
@@ -218,6 +248,195 @@ http.route({
     }
 
     return new Response("Unhandled event", { status: 200 });
+  }),
+});
+
+// ---------------------------------------------------------------------------
+// GitLab Push Webhook (re-indexing)
+// ---------------------------------------------------------------------------
+
+http.route({
+  path: "/gitlab-webhook",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const webhookSecret = process.env.GITLAB_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      console.error("GITLAB_WEBHOOK_SECRET not configured");
+      return new Response("Webhook secret not configured", { status: 500 });
+    }
+
+    const deliveryId =
+      request.headers.get("x-gitlab-event-uuid") ??
+      request.headers.get("x-request-id");
+    if (isReplayWebhook("gitlab", deliveryId)) {
+      return new Response("Duplicate delivery ignored", { status: 200 });
+    }
+
+    const token = request.headers.get("x-gitlab-token");
+    if (!token || !constantTimeEqual(token, webhookSecret)) {
+      return new Response("Invalid signature", { status: 401 });
+    }
+
+    const event = request.headers.get("x-gitlab-event");
+    if (event === "Ping Hook") {
+      return new Response("pong", { status: 200 });
+    }
+    if (event !== "Push Hook") {
+      return new Response("Unhandled event", { status: 200 });
+    }
+
+    let body: {
+      ref?: string;
+      checkout_sha?: string;
+      project?: {
+        path_with_namespace?: string;
+      };
+    };
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return new Response("Invalid JSON", { status: 400 });
+    }
+
+    const fullName = body.project?.path_with_namespace;
+    const newSha = body.checkout_sha;
+    const ref = body.ref ?? "";
+    if (!fullName || !newSha || !ref.startsWith("refs/heads/")) {
+      return new Response("Not a branch push", { status: 200 });
+    }
+
+    const parts = fullName.split("/").filter(Boolean);
+    if (parts.length < 2) {
+      return new Response("Invalid repository path", { status: 200 });
+    }
+    const repo = parts[parts.length - 1];
+    const owner = parts.slice(0, -1).join("/");
+    const branch = ref.replace(/^refs\/heads\//, "");
+
+    const readyConnections = await ctx.runQuery(internal.repoConnections.listReady);
+
+    for (const conn of readyConnections) {
+      const trackedBranch = conn.trackedBranch || conn.defaultBranch;
+      if (
+        (conn.provider ?? "github") === "gitlab" &&
+        conn.owner === owner &&
+        conn.repo === repo &&
+        trackedBranch === branch &&
+        conn.commitSha !== newSha
+      ) {
+        await ctx.runMutation(internal.repoConnections.triggerReIndex, {
+          repoConnectionId: conn._id,
+          newCommitSha: newSha,
+        });
+      }
+    }
+
+    return new Response("OK", { status: 200 });
+  }),
+});
+
+// ---------------------------------------------------------------------------
+// Bitbucket Push Webhook (re-indexing)
+// ---------------------------------------------------------------------------
+
+http.route({
+  path: "/bitbucket-webhook",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const webhookSecret = process.env.BITBUCKET_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      console.error("BITBUCKET_WEBHOOK_SECRET not configured");
+      return new Response("Webhook secret not configured", { status: 500 });
+    }
+
+    const deliveryId =
+      request.headers.get("x-request-uuid") ??
+      request.headers.get("x-event-uuid");
+    if (isReplayWebhook("bitbucket", deliveryId)) {
+      return new Response("Duplicate delivery ignored", { status: 200 });
+    }
+
+    const signature = request.headers.get("x-hub-signature");
+    if (!signature || !signature.startsWith("sha256=")) {
+      return new Response("Missing signature", { status: 400 });
+    }
+
+    const payload = await request.text();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(webhookSecret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+    const expectedSig =
+      "sha256=" +
+      Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+
+    if (!constantTimeEqual(signature, expectedSig)) {
+      return new Response("Invalid signature", { status: 401 });
+    }
+
+    const event = request.headers.get("x-event-key");
+    if (event !== "repo:push") {
+      return new Response("Unhandled event", { status: 200 });
+    }
+
+    let body: {
+      repository?: { full_name?: string };
+      push?: {
+        changes?: Array<{
+          new?: {
+            name?: string;
+            target?: { hash?: string };
+          };
+        }>;
+      };
+    };
+    try {
+      body = JSON.parse(payload) as typeof body;
+    } catch {
+      return new Response("Invalid JSON", { status: 400 });
+    }
+
+    const fullName = body.repository?.full_name;
+    if (!fullName) {
+      return new Response("Missing repository full_name", { status: 200 });
+    }
+    const [owner, repo] = fullName.split("/");
+    if (!owner || !repo) {
+      return new Response("Invalid repository full_name", { status: 200 });
+    }
+
+    const readyConnections = await ctx.runQuery(internal.repoConnections.listReady);
+    const changes = body.push?.changes ?? [];
+
+    for (const change of changes) {
+      const branch = change.new?.name;
+      const newSha = change.new?.target?.hash;
+      if (!branch || !newSha) continue;
+
+      for (const conn of readyConnections) {
+        const trackedBranch = conn.trackedBranch || conn.defaultBranch;
+        if (
+          (conn.provider ?? "github") === "bitbucket" &&
+          conn.owner === owner &&
+          conn.repo === repo &&
+          trackedBranch === branch &&
+          conn.commitSha !== newSha
+        ) {
+          await ctx.runMutation(internal.repoConnections.triggerReIndex, {
+            repoConnectionId: conn._id,
+            newCommitSha: newSha,
+          });
+        }
+      }
+    }
+
+    return new Response("OK", { status: 200 });
   }),
 });
 
@@ -802,6 +1021,43 @@ http.route({
 
     if (!bounty) return mcpError("Bounty not found", 404);
     return mcpJson({ bounty });
+  }),
+});
+
+// --- Work Items: Import (MCP) ---
+http.route({
+  path: "/api/mcp/work-items/import",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
+
+    const body = await request.json();
+    const { provider, issueKey, apiToken, domain, email } = body as {
+      provider?: "jira" | "linear" | "asana" | "monday";
+      issueKey?: string;
+      apiToken?: string;
+      domain?: string;
+      email?: string;
+    };
+
+    if (!provider || !issueKey || !apiToken) {
+      return mcpError("Missing required fields: provider, issueKey, apiToken");
+    }
+
+    try {
+      const workItem = await ctx.runAction(internal.pipelines.fetchWorkItem.fetchWorkItemAction, {
+        provider,
+        issueKey,
+        apiToken,
+        domain,
+        email,
+      });
+      return mcpJson({ workItem });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to import work item";
+      return mcpError(message);
+    }
   }),
 });
 

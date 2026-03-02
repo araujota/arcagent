@@ -8,6 +8,12 @@ import { logger } from "../index";
 import { VerificationJobData } from "../queue/jobQueue";
 import { resolveConfiguredConvexHttpActionsUrl } from "../convex/url";
 import { execFileAsync } from "../lib/execFileAsync";
+import {
+  buildAuthenticatedCloneRepoUrl,
+  ensureParsedRepoRef,
+  parseRepoRef,
+  repoRefToPath,
+} from "../lib/repoProviderAuth";
 
 /**
  * Request body for POST /api/verify
@@ -23,6 +29,8 @@ interface VerifyRequestBody {
   commitSha: string;
   /** Optional short-lived repo access token (GitHub installation token). */
   repoAuthToken?: string;
+  /** Optional auth username for providers that use username+token auth (Bitbucket). */
+  repoAuthUsername?: string;
   /** Base commit SHA from the bounty's repoConnection for diff-scoped analysis */
   baseCommitSha?: string;
   /** Primary language hint (e.g. "typescript", "python") */
@@ -69,28 +77,13 @@ interface PublishPrRequestBody {
   bountyId: string;
   repoUrl: string;
   repoAuthToken?: string;
+  repoAuthUsername?: string;
   baseCommitSha: string;
   baseBranch: string;
   featureBranchName: string;
   diffPatch: string;
   prTitle: string;
   prBody: string;
-}
-
-function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } | null {
-  const match = repoUrl.match(/^(?:https?:\/\/github\.com\/|git@github\.com:)([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (!match) return null;
-  return { owner: match[1], repo: match[2] };
-}
-
-function buildGitHubAuthCloneUrl(repoUrl: string, githubToken?: string): string {
-  if (!githubToken) return repoUrl;
-  const parsed = parseGitHubRepo(repoUrl);
-  if (!parsed) return repoUrl;
-  if (!/^[A-Za-z0-9_-]+$/.test(githubToken)) {
-    throw new Error("Invalid repoAuthToken format");
-  }
-  return `https://x-access-token:${githubToken}@github.com/${parsed.owner}/${parsed.repo}.git`;
 }
 
 async function runGit(
@@ -110,6 +103,128 @@ async function runGit(
       : combined;
     throw new Error(`git ${args[0]} failed: ${sanitized.slice(0, 500)}`);
   }
+}
+
+interface PublishReviewResponse {
+  provider: "github" | "gitlab" | "bitbucket";
+  url: string | null;
+  id: number | string | null;
+}
+
+function buildBitbucketBasicAuth(username: string, token: string): string {
+  return "Basic " + Buffer.from(`${username}:${token}`).toString("base64");
+}
+
+async function createReviewRequest(
+  parsedRepo: ReturnType<typeof ensureParsedRepoRef>,
+  body: PublishPrRequestBody,
+  repoAuthToken: string,
+  repoAuthUsername?: string,
+): Promise<PublishReviewResponse> {
+  if (parsedRepo.provider === "github") {
+    const prResponse = await fetch(
+      `https://api.github.com/repos/${parsedRepo.owner}/${parsedRepo.repo}/pulls`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${repoAuthToken}`,
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+          "User-Agent": "arcagent-worker",
+        },
+        body: JSON.stringify({
+          title: body.prTitle,
+          head: body.featureBranchName,
+          base: body.baseBranch,
+          body: body.prBody,
+        }),
+      },
+    );
+
+    if (!prResponse.ok) {
+      const payload = await prResponse.text();
+      throw new Error(`Failed to create GitHub PR (${prResponse.status}): ${payload.slice(0, 400)}`);
+    }
+
+    const payload = (await prResponse.json()) as { html_url?: string; number?: number };
+    return {
+      provider: "github",
+      url: payload.html_url ?? null,
+      id: payload.number ?? null,
+    };
+  }
+
+  if (parsedRepo.provider === "gitlab") {
+    const projectId = encodeURIComponent(`${parsedRepo.namespace}/${parsedRepo.repo}`);
+    const mrResponse = await fetch(`https://gitlab.com/api/v4/projects/${projectId}/merge_requests`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${repoAuthToken}`,
+        "Content-Type": "application/json",
+        "User-Agent": "arcagent-worker",
+      },
+      body: JSON.stringify({
+        title: body.prTitle,
+        source_branch: body.featureBranchName,
+        target_branch: body.baseBranch,
+        description: body.prBody,
+      }),
+    });
+
+    if (!mrResponse.ok) {
+      const payload = await mrResponse.text();
+      throw new Error(`Failed to create GitLab MR (${mrResponse.status}): ${payload.slice(0, 400)}`);
+    }
+
+    const payload = (await mrResponse.json()) as { web_url?: string; iid?: number };
+    return {
+      provider: "gitlab",
+      url: payload.web_url ?? null,
+      id: payload.iid ?? null,
+    };
+  }
+
+  const bitbucketResponse = await fetch(
+    `https://api.bitbucket.org/2.0/repositories/${parsedRepo.workspace}/${parsedRepo.repo}/pullrequests`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: repoAuthUsername
+          ? buildBitbucketBasicAuth(repoAuthUsername, repoAuthToken)
+          : `Bearer ${repoAuthToken}`,
+        "Content-Type": "application/json",
+        "User-Agent": "arcagent-worker",
+      },
+      body: JSON.stringify({
+        title: body.prTitle,
+        description: body.prBody,
+        source: {
+          branch: { name: body.featureBranchName },
+        },
+        destination: {
+          branch: { name: body.baseBranch },
+        },
+      }),
+    },
+  );
+
+  if (!bitbucketResponse.ok) {
+    const payload = await bitbucketResponse.text();
+    throw new Error(`Failed to create Bitbucket PR (${bitbucketResponse.status}): ${payload.slice(0, 400)}`);
+  }
+
+  const payload = (await bitbucketResponse.json()) as {
+    id?: number;
+    links?: { html?: { href?: string } };
+  };
+  return {
+    provider: "bitbucket",
+    url: payload.links?.html?.href ?? null,
+    id: payload.id ?? null,
+  };
 }
 
 /**
@@ -154,6 +269,7 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
         bountyId: body.bountyId,
         repoUrl: body.repoUrl,
         repoAuthToken: body.repoAuthToken,
+        repoAuthUsername: body.repoAuthUsername,
         commitSha: body.commitSha,
         baseCommitSha: body.baseCommitSha,
         language: body.language,
@@ -258,15 +374,9 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
       return;
     }
 
-    const githubToken = body.repoAuthToken;
-    if (!githubToken) {
+    const repoAuthToken = body.repoAuthToken;
+    if (!repoAuthToken) {
       res.status(400).json({ error: "Missing required fields: repoAuthToken" });
-      return;
-    }
-
-    const parsed = parseGitHubRepo(body.repoUrl);
-    if (!parsed) {
-      res.status(400).json({ error: "Only GitHub repository URLs are supported for auto PR publish" });
       return;
     }
 
@@ -275,14 +385,18 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
     const patchPath = join(workRoot, "submission.patch");
 
     try {
-      const cloneUrl = buildGitHubAuthCloneUrl(body.repoUrl, githubToken);
-      const pushUrl = `https://x-access-token:${githubToken}@github.com/${parsed.owner}/${parsed.repo}.git`;
-      await runGit(["clone", "--no-tags", "--depth", "1", cloneUrl, repoDir], workRoot, githubToken);
-      await runGit(["fetch", "--depth", "1", "origin", body.baseCommitSha], repoDir, githubToken);
-      await runGit(["checkout", "-B", body.featureBranchName, body.baseCommitSha], repoDir, githubToken);
+      const parsed = ensureParsedRepoRef(body.repoUrl);
+      const cloneRepo = buildAuthenticatedCloneRepoUrl(
+        body.repoUrl,
+        repoAuthToken,
+        body.repoAuthUsername,
+      );
+      await runGit(["clone", "--no-tags", "--depth", "1", cloneRepo.url, repoDir], workRoot, repoAuthToken);
+      await runGit(["fetch", "--depth", "1", "origin", body.baseCommitSha], repoDir, repoAuthToken);
+      await runGit(["checkout", "-B", body.featureBranchName, body.baseCommitSha], repoDir, repoAuthToken);
       await writeFile(patchPath, body.diffPatch, "utf8");
-      await runGit(["apply", "--whitespace=fix", patchPath], repoDir, githubToken);
-      await runGit(["add", "-A"], repoDir, githubToken);
+      await runGit(["apply", "--whitespace=fix", patchPath], repoDir, repoAuthToken);
+      await runGit(["add", "-A"], repoDir, repoAuthToken);
 
       // Fail fast when patch applies but produces no net changes.
       const diffCheck = await execFileAsync("git", ["diff", "--cached", "--quiet"], { cwd: repoDir }).then(
@@ -297,66 +411,51 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
       await runGit(
         ["config", "user.name", process.env.GITHUB_BOT_NAME ?? "arcagent-bot"],
         repoDir,
-        githubToken,
+        repoAuthToken,
       );
       await runGit(
         ["config", "user.email", process.env.GITHUB_BOT_EMAIL ?? "bot@arcagent.local"],
         repoDir,
-        githubToken,
+        repoAuthToken,
       );
       await runGit(
         ["commit", "-m", `arcagent: verified submission ${body.submissionId}`],
         repoDir,
-        githubToken,
+        repoAuthToken,
       );
-      await runGit(["remote", "set-url", "--push", "origin", pushUrl], repoDir, githubToken);
+      await runGit(["remote", "set-url", "--push", "origin", cloneRepo.url], repoDir, repoAuthToken);
       await runGit(
         ["push", "origin", `${body.featureBranchName}:${body.featureBranchName}`],
         repoDir,
-        githubToken,
+        repoAuthToken,
       );
 
-      const prResponse = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/pulls`, {
-        method: "POST",
-        headers: {
-          Accept: "application/vnd.github+json",
-          Authorization: `Bearer ${githubToken}`,
-          "X-GitHub-Api-Version": "2022-11-28",
-          "Content-Type": "application/json",
-          "User-Agent": "arcagent-worker",
-        },
-        body: JSON.stringify({
-          title: body.prTitle,
-          head: body.featureBranchName,
-          base: body.baseBranch,
-          body: body.prBody,
-        }),
-      });
-
-      if (!prResponse.ok) {
-        const payload = await prResponse.text();
-        throw new Error(
-          `Failed to create PR (${prResponse.status}): ${payload.slice(0, 400)}`,
-        );
-      }
-
-      const prPayload = await prResponse.json() as { html_url?: string; number?: number };
+      const review = await createReviewRequest(parsed, body, repoAuthToken, body.repoAuthUsername);
       res.status(201).json({
         success: true,
+        provider: review.provider,
         featureBranchName: body.featureBranchName,
-        featureBranchRepo: `${parsed.owner}/${parsed.repo}`,
-        pullRequestUrl: prPayload.html_url ?? null,
-        pullRequestNumber: prPayload.number ?? null,
+        featureBranchRepo: repoRefToPath(parsed),
+        reviewUrl: review.url,
+        reviewId: review.id,
+        // Backward-compat fields expected by existing Convex flow.
+        pullRequestUrl: review.url,
+        pullRequestNumber: review.id,
       });
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const isClientError =
+        message.includes("Unsupported repository URL") ||
+        message.includes("Invalid repoAuthToken") ||
+        message.includes("Invalid repoAuthUsername");
       logger.error("Failed to publish verification PR", {
         verificationId: body.verificationId,
         submissionId: body.submissionId,
         bountyId: body.bountyId,
-        error: err instanceof Error ? err.message : String(err),
+        error: message,
       });
-      res.status(500).json({
-        error: err instanceof Error ? err.message : "Failed to publish PR",
+      res.status(isClientError ? 400 : 500).json({
+        error: message || "Failed to publish PR",
       });
     } finally {
       await rm(workRoot, { recursive: true, force: true }).catch(() => {});

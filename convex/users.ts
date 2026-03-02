@@ -191,3 +191,13 @@ export const getByIdInternal = internalQuery({
     return await ctx.db.get(args.userId);
   },
 });
+
+export const getByClerkIdInternal = internalQuery({
+  args: { clerkId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("users")
+      .withIndex("by_clerkId", (q) => q.eq("clerkId", args.clerkId))
+      .unique();
+  },
+});
