@@ -1,12 +1,16 @@
 import { Job } from "bullmq";
+import { createHash } from "node:crypto";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { logger } from "../index";
 import {
   VerificationJobData,
   VerificationResult,
   GateResult,
-  StepResult,
+  ValidationReceipt,
 } from "./jobQueue";
-import { runGates } from "../gates/gateRunner";
+import { runVerificationLegs } from "../gates/legRunner";
 import { detectLanguage } from "../lib/languageDetector";
 import { computeDiff } from "../lib/diffComputer";
 import { DiffContext } from "../lib/diffContext";
@@ -14,8 +18,13 @@ import { sanitizeShellArg, validateShellArg } from "../lib/shellSanitize";
 import { createFirecrackerVM, destroyFirecrackerVM, VMHandle } from "../vm/firecracker";
 import { getVMConfig } from "../vm/vmConfig";
 import { withTimeout } from "../lib/timeout";
-import { postVerificationResult } from "../convex/client";
+import {
+  postVerificationArtifact,
+  postVerificationReceipt,
+  postVerificationResult,
+} from "../convex/client";
 import { generateFeedback, VerificationFeedback } from "../lib/feedbackFormatter";
+import { execFileAsync } from "../lib/execFileAsync";
 
 function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } | null {
   const match = repoUrl.match(/^(?:https?:\/\/github\.com\/|git@github\.com:)([^/]+)\/([^/]+?)(?:\.git)?$/i);
@@ -51,18 +60,6 @@ function redactToken(value: string, token?: string): string {
   return value.split(token).join("<redacted>");
 }
 
-/**
- * Main entry-point invoked by the BullMQ worker for every verification job.
- *
- * Lifecycle:
- *  1. Detect the project language (from hint or heuristic).
- *  2. Spin up a Firecracker microVM with the appropriate rootfs image.
- *  3. Clone the repo at the specified commit inside the VM.
- *  4. Compute diff context (if baseCommitSha available).
- *  5. Run the gate pipeline (build -> lint -> typecheck -> security -> memory -> snyk -> sonarqube -> test).
- *  6. Tear down the VM.
- *  7. Report the results back to Convex.
- */
 export async function processVerificationJob(
   job: Job<VerificationJobData, VerificationResult>,
 ): Promise<VerificationResult> {
@@ -72,7 +69,6 @@ export async function processVerificationJob(
   let vm: VMHandle | null = null;
 
   try {
-    // 0. Validate all shell-interpolated inputs upfront
     const cloneRepo = buildAuthenticatedCloneRepoUrl(data.repoUrl, data.repoAuthToken);
     const safeRepoUrl = sanitizeShellArg(cloneRepo.url, "repoCloneUrl", "repoUrl");
     const safeCommitSha = sanitizeShellArg(data.commitSha, "commitSha", "commitSha");
@@ -80,16 +76,13 @@ export async function processVerificationJob(
       validateShellArg(data.baseCommitSha, "commitSha", "baseCommitSha");
     }
 
-    // 1. Language detection
     const language = data.language ?? (await detectLanguage(data.repoUrl));
     logger.info("Detected language", { jobId: data.jobId, language });
 
     await job.updateProgress(5);
 
-    // 2. Determine VM configuration
     const vmConfig = getVMConfig(language);
 
-    // 3. Create Firecracker microVM
     vm = await createFirecrackerVM({
       jobId: data.jobId,
       rootfsImage: vmConfig.rootfsImage,
@@ -100,7 +93,6 @@ export async function processVerificationJob(
 
     await job.updateProgress(15);
 
-    // 4. Clone repo inside VM (root phase for setup)
     const safeBaseCommitSha = data.baseCommitSha
       ? sanitizeShellArg(data.baseCommitSha, "commitSha", "baseCommitSha")
       : null;
@@ -108,7 +100,6 @@ export async function processVerificationJob(
       ? `git clone ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`
       : `git clone --depth 1 ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`;
 
-    // Root phase: clone and set ownership to unprivileged agent user
     try {
       await vm.exec(cloneCmd);
     } catch (cloneErr) {
@@ -119,59 +110,87 @@ export async function processVerificationJob(
 
     await job.updateProgress(20);
 
-    // 5. Compute diff context (if baseCommitSha available)
+    let effectiveBaseCommitSha = data.baseCommitSha;
+    if (!effectiveBaseCommitSha) {
+      try {
+        const mergeBaseResult = await vm.exec(
+          `cd /workspace && git merge-base origin/HEAD ${safeCommitSha} 2>/dev/null || true`,
+          20_000,
+        );
+        const mergeBase = mergeBaseResult.stdout.trim();
+        if (mergeBase) {
+          effectiveBaseCommitSha = mergeBase;
+        }
+      } catch (err) {
+        logger.warn("Failed to resolve merge-base for diff-scoped policies", {
+          jobId: data.jobId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     let diffContext: DiffContext | null = null;
-    if (data.baseCommitSha) {
-      diffContext = await computeDiff(vm, data.baseCommitSha, data.commitSha);
+    if (effectiveBaseCommitSha) {
+      diffContext = await computeDiff(vm, effectiveBaseCommitSha, data.commitSha);
       if (diffContext) {
         logger.info("Diff context computed", {
           jobId: data.jobId,
           changedFiles: diffContext.changedFiles.length,
+          baseCommitSha: effectiveBaseCommitSha,
         });
       }
     }
 
     await job.updateProgress(25);
 
-    // 6. Run gate pipeline with overall timeout
-    const gateResults: GateResult[] = await withTimeout(
-      () => runGates(vm!, language, job, diffContext),
+    const attemptNumber = data.attemptNumber ?? 1;
+
+    const legOutput = await withTimeout(
+      () => runVerificationLegs({
+        vm: vm!,
+        language,
+        job,
+        diff: diffContext,
+        testSuites: data.testSuites,
+        stepDefinitionsPublic: data.stepDefinitionsPublic,
+        stepDefinitionsHidden: data.stepDefinitionsHidden,
+        attemptNumber,
+        candidateCommitSha: data.commitSha,
+        baseCommitSha: effectiveBaseCommitSha,
+        onReceipt: async (receipt) => {
+          if (!convexCallbackUrl || !data.jobHmac) return;
+          await postVerificationReceipt(convexCallbackUrl, receipt, data.jobHmac).catch((err) => {
+            logger.error("Failed to post verification receipt", {
+              jobId: data.jobId,
+              legKey: receipt.legKey,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        },
+      }),
       data.timeoutSeconds * 1_000,
       `Verification timed out after ${data.timeoutSeconds}s`,
     );
 
     await job.updateProgress(95);
 
-    // 7. Compute overall status (ZTACO mode: ANY non-skipped gate failing means fail)
-    const overallStatus = data.ztacoMode
-      ? computeOverallStatusZtaco(gateResults)
-      : computeOverallStatus(gateResults);
+    const overallStatus = computeOverallStatusFromReceipts(legOutput.receipts);
 
-    // Collect visibility-tagged steps from gate results (test gate)
-    const allSteps: StepResult[] = [];
-    for (const gate of gateResults) {
-      if (gate.steps) {
-        allSteps.push(...gate.steps);
-      }
-    }
-
-    // Generate structured feedback for iterative improvement
-    const attemptNumber = data.attemptNumber ?? 1;
-    const feedback: VerificationFeedback = generateFeedback(gateResults, attemptNumber);
+    const feedback: VerificationFeedback = generateFeedback(legOutput.legacyGates, attemptNumber);
 
     const result: VerificationResult = {
       jobId: data.jobId,
       submissionId: data.submissionId,
       bountyId: data.bountyId,
       overallStatus,
-      gates: gateResults,
+      gates: legOutput.legacyGates,
       totalDurationMs: Date.now() - startTime,
-      steps: allSteps.length > 0 ? allSteps : undefined,
+      steps: legOutput.steps.length > 0 ? legOutput.steps : undefined,
       feedbackJson: JSON.stringify(feedback),
       jobHmac: data.jobHmac,
+      validationReceipts: legOutput.receipts,
     };
 
-    // 8. Report back to Convex
     if (convexCallbackUrl) {
       await postVerificationResult(convexCallbackUrl, result).catch((err) => {
         logger.error("Failed to post result to Convex", {
@@ -179,6 +198,32 @@ export async function processVerificationJob(
           error: err,
         });
       });
+
+      if (data.jobHmac) {
+        const artifact = await createArtifactBundle({
+          verificationId: data.verificationId,
+          result,
+        });
+        await postVerificationArtifact(convexCallbackUrl, {
+          verificationId: data.verificationId,
+          submissionId: data.submissionId,
+          bountyId: data.bountyId,
+          jobId: data.jobId,
+          attemptNumber,
+          filename: artifact.filename,
+          contentType: artifact.contentType,
+          sha256: artifact.sha256,
+          bytes: artifact.bytes,
+          manifestJson: artifact.manifestJson,
+          bundleBase64: artifact.bundleBase64,
+          jobHmac: data.jobHmac,
+        }).catch((err) => {
+          logger.error("Failed to post verification artifact", {
+            jobId: data.jobId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
     }
 
     await job.updateProgress(100);
@@ -200,16 +245,17 @@ export async function processVerificationJob(
       gates: [],
       totalDurationMs: Date.now() - startTime,
       jobHmac: data.jobHmac,
+      validationReceipts: [
+        makeTopLevelErrorReceipt(data, "verification_runtime_error", error.message, data.attemptNumber ?? 1),
+      ],
     };
 
-    // Best-effort reporting
     if (convexCallbackUrl) {
       await postVerificationResult(convexCallbackUrl, errorResult).catch(() => {});
     }
 
     throw error;
   } finally {
-    // 9. Always tear down the VM
     if (vm) {
       await destroyFirecrackerVM(vm).catch((cleanupErr) => {
         logger.error("Failed to destroy microVM", {
@@ -222,16 +268,6 @@ export async function processVerificationJob(
   }
 }
 
-/**
- * Diff-based verification processor.
- *
- * Instead of cloning a specific commit, this:
- *  1. Clones the base repo at the base commit.
- *  2. Applies the agent's diff patch.
- *  3. Runs the same 8-gate pipeline.
- *
- * If the patch fails to apply, the job fails immediately at a "patch-apply" gate.
- */
 export async function processVerificationFromDiff(
   job: Job<VerificationJobData, VerificationResult>,
 ): Promise<VerificationResult> {
@@ -245,18 +281,15 @@ export async function processVerificationFromDiff(
       throw new Error("diffPatch is required for diff-based verification");
     }
 
-    // 0. Validate base repo inputs
     const cloneRepo = buildAuthenticatedCloneRepoUrl(data.repoUrl, data.repoAuthToken);
     const safeRepoUrl = sanitizeShellArg(cloneRepo.url, "repoCloneUrl", "repoUrl");
     const safeCommitSha = sanitizeShellArg(data.commitSha, "commitSha", "commitSha");
 
-    // 1. Language detection
     const language = data.language ?? (await detectLanguage(data.repoUrl));
     logger.info("Diff verification: detected language", { jobId: data.jobId, language });
 
     await job.updateProgress(5);
 
-    // 2. Create CLEAN verification VM
     const vmConfig = getVMConfig(language);
     vm = await createFirecrackerVM({
       jobId: data.jobId,
@@ -268,7 +301,6 @@ export async function processVerificationFromDiff(
 
     await job.updateProgress(15);
 
-    // 3. Clone original repo at base commit
     const cloneCmd = `git clone ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`;
     try {
       await vm.exec(cloneCmd);
@@ -280,7 +312,6 @@ export async function processVerificationFromDiff(
 
     await job.updateProgress(20);
 
-    // 4. Write diff to temp file and apply
     if (!vm.writeFile) {
       throw new Error("VM does not support writeFile — cannot apply diff patch");
     }
@@ -295,14 +326,6 @@ export async function processVerificationFromDiff(
     );
 
     if (applyResult.exitCode !== 0) {
-      logger.warn("Diff verification patch apply failed", {
-        jobId: data.jobId,
-        exitCode: applyResult.exitCode,
-        stdout: applyResult.stdout?.slice(0, 2000),
-        stderr: applyResult.stderr?.slice(0, 2000),
-      });
-
-      // Patch failed to apply — fail immediately
       const patchGate: GateResult = {
         gate: "patch-apply",
         status: "fail",
@@ -316,6 +339,12 @@ export async function processVerificationFromDiff(
       };
 
       const feedback = generateFeedback([patchGate], data.attemptNumber ?? 1);
+      const receipt = makeTopLevelErrorReceipt(
+        data,
+        "patch_apply",
+        `${patchGate.summary}\n${applyResult.stderr || applyResult.stdout || ""}`,
+        data.attemptNumber ?? 1,
+      );
 
       const result: VerificationResult = {
         jobId: data.jobId,
@@ -326,9 +355,13 @@ export async function processVerificationFromDiff(
         totalDurationMs: Date.now() - startTime,
         feedbackJson: JSON.stringify(feedback),
         jobHmac: data.jobHmac,
+        validationReceipts: [receipt],
       };
 
       if (convexCallbackUrl) {
+        if (data.jobHmac) {
+          await postVerificationReceipt(convexCallbackUrl, receipt, data.jobHmac).catch(() => {});
+        }
         await postVerificationResult(convexCallbackUrl, result).catch((err) => {
           logger.error("Failed to post patch-apply failure to Convex", { jobId: data.jobId, error: err });
         });
@@ -337,12 +370,9 @@ export async function processVerificationFromDiff(
       return result;
     }
 
-    // Clean up the patch file
     await vm.exec(`rm ${patchPath}`);
-
     await job.updateProgress(25);
 
-    // 5. Compute diff context from the applied patch
     let diffContext: DiffContext | null = null;
     try {
       diffContext = await computeDiff(vm, data.commitSha, "WORKTREE");
@@ -351,48 +381,56 @@ export async function processVerificationFromDiff(
         jobId: data.jobId,
         error: err instanceof Error ? err.message : String(err),
       });
-      // Diff context is optional — proceed without it
     }
 
     await job.updateProgress(30);
 
-    // 6. Run gate pipeline
-    const gateResults: GateResult[] = await withTimeout(
-      () => runGates(vm!, language, job, diffContext),
+    const attemptNumber = data.attemptNumber ?? 1;
+    const legOutput = await withTimeout(
+      () => runVerificationLegs({
+        vm: vm!,
+        language,
+        job,
+        diff: diffContext,
+        testSuites: data.testSuites,
+        stepDefinitionsPublic: data.stepDefinitionsPublic,
+        stepDefinitionsHidden: data.stepDefinitionsHidden,
+        attemptNumber,
+        candidateCommitSha: data.commitSha,
+        baseCommitSha: data.commitSha,
+        onReceipt: async (receipt) => {
+          if (!convexCallbackUrl || !data.jobHmac) return;
+          await postVerificationReceipt(convexCallbackUrl, receipt, data.jobHmac).catch((err) => {
+            logger.error("Failed to post diff verification receipt", {
+              jobId: data.jobId,
+              legKey: receipt.legKey,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        },
+      }),
       data.timeoutSeconds * 1_000,
       `Verification timed out after ${data.timeoutSeconds}s`,
     );
 
     await job.updateProgress(95);
 
-    // 7. Compute overall status
-    const overallStatus = data.ztacoMode
-      ? computeOverallStatusZtaco(gateResults)
-      : computeOverallStatus(gateResults);
-
-    const allSteps: StepResult[] = [];
-    for (const gate of gateResults) {
-      if (gate.steps) {
-        allSteps.push(...gate.steps);
-      }
-    }
-
-    const attemptNumber = data.attemptNumber ?? 1;
-    const feedback: VerificationFeedback = generateFeedback(gateResults, attemptNumber);
+    const overallStatus = computeOverallStatusFromReceipts(legOutput.receipts);
+    const feedback: VerificationFeedback = generateFeedback(legOutput.legacyGates, attemptNumber);
 
     const result: VerificationResult = {
       jobId: data.jobId,
       submissionId: data.submissionId,
       bountyId: data.bountyId,
       overallStatus,
-      gates: gateResults,
+      gates: legOutput.legacyGates,
       totalDurationMs: Date.now() - startTime,
-      steps: allSteps.length > 0 ? allSteps : undefined,
+      steps: legOutput.steps.length > 0 ? legOutput.steps : undefined,
       feedbackJson: JSON.stringify(feedback),
       jobHmac: data.jobHmac,
+      validationReceipts: legOutput.receipts,
     };
 
-    // 8. Report back to Convex
     if (convexCallbackUrl) {
       await postVerificationResult(convexCallbackUrl, result).catch((err) => {
         logger.error("Failed to post diff verification result to Convex", {
@@ -400,6 +438,32 @@ export async function processVerificationFromDiff(
           error: err,
         });
       });
+
+      if (data.jobHmac) {
+        const artifact = await createArtifactBundle({
+          verificationId: data.verificationId,
+          result,
+        });
+        await postVerificationArtifact(convexCallbackUrl, {
+          verificationId: data.verificationId,
+          submissionId: data.submissionId,
+          bountyId: data.bountyId,
+          jobId: data.jobId,
+          attemptNumber,
+          filename: artifact.filename,
+          contentType: artifact.contentType,
+          sha256: artifact.sha256,
+          bytes: artifact.bytes,
+          manifestJson: artifact.manifestJson,
+          bundleBase64: artifact.bundleBase64,
+          jobHmac: data.jobHmac,
+        }).catch((err) => {
+          logger.error("Failed to post diff verification artifact", {
+            jobId: data.jobId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
     }
 
     await job.updateProgress(100);
@@ -420,6 +484,9 @@ export async function processVerificationFromDiff(
       gates: [],
       totalDurationMs: Date.now() - startTime,
       jobHmac: data.jobHmac,
+      validationReceipts: [
+        makeTopLevelErrorReceipt(data, "verification_runtime_error", error.message, data.attemptNumber ?? 1),
+      ],
     };
 
     if (convexCallbackUrl) {
@@ -440,27 +507,121 @@ export async function processVerificationFromDiff(
   }
 }
 
-/**
- * Determine the overall verification status from individual gate results.
- * Any "fail" or "error" means the whole verification fails.
- */
-function computeOverallStatus(
-  gates: GateResult[],
+function computeOverallStatusFromReceipts(
+  receipts: ValidationReceipt[],
 ): "pass" | "fail" | "error" {
-  if (gates.some((g) => g.status === "error")) return "error";
-  if (gates.some((g) => g.status === "fail")) return "fail";
+  const blocking = receipts.filter((r) => r.blocking);
+  if (blocking.some((r) => r.status === "error")) return "error";
+  if (blocking.some((r) => r.status === "fail" || r.status === "warning" || r.status === "unreached")) {
+    return "fail";
+  }
   return "pass";
 }
 
-/**
- * ZTACO mode: ANY non-skipped gate failing means overall fail.
- * Advisory gates (lint, typecheck, security, etc.) now block too.
- */
-function computeOverallStatusZtaco(
-  gates: GateResult[],
-): "pass" | "fail" | "error" {
-  const nonSkipped = gates.filter((g) => g.status !== "skipped");
-  if (nonSkipped.some((g) => g.status === "error")) return "error";
-  if (nonSkipped.some((g) => g.status === "fail")) return "fail";
-  return "pass";
+function makeTopLevelErrorReceipt(
+  data: VerificationJobData,
+  legKey: string,
+  rawBody: string,
+  attemptNumber: number,
+): ValidationReceipt {
+  const now = Date.now();
+  return {
+    verificationId: data.verificationId,
+    jobId: data.jobId,
+    submissionId: data.submissionId,
+    bountyId: data.bountyId,
+    attemptNumber,
+    legKey,
+    orderIndex: 0,
+    status: "error",
+    blocking: true,
+    startedAt: now,
+    completedAt: now,
+    durationMs: 0,
+    summaryLine: "Verification runtime error",
+    rawBody,
+  };
+}
+
+async function createArtifactBundle(args: {
+  verificationId?: string;
+  result: VerificationResult;
+}): Promise<{
+  filename: string;
+  contentType: string;
+  sha256: string;
+  bytes: number;
+  manifestJson: string;
+  bundleBase64: string;
+}> {
+  const tempRoot = await mkdtemp(join(tmpdir(), "arcagent-verification-artifact-"));
+  const bundleRoot = join(tempRoot, "bundle");
+  const sarifDir = join(bundleRoot, "sarif");
+  const rawDir = join(bundleRoot, "raw");
+  const testDir = join(bundleRoot, "test");
+  const createdAt = Date.now();
+
+  try {
+    await mkdir(sarifDir, { recursive: true });
+    await mkdir(rawDir, { recursive: true });
+    await mkdir(testDir, { recursive: true });
+
+    const manifest = {
+      verificationId: args.verificationId,
+      submissionId: args.result.submissionId,
+      bountyId: args.result.bountyId,
+      jobId: args.result.jobId,
+      overallStatus: args.result.overallStatus,
+      totalDurationMs: args.result.totalDurationMs,
+      createdAt,
+      attemptNumber: args.result.validationReceipts?.[0]?.attemptNumber ?? 1,
+    };
+
+    const receipts = args.result.validationReceipts ?? [];
+    await writeFile(join(bundleRoot, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+    await writeFile(join(bundleRoot, "receipts.json"), JSON.stringify(receipts, null, 2), "utf8");
+
+    for (const receipt of receipts) {
+      if (receipt.sarifJson) {
+        await writeFile(join(sarifDir, `${receipt.orderIndex}-${receipt.legKey}.sarif.json`), receipt.sarifJson, "utf8");
+      }
+      if (receipt.rawBody) {
+        await writeFile(join(rawDir, `${receipt.orderIndex}-${receipt.legKey}.log`), receipt.rawBody, "utf8");
+      }
+    }
+
+    await writeFile(join(testDir, "bdd_steps.json"), JSON.stringify(args.result.steps ?? [], null, 2), "utf8");
+
+    const regressionReceipt = receipts.find((receipt) => receipt.legKey === "regression_no_new_failures");
+    await writeFile(
+      join(testDir, "regression_delta.json"),
+      regressionReceipt?.policyJson ?? JSON.stringify({}),
+      "utf8",
+    );
+
+    const filename = `verification_${args.verificationId ?? args.result.submissionId}_attempt_${manifest.attemptNumber}_${createdAt}.zip`;
+    const zipPath = join(tempRoot, filename);
+
+    try {
+      await execFileAsync("zip", ["-r", zipPath, "."], { cwd: bundleRoot });
+    } catch {
+      // Fallback to JSON blob serialized as .zip payload when zip utility is unavailable.
+      const fallback = Buffer.from(JSON.stringify({ manifest, receipts, steps: args.result.steps ?? [] }), "utf8");
+      await writeFile(zipPath, fallback);
+    }
+
+    const bytes = await readFile(zipPath);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+
+    return {
+      filename,
+      contentType: "application/zip",
+      sha256,
+      bytes: bytes.byteLength,
+      manifestJson: JSON.stringify(manifest),
+      bundleBase64: bytes.toString("base64"),
+    };
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+  }
 }

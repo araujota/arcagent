@@ -17,6 +17,7 @@ export interface TestSuiteInput {
 
 /** Shape of the data stored in each BullMQ job. */
 export interface VerificationJobData {
+  verificationId?: string;
   jobId: string;
   submissionId: string;
   bountyId: string;
@@ -57,6 +58,35 @@ export interface VerificationJobData {
 /** Possible outcome of a single gate. */
 export type GateStatus = "pass" | "fail" | "error" | "skipped";
 
+export type ValidationLegStatus =
+  | "pass"
+  | "fail"
+  | "error"
+  | "warning"
+  | "unreached"
+  | "skipped_policy";
+
+export interface ValidationReceipt {
+  verificationId?: string;
+  jobId: string;
+  submissionId: string;
+  bountyId: string;
+  attemptNumber: number;
+  legKey: string;
+  orderIndex: number;
+  status: ValidationLegStatus;
+  blocking: boolean;
+  unreachedByLegKey?: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  summaryLine: string;
+  rawBody?: string;
+  sarifJson?: string;
+  policyJson?: string;
+  metadataJson?: string;
+}
+
 /** An individual BDD scenario result with visibility tagging. */
 export interface StepResult {
   scenarioName: string;
@@ -93,6 +123,8 @@ export interface VerificationResult {
   feedbackJson?: string;
   /** SECURITY (H6): Per-job HMAC token for result verification. */
   jobHmac?: string;
+  /** Standardized per-leg validation receipts. */
+  validationReceipts?: ValidationReceipt[];
 }
 
 // ---------------------------------------------------------------------------

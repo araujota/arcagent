@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Job } from "bullmq";
-import type { VerificationJobData, VerificationResult, GateResult } from "./jobQueue";
+import type {
+  VerificationJobData,
+  VerificationResult,
+  GateResult,
+  ValidationReceipt,
+} from "./jobQueue";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -17,14 +22,18 @@ vi.mock("../vm/firecracker", () => ({
   destroyFirecrackerVM: (...args: unknown[]) => mockDestroyVM(...args),
 }));
 
-const mockRunGates = vi.fn();
-vi.mock("../gates/gateRunner", () => ({
-  runGates: (...args: unknown[]) => mockRunGates(...args),
+const mockRunVerificationLegs = vi.fn();
+vi.mock("../gates/legRunner", () => ({
+  runVerificationLegs: (...args: unknown[]) => mockRunVerificationLegs(...args),
 }));
 
 const mockPostResult = vi.fn();
+const mockPostReceipt = vi.fn();
+const mockPostArtifact = vi.fn();
 vi.mock("../convex/client", () => ({
   postVerificationResult: (...args: unknown[]) => mockPostResult(...args),
+  postVerificationReceipt: (...args: unknown[]) => mockPostReceipt(...args),
+  postVerificationArtifact: (...args: unknown[]) => mockPostArtifact(...args),
 }));
 
 const mockDetectLanguage = vi.fn().mockResolvedValue("typescript");
@@ -128,6 +137,39 @@ const SKIPPED_GATE: GateResult = {
   summary: "Snyk skipped",
 };
 
+function makeReceipt(overrides: Partial<ValidationReceipt> = {}): ValidationReceipt {
+  return {
+    jobId: "job_123",
+    submissionId: "sub_456",
+    bountyId: "bounty_789",
+    attemptNumber: 1,
+    legKey: "build",
+    orderIndex: 0,
+    status: "pass",
+    blocking: true,
+    startedAt: 1,
+    completedAt: 2,
+    durationMs: 1,
+    summaryLine: "PASS",
+    ...overrides,
+  };
+}
+
+function makeLegOutput(
+  legacyGates: GateResult[],
+  receipts: ValidationReceipt[],
+): {
+  legacyGates: GateResult[];
+  receipts: ValidationReceipt[];
+  steps: [];
+} {
+  return {
+    legacyGates,
+    receipts,
+    steps: [],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -138,8 +180,12 @@ describe("processVerificationJob", () => {
     const vm = mockVM();
     mockCreateVM.mockResolvedValue(vm);
     mockDestroyVM.mockResolvedValue(undefined);
-    mockRunGates.mockResolvedValue([PASS_GATE]);
+    mockRunVerificationLegs.mockResolvedValue(
+      makeLegOutput([PASS_GATE], [makeReceipt({ legKey: "build", orderIndex: 1 })]),
+    );
     mockPostResult.mockResolvedValue(undefined);
+    mockPostReceipt.mockResolvedValue(undefined);
+    mockPostArtifact.mockResolvedValue(undefined);
   });
 
   it("happy path: creates VM, runs gates, posts result, destroys VM", async () => {
@@ -150,7 +196,7 @@ describe("processVerificationJob", () => {
     const result = await processVerificationJob(job);
 
     expect(mockCreateVM).toHaveBeenCalledOnce();
-    expect(mockRunGates).toHaveBeenCalledOnce();
+    expect(mockRunVerificationLegs).toHaveBeenCalledOnce();
     expect(mockPostResult).toHaveBeenCalledWith("https://test.convex.cloud", expect.objectContaining({
       jobId: "job_123",
       overallStatus: "pass",
@@ -203,7 +249,7 @@ describe("processVerificationJob", () => {
   it("gate pipeline throws → overallStatus: 'error', VM destroyed, error result posted", async () => {
     const vm = mockVM();
     mockCreateVM.mockResolvedValue(vm);
-    mockRunGates.mockRejectedValue(new Error("gate explosion"));
+    mockRunVerificationLegs.mockRejectedValue(new Error("gate explosion"));
 
     await expect(processVerificationJob(mockJob())).rejects.toThrow("gate explosion");
 
@@ -234,8 +280,22 @@ describe("processVerificationJob", () => {
   it("ZTACO mode → uses computeOverallStatusZtaco logic", async () => {
     const vm = mockVM();
     mockCreateVM.mockResolvedValue(vm);
-    // With skipped + pass gates, ztaco should pass (skipped filtered out)
-    mockRunGates.mockResolvedValue([PASS_GATE, SKIPPED_GATE]);
+    // With skipped-policy + pass receipts, overall status should remain pass.
+    mockRunVerificationLegs.mockResolvedValue(
+      makeLegOutput(
+        [PASS_GATE, SKIPPED_GATE],
+        [
+          makeReceipt({ legKey: "build", orderIndex: 1, status: "pass", blocking: true }),
+          makeReceipt({
+            legKey: "snyk_no_new_high_critical",
+            orderIndex: 2,
+            status: "skipped_policy",
+            blocking: false,
+            summaryLine: "Snyk skipped",
+          }),
+        ],
+      ),
+    );
 
     const job = mockJob({ ztacoMode: true });
     const result = await processVerificationJob(job);
@@ -260,8 +320,12 @@ describe("processVerificationFromDiff", () => {
     const vm = mockVM();
     mockCreateVM.mockResolvedValue(vm);
     mockDestroyVM.mockResolvedValue(undefined);
-    mockRunGates.mockResolvedValue([PASS_GATE]);
+    mockRunVerificationLegs.mockResolvedValue(
+      makeLegOutput([PASS_GATE], [makeReceipt({ legKey: "build", orderIndex: 1 })]),
+    );
     mockPostResult.mockResolvedValue(undefined);
+    mockPostReceipt.mockResolvedValue(undefined);
+    mockPostArtifact.mockResolvedValue(undefined);
   });
 
   it("missing diffPatch → throws immediately", async () => {
@@ -288,7 +352,7 @@ describe("processVerificationFromDiff", () => {
     expect(result.overallStatus).toBe("fail");
     expect(result.gates).toHaveLength(1);
     expect(result.gates[0].gate).toBe("patch-apply");
-    expect(mockRunGates).not.toHaveBeenCalled();
+    expect(mockRunVerificationLegs).not.toHaveBeenCalled();
   });
 
   it("patch apply succeeds → full gate pipeline runs", async () => {
@@ -300,7 +364,7 @@ describe("processVerificationFromDiff", () => {
     const result = await processVerificationFromDiff(job);
 
     expect(result.overallStatus).toBe("pass");
-    expect(mockRunGates).toHaveBeenCalledOnce();
+    expect(mockRunVerificationLegs).toHaveBeenCalledOnce();
   });
 
   it("VM destroyed in finally even after patch failure", async () => {
@@ -338,28 +402,74 @@ describe("computeOverallStatus (via processVerificationJob)", () => {
     mockCreateVM.mockResolvedValue(vm);
     mockDestroyVM.mockResolvedValue(undefined);
     mockPostResult.mockResolvedValue(undefined);
+    mockPostReceipt.mockResolvedValue(undefined);
+    mockPostArtifact.mockResolvedValue(undefined);
   });
 
   it("all gates pass → 'pass'", async () => {
-    mockRunGates.mockResolvedValue([PASS_GATE, PASS_GATE]);
+    mockRunVerificationLegs.mockResolvedValue(
+      makeLegOutput(
+        [PASS_GATE, PASS_GATE],
+        [
+          makeReceipt({ legKey: "build", orderIndex: 1, status: "pass" }),
+          makeReceipt({ legKey: "lint_no_new_errors", orderIndex: 2, status: "pass" }),
+        ],
+      ),
+    );
     const result = await processVerificationJob(mockJob());
     expect(result.overallStatus).toBe("pass");
   });
 
   it("one gate fail → 'fail'", async () => {
-    mockRunGates.mockResolvedValue([PASS_GATE, FAIL_GATE]);
+    mockRunVerificationLegs.mockResolvedValue(
+      makeLegOutput(
+        [PASS_GATE, FAIL_GATE],
+        [
+          makeReceipt({ legKey: "build", orderIndex: 1, status: "pass" }),
+          makeReceipt({ legKey: "bdd_public", orderIndex: 2, status: "fail" }),
+        ],
+      ),
+    );
     const result = await processVerificationJob(mockJob());
     expect(result.overallStatus).toBe("fail");
   });
 
   it("one gate error → 'error' (takes priority over fail)", async () => {
-    mockRunGates.mockResolvedValue([FAIL_GATE, ERROR_GATE]);
+    mockRunVerificationLegs.mockResolvedValue(
+      makeLegOutput(
+        [FAIL_GATE, ERROR_GATE],
+        [
+          makeReceipt({ legKey: "bdd_public", orderIndex: 1, status: "fail" }),
+          makeReceipt({ legKey: "build", orderIndex: 2, status: "error" }),
+        ],
+      ),
+    );
     const result = await processVerificationJob(mockJob());
     expect(result.overallStatus).toBe("error");
   });
 
-  it("gates with warning and skipped only → 'pass'", async () => {
-    mockRunGates.mockResolvedValue([WARNING_GATE, SKIPPED_GATE]);
+  it("non-blocking warning and skipped-policy only → 'pass'", async () => {
+    mockRunVerificationLegs.mockResolvedValue(
+      makeLegOutput(
+        [WARNING_GATE, SKIPPED_GATE],
+        [
+          makeReceipt({
+            legKey: "memory",
+            orderIndex: 1,
+            status: "warning",
+            blocking: false,
+            summaryLine: "Memory warning",
+          }),
+          makeReceipt({
+            legKey: "snyk_no_new_high_critical",
+            orderIndex: 2,
+            status: "skipped_policy",
+            blocking: false,
+            summaryLine: "Snyk skipped",
+          }),
+        ],
+      ),
+    );
     const result = await processVerificationJob(mockJob());
     expect(result.overallStatus).toBe("pass");
   });
@@ -372,22 +482,73 @@ describe("computeOverallStatusZtaco (via processVerificationJob ztacoMode)", () 
     mockCreateVM.mockResolvedValue(vm);
     mockDestroyVM.mockResolvedValue(undefined);
     mockPostResult.mockResolvedValue(undefined);
+    mockPostReceipt.mockResolvedValue(undefined);
+    mockPostArtifact.mockResolvedValue(undefined);
   });
 
   it("all pass + one skipped → 'pass'", async () => {
-    mockRunGates.mockResolvedValue([PASS_GATE, SKIPPED_GATE]);
+    mockRunVerificationLegs.mockResolvedValue(
+      makeLegOutput(
+        [PASS_GATE, SKIPPED_GATE],
+        [
+          makeReceipt({ legKey: "build", orderIndex: 1, status: "pass" }),
+          makeReceipt({
+            legKey: "sonarqube_new_code",
+            orderIndex: 2,
+            status: "skipped_policy",
+            blocking: false,
+            summaryLine: "Sonar skipped",
+          }),
+        ],
+      ),
+    );
     const result = await processVerificationJob(mockJob({ ztacoMode: true }));
     expect(result.overallStatus).toBe("pass");
   });
 
   it("non-skipped fail → 'fail'", async () => {
-    mockRunGates.mockResolvedValue([PASS_GATE, FAIL_GATE, SKIPPED_GATE]);
+    mockRunVerificationLegs.mockResolvedValue(
+      makeLegOutput(
+        [PASS_GATE, FAIL_GATE, SKIPPED_GATE],
+        [
+          makeReceipt({ legKey: "build", orderIndex: 1, status: "pass" }),
+          makeReceipt({ legKey: "bdd_public", orderIndex: 2, status: "fail" }),
+          makeReceipt({
+            legKey: "sonarqube_new_code",
+            orderIndex: 3,
+            status: "skipped_policy",
+            blocking: false,
+            summaryLine: "Sonar skipped",
+          }),
+        ],
+      ),
+    );
     const result = await processVerificationJob(mockJob({ ztacoMode: true }));
     expect(result.overallStatus).toBe("fail");
   });
 
   it("all skipped → 'pass'", async () => {
-    mockRunGates.mockResolvedValue([SKIPPED_GATE, SKIPPED_GATE]);
+    mockRunVerificationLegs.mockResolvedValue(
+      makeLegOutput(
+        [SKIPPED_GATE, SKIPPED_GATE],
+        [
+          makeReceipt({
+            legKey: "snyk_no_new_high_critical",
+            orderIndex: 1,
+            status: "skipped_policy",
+            blocking: false,
+            summaryLine: "Snyk skipped",
+          }),
+          makeReceipt({
+            legKey: "sonarqube_new_code",
+            orderIndex: 2,
+            status: "skipped_policy",
+            blocking: false,
+            summaryLine: "Sonar skipped",
+          }),
+        ],
+      ),
+    );
     const result = await processVerificationJob(mockJob({ ztacoMode: true }));
     expect(result.overallStatus).toBe("pass");
   });
@@ -403,8 +564,12 @@ describe("HMAC passthrough in processVerificationJob", () => {
     const vm = mockVM();
     mockCreateVM.mockResolvedValue(vm);
     mockDestroyVM.mockResolvedValue(undefined);
-    mockRunGates.mockResolvedValue([PASS_GATE]);
+    mockRunVerificationLegs.mockResolvedValue(
+      makeLegOutput([PASS_GATE], [makeReceipt({ legKey: "build", orderIndex: 1 })]),
+    );
     mockPostResult.mockResolvedValue(undefined);
+    mockPostReceipt.mockResolvedValue(undefined);
+    mockPostArtifact.mockResolvedValue(undefined);
   });
 
   it("includes jobHmac in result when present in job data", async () => {
@@ -442,8 +607,12 @@ describe("HMAC passthrough in processVerificationFromDiff", () => {
     const vm = mockVM();
     mockCreateVM.mockResolvedValue(vm);
     mockDestroyVM.mockResolvedValue(undefined);
-    mockRunGates.mockResolvedValue([PASS_GATE]);
+    mockRunVerificationLegs.mockResolvedValue(
+      makeLegOutput([PASS_GATE], [makeReceipt({ legKey: "build", orderIndex: 1 })]),
+    );
     mockPostResult.mockResolvedValue(undefined);
+    mockPostReceipt.mockResolvedValue(undefined);
+    mockPostArtifact.mockResolvedValue(undefined);
   });
 
   it("includes jobHmac in result when present", async () => {

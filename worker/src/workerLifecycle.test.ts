@@ -43,11 +43,44 @@ vi.mock("./vm/vmConfig", () => ({
   }),
 }));
 
-vi.mock("./gates/gateRunner", () => ({
-  runGates: vi.fn().mockResolvedValue([
-    { gate: "build", status: "pass", durationMs: 100, summary: "OK" },
-    { gate: "test", status: "pass", durationMs: 200, summary: "OK" },
-  ]),
+vi.mock("./gates/legRunner", () => ({
+  runVerificationLegs: vi.fn().mockResolvedValue({
+    legacyGates: [
+      { gate: "build", status: "pass", durationMs: 100, summary: "OK" },
+      { gate: "test", status: "pass", durationMs: 200, summary: "OK" },
+    ],
+    receipts: [
+      {
+        jobId: "job-123",
+        submissionId: "sub-456",
+        bountyId: "bounty-789",
+        attemptNumber: 1,
+        legKey: "build",
+        orderIndex: 1,
+        status: "pass",
+        blocking: true,
+        startedAt: 1,
+        completedAt: 2,
+        durationMs: 1,
+        summaryLine: "PASS",
+      },
+      {
+        jobId: "job-123",
+        submissionId: "sub-456",
+        bountyId: "bounty-789",
+        attemptNumber: 1,
+        legKey: "bdd_public",
+        orderIndex: 2,
+        status: "pass",
+        blocking: true,
+        startedAt: 2,
+        completedAt: 3,
+        durationMs: 1,
+        summaryLine: "PASS",
+      },
+    ],
+    steps: [],
+  }),
 }));
 
 vi.mock("./lib/languageDetector", () => ({
@@ -65,6 +98,8 @@ vi.mock("./lib/shellSanitize", () => ({
 
 vi.mock("./convex/client", () => ({
   postVerificationResult: vi.fn().mockResolvedValue(undefined),
+  postVerificationReceipt: vi.fn().mockResolvedValue(undefined),
+  postVerificationArtifact: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("./lib/feedbackFormatter", () => ({

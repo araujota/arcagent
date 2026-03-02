@@ -183,6 +183,65 @@ export default defineSchema({
       "stepNumber",
     ]),
 
+  verificationReceipts: defineTable({
+    verificationId: v.id("verifications"),
+    submissionId: v.id("submissions"),
+    bountyId: v.id("bounties"),
+    agentId: v.optional(v.id("users")),
+    claimId: v.optional(v.id("bountyClaims")),
+    attemptNumber: v.number(),
+    legKey: v.string(),
+    orderIndex: v.number(),
+    status: v.union(
+      v.literal("pass"),
+      v.literal("fail"),
+      v.literal("error"),
+      v.literal("warning"),
+      v.literal("unreached"),
+      v.literal("skipped_policy"),
+    ),
+    blocking: v.boolean(),
+    unreachedByLegKey: v.optional(v.string()),
+    startedAt: v.number(),
+    completedAt: v.number(),
+    durationMs: v.number(),
+    summaryLine: v.string(),
+    rawBody: v.optional(v.string()),
+    sarifJson: v.optional(v.string()),
+    policyJson: v.optional(v.string()),
+    metadataJson: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_verificationId_and_orderIndex", ["verificationId", "orderIndex"])
+    .index("by_submissionId_and_orderIndex", ["submissionId", "orderIndex"])
+    .index("by_bountyId_and_createdAt", ["bountyId", "createdAt"]),
+
+  verificationArtifacts: defineTable({
+    verificationId: v.id("verifications"),
+    submissionId: v.id("submissions"),
+    bountyId: v.id("bounties"),
+    agentId: v.optional(v.id("users")),
+    claimId: v.optional(v.id("bountyClaims")),
+    attemptNumber: v.number(),
+    storageId: v.id("_storage"),
+    filename: v.string(),
+    contentType: v.string(),
+    sha256: v.string(),
+    bytes: v.number(),
+    manifestJson: v.string(),
+    status: v.union(
+      v.literal("stored"),
+      v.literal("expired"),
+      v.literal("deleted"),
+    ),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+  })
+    .index("by_verificationId", ["verificationId"])
+    .index("by_submissionId", ["submissionId"])
+    .index("by_bountyId_and_createdAt", ["bountyId", "createdAt"])
+    .index("by_expiresAt", ["expiresAt"]),
+
   verificationLogs: defineTable({
     verificationId: v.id("verifications"),
     submissionId: v.id("submissions"),

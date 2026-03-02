@@ -43,13 +43,46 @@ vi.mock("./vm/vmConfig", () => ({
   }),
 }));
 
-vi.mock("./gates/gateRunner", () => ({
-  runGates: vi.fn().mockResolvedValue([
-    { gate: "build", status: "pass", durationMs: 150, summary: "Build succeeded" },
-    { gate: "lint", status: "pass", durationMs: 80, summary: "No lint errors" },
-    { gate: "typecheck", status: "pass", durationMs: 120, summary: "Types OK" },
-    { gate: "test", status: "pass", durationMs: 500, summary: "15/15 tests passed" },
-  ]),
+vi.mock("./gates/legRunner", () => ({
+  runVerificationLegs: vi.fn().mockResolvedValue({
+    legacyGates: [
+      { gate: "build", status: "pass", durationMs: 150, summary: "Build succeeded" },
+      { gate: "lint", status: "pass", durationMs: 80, summary: "No lint errors" },
+      { gate: "typecheck", status: "pass", durationMs: 120, summary: "Types OK" },
+      { gate: "test", status: "pass", durationMs: 500, summary: "15/15 tests passed" },
+    ],
+    receipts: [
+      {
+        jobId: "job-lifecycle-001",
+        submissionId: "sub-lifecycle-001",
+        bountyId: "bounty-lifecycle-001",
+        attemptNumber: 1,
+        legKey: "build",
+        orderIndex: 1,
+        status: "pass",
+        blocking: true,
+        startedAt: 1,
+        completedAt: 2,
+        durationMs: 1,
+        summaryLine: "PASS",
+      },
+      {
+        jobId: "job-lifecycle-001",
+        submissionId: "sub-lifecycle-001",
+        bountyId: "bounty-lifecycle-001",
+        attemptNumber: 1,
+        legKey: "bdd_public",
+        orderIndex: 2,
+        status: "pass",
+        blocking: true,
+        startedAt: 2,
+        completedAt: 3,
+        durationMs: 1,
+        summaryLine: "PASS",
+      },
+    ],
+    steps: [],
+  }),
 }));
 
 vi.mock("./lib/languageDetector", () => ({
@@ -67,6 +100,8 @@ vi.mock("./lib/shellSanitize", () => ({
 
 vi.mock("./convex/client", () => ({
   postVerificationResult: vi.fn().mockResolvedValue(undefined),
+  postVerificationReceipt: vi.fn().mockResolvedValue(undefined),
+  postVerificationArtifact: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("./lib/feedbackFormatter", () => ({
@@ -112,7 +147,7 @@ vi.mock("./vm/vmPool", () => ({
 import { createFirecrackerVM, destroyFirecrackerVM } from "./vm/firecracker";
 import { processVerificationJob, processVerificationFromDiff } from "./queue/jobProcessor";
 import { postVerificationResult } from "./convex/client";
-import { runGates } from "./gates/gateRunner";
+import { runVerificationLegs } from "./gates/legRunner";
 import { withTimeout } from "./lib/timeout";
 import {
   provisionWorkspace,
@@ -377,7 +412,7 @@ describe("Flow 2: Verification job lifecycle (Convex → worker → VM → gates
     expect(execCalls[0][0]).toContain("github.com/test/repo");
 
     // 3. Gates ran
-    expect(runGates).toHaveBeenCalledOnce();
+    expect(runVerificationLegs).toHaveBeenCalledOnce();
 
     // 4. Result is correct
     expect(result.overallStatus).toBe("pass");
@@ -483,7 +518,7 @@ describe("Flow 2: Verification job lifecycle (Convex → worker → VM → gates
     expect(result.gates[0].details?.stderr).toContain("patch does not apply");
 
     // Gates were NOT run (fast fail before pipeline)
-    expect(runGates).not.toHaveBeenCalled();
+    expect(runVerificationLegs).not.toHaveBeenCalled();
 
     // Fail result still posted to Convex
     expect(postVerificationResult).toHaveBeenCalledWith(
@@ -537,12 +572,45 @@ describe("Flow 2: Verification job lifecycle (Convex → worker → VM → gates
   });
 
   it("gate failure produces fail status and correct gate details", async () => {
-    vi.mocked(runGates).mockResolvedValueOnce([
-      { gate: "build", status: "pass", durationMs: 100, summary: "Build OK" },
-      { gate: "lint", status: "fail", durationMs: 50, summary: "3 lint errors found" },
-      { gate: "typecheck", status: "skipped", durationMs: 0, summary: "Skipped (pipeline aborted)" },
-      { gate: "test", status: "skipped", durationMs: 0, summary: "Skipped (pipeline aborted)" },
-    ]);
+    vi.mocked(runVerificationLegs).mockResolvedValueOnce({
+      legacyGates: [
+        { gate: "build", status: "pass", durationMs: 100, summary: "Build OK" },
+        { gate: "lint", status: "fail", durationMs: 50, summary: "3 lint errors found" },
+        { gate: "typecheck", status: "skipped", durationMs: 0, summary: "Skipped (pipeline aborted)" },
+        { gate: "test", status: "skipped", durationMs: 0, summary: "Skipped (pipeline aborted)" },
+      ],
+      receipts: [
+        {
+          jobId: "job-lifecycle-001",
+          submissionId: "sub-lifecycle-001",
+          bountyId: "bounty-lifecycle-001",
+          attemptNumber: 1,
+          legKey: "build",
+          orderIndex: 1,
+          status: "pass",
+          blocking: true,
+          startedAt: 1,
+          completedAt: 2,
+          durationMs: 1,
+          summaryLine: "PASS",
+        },
+        {
+          jobId: "job-lifecycle-001",
+          submissionId: "sub-lifecycle-001",
+          bountyId: "bounty-lifecycle-001",
+          attemptNumber: 1,
+          legKey: "lint_no_new_errors",
+          orderIndex: 2,
+          status: "fail",
+          blocking: true,
+          startedAt: 2,
+          completedAt: 3,
+          durationMs: 1,
+          summaryLine: "3 lint errors found",
+        },
+      ],
+      steps: [],
+    });
 
     const mockVM = createMockVM();
     vi.mocked(createFirecrackerVM).mockResolvedValue(mockVM);
@@ -829,9 +897,26 @@ describe("Flow 6: Resource cleanup guarantees", () => {
       {
         name: "gate failure",
         setup: () => {
-          vi.mocked(runGates).mockResolvedValueOnce([
-            { gate: "build", status: "fail", durationMs: 100, summary: "Build failed" },
-          ]);
+          vi.mocked(runVerificationLegs).mockResolvedValueOnce({
+            legacyGates: [{ gate: "build", status: "fail", durationMs: 100, summary: "Build failed" }],
+            receipts: [
+              {
+                jobId: "job-lifecycle-001",
+                submissionId: "sub-lifecycle-001",
+                bountyId: "bounty-lifecycle-001",
+                attemptNumber: 1,
+                legKey: "build",
+                orderIndex: 1,
+                status: "fail",
+                blocking: true,
+                startedAt: 1,
+                completedAt: 2,
+                durationMs: 1,
+                summaryLine: "Build failed",
+              },
+            ],
+            steps: [],
+          });
         },
       },
       {
