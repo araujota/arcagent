@@ -88,6 +88,8 @@ function baseConfig(overrides?: Partial<ServerConfig>): ServerConfig {
     registerCaptchaSecret: undefined,
     enableConvexAuditLogs: false,
     convexAuditLogToken: undefined,
+    internalWorkerBaseUrl: undefined,
+    workerProxyPathPrefix: "/worker-proxy",
     ...overrides,
   };
 }
@@ -261,6 +263,39 @@ describe("HTTP MCP auth/session hardening", () => {
       });
 
       expect(resp.status).toBe(200);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("blocks /api/mcp/register when request already has a valid API key", async () => {
+    validateApiKeyMock.mockResolvedValue({
+      userId: "existing-user",
+      name: "Existing",
+      email: "existing@test.dev",
+      role: "agent",
+      scopes: ["bounties:read"],
+    });
+
+    const runtime = await startRuntime(baseConfig());
+    try {
+      const resp = await fetch(`${runtime.url}/api/mcp/register`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer arc_existing_key",
+        },
+        body: JSON.stringify({
+          name: "Ignored",
+          email: "ignored@test.dev",
+        }),
+      });
+
+      expect(resp.status).toBe(409);
+      const body = await resp.json() as { error: { code: string; message: string } };
+      expect(body.error.code).toBe("already_authenticated");
+      expect(body.error.message).toContain("Reuse the current API key");
+      expect(callConvexMock).not.toHaveBeenCalled();
     } finally {
       await runtime.close();
     }
@@ -720,6 +755,55 @@ describe("HTTP MCP auth/session hardening", () => {
       expect(getBody.error.code).toBe("session_mode_stateless");
     } finally {
       await runtime.close();
+    }
+  });
+
+  it("proxies worker API calls through MCP when internal worker URL is configured", async () => {
+    let observedAuth = "";
+    let observedPath = "";
+    let observedBody = "";
+
+    const workerServer = createServer((req, res) => {
+      observedAuth = req.headers.authorization ?? "";
+      observedPath = req.url ?? "";
+
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      req.on("end", () => {
+        observedBody = Buffer.concat(chunks).toString("utf8");
+        res.statusCode = 202;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ proxied: true }));
+      });
+    });
+
+    await new Promise<void>((resolve) => workerServer.listen(0, "127.0.0.1", () => resolve()));
+    const workerAddr = workerServer.address() as AddressInfo;
+    const workerBaseUrl = `http://127.0.0.1:${workerAddr.port}`;
+
+    const runtime = await startRuntime(baseConfig({
+      internalWorkerBaseUrl: workerBaseUrl,
+      workerProxyPathPrefix: "/worker-proxy",
+    }));
+
+    try {
+      const resp = await fetch(`${runtime.url}/worker-proxy/api/verify?trace=1`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer shared-secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ submissionId: "sub_123" }),
+      });
+
+      expect(resp.status).toBe(202);
+      expect(await resp.json()).toEqual({ proxied: true });
+      expect(observedAuth).toBe("Bearer shared-secret");
+      expect(observedPath).toBe("/api/verify?trace=1");
+      expect(observedBody).toContain("\"submissionId\":\"sub_123\"");
+    } finally {
+      await runtime.close();
+      await new Promise<void>((resolve) => workerServer.close(() => resolve()));
     }
   });
 

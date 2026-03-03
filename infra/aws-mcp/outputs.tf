@@ -13,6 +13,11 @@ output "mcp_public_url" {
   value       = "https://${var.mcp_public_domain}"
 }
 
+output "worker_proxy_public_url" {
+  description = "Public MCP worker-proxy base URL (set this as Convex WORKER_API_URL)"
+  value       = "https://${var.mcp_public_domain}${local.worker_proxy_path_prefix}"
+}
+
 output "vercel_cname_record" {
   description = "Vercel DNS CNAME instructions"
   value = {
@@ -45,6 +50,21 @@ output "ecs_cluster_name" {
 output "ecs_service_name" {
   description = "ECS service name"
   value       = aws_ecs_service.mcp.name
+}
+
+output "vpc_id" {
+  description = "MCP VPC ID"
+  value       = aws_vpc.mcp.id
+}
+
+output "vpc_cidr" {
+  description = "MCP VPC CIDR"
+  value       = aws_vpc.mcp.cidr_block
+}
+
+output "private_route_table_id" {
+  description = "MCP private route table ID"
+  value       = aws_route_table.private.id
 }
 
 output "redis_primary_endpoint" {

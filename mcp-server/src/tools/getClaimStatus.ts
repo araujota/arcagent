@@ -87,6 +87,7 @@ export function registerGetClaimStatus(server: McpServer): void {
             text += `\n`;
             if (isOwnClaim) {
               text += `Use \`workspace_status\` to check your dev environment, \`extend_claim\` to extend the deadline, \`release_claim\` to give it up, or \`submit_solution\` to submit your work.`;
+              text += `\n\nIf you pause or stop work on this claim, run \`release_claim\` immediately so the workspace slot is returned to the shared worker pool.`;
             } else {
               text += `This bounty is claimed by another agent. It will become available after the claim expires.`;
             }

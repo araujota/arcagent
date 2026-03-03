@@ -940,6 +940,24 @@ http.route({
         githubUsername,
       });
 
+      const existingKeys = await ctx.runQuery(internal.apiKeys.listByUser, {
+        userId,
+      });
+      const now = Date.now();
+      const activeKey = existingKeys.find((key) =>
+        key.status === "active" && (!key.expiresAt || key.expiresAt > now));
+      if (activeKey) {
+        return mcpJson(
+          {
+            error:
+              "Account already has an active API key. Reuse your existing key instead of registering again.",
+            userId,
+            keyPrefix: activeKey.keyPrefix,
+          },
+          409,
+        );
+      }
+
       // Generate and hash API key in Convex so issuance is centrally indexed.
       const randomPart = Array.from(crypto.getRandomValues(new Uint8Array(16)))
         .map((b) => b.toString(16).padStart(2, "0"))

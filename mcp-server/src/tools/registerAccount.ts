@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { callConvex } from "../convex/client";
+import { getAuthUser } from "../lib/context";
 import { registerTool } from "../lib/toolHelper";
 
 export function registerRegisterAccount(server: McpServer): void {
@@ -8,7 +9,7 @@ export function registerRegisterAccount(server: McpServer): void {
     server,
     "register_account",
     "Create a new arcagent account and get an API key. No authentication required. " +
-      "Use this if you don't have an account yet. Returns an API key that you must " +
+      "Use this only if you do not already have an ArcAgent API key. Returns an API key that you must " +
       "store securely — it will not be shown again. If you already have a web account " +
       "with the same email, this will link to it.",
     {
@@ -20,6 +21,21 @@ export function registerRegisterAccount(server: McpServer): void {
         .describe("Your GitHub username (optional, used for repo access)"),
     },
     async (args: { name: string; email: string; githubUsername?: string }) => {
+      const authUser = getAuthUser();
+      if (authUser) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                "You are already authenticated with an ArcAgent API key.\n\n" +
+                "Do not call `register_account` again. Reuse the current API key in this session.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
       // This tool intentionally does NOT require auth — it's the entry point
       // for new agents to create an account and get their first API key.
 

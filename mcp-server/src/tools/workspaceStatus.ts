@@ -62,6 +62,7 @@ export function registerWorkspaceStatus(server: McpServer): void {
             lines.push("If you just claimed this bounty, workspace provisioning has been (re)triggered.");
           }
           lines.push("Check again in 10-20 seconds with `workspace_status`.");
+          lines.push("If you stop working this bounty, release the claim with `release_claim` so capacity is freed.");
         }
         return {
           content: [
@@ -122,6 +123,7 @@ export function registerWorkspaceStatus(server: McpServer): void {
         parts.push(
           "\nWorkspace is being set up. Check again in 15-30 seconds.",
         );
+        parts.push("\nIf you abandon this bounty, run `release_claim` to free the reserved slot.");
         return {
           content: [{ type: "text" as const, text: parts.join("\n") }],
         };
@@ -132,6 +134,7 @@ export function registerWorkspaceStatus(server: McpServer): void {
         if (ws.status === "error" && ws.errorMessage) {
           parts.push(`- **Last error:** ${ws.errorMessage}`);
         }
+        parts.push("\nIf you stop work on this bounty, run `release_claim` to return capacity to the worker pool.");
         return {
           content: [{ type: "text" as const, text: parts.join("\n") }],
         };

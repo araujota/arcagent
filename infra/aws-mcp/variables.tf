@@ -35,9 +35,9 @@ variable "private_subnet_cidrs" {
 }
 
 variable "use_nat_gateway" {
-  description = "Create NAT gateway + EIP for private-subnet egress. Disable if EIP quota is constrained."
+  description = "Create NAT gateway + EIP for private-subnet egress."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "container_image" {
@@ -115,6 +115,30 @@ variable "mcp_public_domain" {
   description = "Public DNS name for hosted MCP endpoint"
   type        = string
   default     = "mcp.arcagent.dev"
+}
+
+variable "worker_internal_url" {
+  description = "Private worker base URL reachable from MCP tasks (for example http://internal-worker-alb-xxx.us-east-1.elb.amazonaws.com:3001)."
+  type        = string
+  default     = ""
+}
+
+variable "worker_vpc_cidr" {
+  description = "Optional worker VPC CIDR to allow MCP task egress to private worker endpoints."
+  type        = string
+  default     = ""
+}
+
+variable "worker_proxy_path_prefix" {
+  description = "Public path prefix on MCP used to proxy authenticated worker API calls."
+  type        = string
+  default     = "/worker-proxy"
+}
+
+variable "alb_ingress_allowed_cidrs" {
+  description = "CIDR ranges allowed to reach the public MCP ALB."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }
 
 variable "acm_certificate_arn" {

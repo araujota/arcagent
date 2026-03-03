@@ -25,6 +25,8 @@ export interface ServerConfig {
   registerCaptchaSecret?: string;
   enableConvexAuditLogs: boolean;
   convexAuditLogToken?: string;
+  internalWorkerBaseUrl?: string;
+  workerProxyPathPrefix: string;
 }
 
 const DEFAULT_CONVEX_URL = "https://acoustic-starfish-282.convex.site";
@@ -70,6 +72,23 @@ function normalizePublicBaseUrl(url: string | undefined): string | undefined {
   parsed.search = "";
   parsed.hash = "";
   return parsed.toString().replace(/\/+$/, "");
+}
+
+function normalizeHttpBaseUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  const parsed = new URL(url);
+  parsed.pathname = "";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString().replace(/\/+$/, "");
+}
+
+function normalizeProxyPathPrefix(path: string | undefined): string {
+  if (!path) return "/worker-proxy";
+  const trimmed = path.trim();
+  if (!trimmed) return "/worker-proxy";
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return withLeadingSlash.replace(/\/+$/, "") || "/worker-proxy";
 }
 
 function getDefaultAllowedHosts(publicBaseUrl?: string): string[] {
@@ -135,6 +154,8 @@ export function loadServerConfig(
     registerCaptchaSecret: env.MCP_REGISTER_CAPTCHA_SECRET,
     enableConvexAuditLogs: parseBoolEnv(env.MCP_ENABLE_CONVEX_AUDIT_LOGS, false),
     convexAuditLogToken: env.MCP_AUDIT_LOG_TOKEN,
+    internalWorkerBaseUrl: normalizeHttpBaseUrl(env.MCP_INTERNAL_WORKER_BASE_URL),
+    workerProxyPathPrefix: normalizeProxyPathPrefix(env.MCP_WORKER_PROXY_PATH_PREFIX),
   };
 }
 

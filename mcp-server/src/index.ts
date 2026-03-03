@@ -73,6 +73,19 @@ type RequestWithMeta = Request & {
   mcpAgentId?: string;
 };
 
+const HOP_BY_HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "host",
+  "content-length",
+]);
+
 const SEARCHABLE_ID_KEYS = new Set([
   "agentid",
   "userid",
@@ -454,11 +467,92 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
     );
   });
 
+  if (config.internalWorkerBaseUrl) {
+    const proxyPrefix = config.workerProxyPathPrefix;
+    app.use(proxyPrefix, async (req, res) => {
+      const targetUrl = `${config.internalWorkerBaseUrl}${req.url.startsWith("/") ? req.url : `/${req.url}`}`;
+      const method = req.method.toUpperCase();
+      const hasBody = method !== "GET" && method !== "HEAD";
+      const headers = new Headers();
+
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (HOP_BY_HOP_HEADERS.has(key.toLowerCase()) || value === undefined) continue;
+        headers.set(key, Array.isArray(value) ? value.join(",") : value);
+      }
+
+      const init: RequestInit = {
+        method,
+        headers,
+        redirect: "manual",
+      };
+
+      if (hasBody && req.body !== undefined) {
+        if (!headers.has("content-type")) {
+          headers.set("content-type", "application/json");
+        }
+        init.body = JSON.stringify(req.body);
+      }
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 130_000);
+      init.signal = controller.signal;
+
+      try {
+        const upstream = await fetch(targetUrl, init);
+        clearTimeout(timeout);
+
+        res.status(upstream.status);
+        for (const [key, value] of upstream.headers.entries()) {
+          if (HOP_BY_HOP_HEADERS.has(key.toLowerCase())) continue;
+          res.setHeader(key, value);
+        }
+
+        const payload = Buffer.from(await upstream.arrayBuffer());
+        res.send(payload);
+      } catch (error) {
+        clearTimeout(timeout);
+        sendError(
+          res,
+          502,
+          "worker_proxy_error",
+          error instanceof Error ? error.message : "Failed to proxy worker request",
+        );
+      }
+    });
+  }
+
   const handleRegister = async (req: Request, res: Response) => {
     telemetry.recordRegisterAttempt();
     const requestId = (req as RequestWithMeta).mcpRequestId;
     const ip = req.ip || req.socket.remoteAddress || "unknown";
     const isOAuthCompatibilityRoute = req.path === "/register";
+
+    const presentedApiKey = extractApiKey(req.headers.authorization);
+    if (presentedApiKey) {
+      const existingAuth = await validateApiKey(presentedApiKey);
+      if (existingAuth) {
+        telemetry.recordRegisterFailure();
+        emitAuditLog(
+          "warning",
+          "register_already_authenticated",
+          "Blocked registration attempt from authenticated session",
+          {
+            requestId,
+            ip,
+            userId: existingAuth.userId,
+            email: existingAuth.email,
+          },
+        );
+        sendError(
+          res,
+          409,
+          "already_authenticated",
+          "Already authenticated. Reuse the current API key instead of registering again.",
+        );
+        return;
+      }
+    }
+
     const emailKey = typeof req.body?.email === "string"
       ? req.body.email.trim().toLowerCase()
       : isOAuthCompatibilityRoute

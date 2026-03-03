@@ -27,6 +27,7 @@ WORKDIR /app
 
 # System dependencies for Firecracker jailer and networking
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
     iproute2 \
     iptables \
     cryptsetup-bin \
