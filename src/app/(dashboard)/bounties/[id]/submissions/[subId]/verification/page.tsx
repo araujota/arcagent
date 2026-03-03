@@ -11,7 +11,7 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Shield, FileText } from "lucide-react";
+import { Shield } from "lucide-react";
 import Link from "next/link";
 
 export default function VerificationPage() {
@@ -34,6 +34,21 @@ export default function VerificationPage() {
     api.verificationSteps.listByVerification,
     verificationId ? { verificationId } : "skip"
   );
+  const receipts = useQuery(
+    api.verificationReceipts.listByVerification,
+    verificationId ? { verificationId } : "skip"
+  );
+  const normalizedScannerReceipts = (receipts ?? [])
+    .map((receipt) => ({
+      ...receipt,
+      normalized: parseNormalized(receipt.normalizedJson),
+    }))
+    .filter(
+      (receipt) =>
+        receipt.normalized &&
+        (receipt.normalized.tool === "snyk" || receipt.normalized.tool === "sonarqube")
+    )
+    .sort((a, b) => a.orderIndex - b.orderIndex);
 
   if (verification === undefined) {
     return (
@@ -116,6 +131,67 @@ export default function VerificationPage() {
 
       <Separator />
 
+      {/* Normalized Blocking Receipts */}
+      <div>
+        <h2 className="text-lg font-semibold mb-3">Blocking Reasons</h2>
+        {normalizedScannerReceipts.length > 0 ? (
+          <div className="space-y-3">
+            {normalizedScannerReceipts.map((receipt) => (
+              <Card key={receipt._id}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">
+                    [{receipt.orderIndex}] {receipt.legKey}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  <p>
+                    <span className="text-muted-foreground">Blocking:</span>{" "}
+                    {receipt.normalized!.blocking.isBlocking ? "yes" : "no"}
+                  </p>
+                  <p>
+                    <span className="text-muted-foreground">Reason:</span>{" "}
+                    {receipt.normalized!.blocking.reasonCode} - {receipt.normalized!.blocking.reasonText}
+                  </p>
+                  <p>
+                    <span className="text-muted-foreground">Introduced:</span>{" "}
+                    {receipt.normalized!.counts.introducedTotal} (critical={receipt.normalized!.counts.critical}, high={receipt.normalized!.counts.high}, medium={receipt.normalized!.counts.medium}, low={receipt.normalized!.counts.low})
+                  </p>
+                  {receipt.normalized!.tool === "sonarqube" && (
+                    <p>
+                      <span className="text-muted-foreground">Sonar Metrics:</span>{" "}
+                      bugs={receipt.normalized!.counts.bugs}, code smells={receipt.normalized!.counts.codeSmells}, complexity delta={receipt.normalized!.counts.complexityDelta}
+                    </p>
+                  )}
+                  {receipt.normalized!.issues.length > 0 && (
+                    <ul className="space-y-1">
+                      {receipt.normalized!.issues.slice(0, 20).map((issue, index) => (
+                        <li
+                          key={`${receipt._id}-${issue.file ?? "issue"}-${issue.line ?? 0}-${index}`}
+                          className="rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground"
+                        >
+                          [{issue.severity.toUpperCase()}{issue.isBlocking ? ", BLOCKING" : ""}] {issue.file ? `${issue.file}${issue.line ? `:${issue.line}` : ""}` : "(no file)"} - {issue.message}
+                        </li>
+                      ))}
+                      {receipt.normalized!.truncated && (
+                        <li className="text-xs text-muted-foreground">
+                          ... additional normalized issues omitted
+                        </li>
+                      )}
+                    </ul>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No normalized scanner receipts available.
+          </p>
+        )}
+      </div>
+
+      <Separator />
+
       {/* Test Results */}
       <div>
         <h2 className="text-lg font-semibold mb-3">Test Results</h2>
@@ -123,4 +199,62 @@ export default function VerificationPage() {
       </div>
     </div>
   );
+}
+
+type NormalizedReceipt = {
+  tool: "sonarqube" | "snyk";
+  blocking: {
+    isBlocking: boolean;
+    reasonCode: string;
+    reasonText: string;
+  };
+  counts: {
+    introducedTotal: number;
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+    bugs: number;
+    codeSmells: number;
+    complexityDelta: number;
+  };
+  issues: Array<{
+    severity: "critical" | "high" | "medium" | "low" | "info";
+    isBlocking: boolean;
+    file?: string;
+    line?: number;
+    message: string;
+  }>;
+  truncated: boolean;
+};
+
+function parseNormalized(raw?: string): NormalizedReceipt | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<NormalizedReceipt>;
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.tool !== "sonarqube" && parsed.tool !== "snyk") return null;
+    return {
+      tool: parsed.tool,
+      blocking: {
+        isBlocking: Boolean(parsed.blocking?.isBlocking),
+        reasonCode: parsed.blocking?.reasonCode ?? "unknown",
+        reasonText: parsed.blocking?.reasonText ?? "No reason available",
+      },
+      counts: {
+        introducedTotal: parsed.counts?.introducedTotal ?? 0,
+        critical: parsed.counts?.critical ?? 0,
+        high: parsed.counts?.high ?? 0,
+        medium: parsed.counts?.medium ?? 0,
+        low: parsed.counts?.low ?? 0,
+        bugs: parsed.counts?.bugs ?? 0,
+        codeSmells: parsed.counts?.codeSmells ?? 0,
+        complexityDelta: parsed.counts?.complexityDelta ?? 0,
+      },
+      issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+      truncated: Boolean(parsed.truncated),
+    };
+  } catch {
+    return null;
+  }
 }

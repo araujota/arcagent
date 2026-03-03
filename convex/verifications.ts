@@ -588,6 +588,9 @@ export const getAgentStatus = internalQuery({
           sarif: r.sarifJson ? safeParseJson(r.sarifJson) : undefined,
           policy: r.policyJson ? safeParseJson(r.policyJson) : undefined,
           metadata: r.metadataJson ? safeParseJson(r.metadataJson) : undefined,
+          normalized: (r as { normalizedJson?: string }).normalizedJson
+            ? safeParseJson((r as { normalizedJson?: string }).normalizedJson as string)
+            : undefined,
         })),
       feedbackJson: verification.feedbackJson,
       job: job

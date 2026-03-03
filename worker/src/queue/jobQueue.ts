@@ -65,7 +65,8 @@ export type ValidationLegStatus =
   | "error"
   | "warning"
   | "unreached"
-  | "skipped_policy";
+  | "skipped_policy"
+  | "skipped_policy_due_process";
 
 export interface ValidationReceipt {
   verificationId?: string;
@@ -86,6 +87,7 @@ export interface ValidationReceipt {
   sarifJson?: string;
   policyJson?: string;
   metadataJson?: string;
+  normalizedJson?: string;
 }
 
 /** An individual BDD scenario result with visibility tagging. */

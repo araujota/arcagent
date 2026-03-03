@@ -8,6 +8,7 @@ const RECEIPT_STATUS = v.union(
   v.literal("warning"),
   v.literal("unreached"),
   v.literal("skipped_policy"),
+  v.literal("skipped_policy_due_process"),
 );
 
 export const listByVerification = query({
@@ -55,6 +56,7 @@ export const recordInternal = internalMutation({
     sarifJson: v.optional(v.string()),
     policyJson: v.optional(v.string()),
     metadataJson: v.optional(v.string()),
+    normalizedJson: v.optional(v.string()),
     createdAt: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
@@ -85,6 +87,7 @@ export const recordInternal = internalMutation({
       sarifJson: args.sarifJson,
       policyJson: args.policyJson,
       metadataJson: args.metadataJson,
+      normalizedJson: args.normalizedJson,
       createdAt: args.createdAt ?? Date.now(),
     };
 

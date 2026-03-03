@@ -154,6 +154,154 @@ describe("recomputeForAgent", () => {
     expect(stats).not.toBeNull();
     expect(stats!.avgCreatorRating).toBe(5);
   });
+
+  it("derives Sonar/Snyk risk burdens and advisory process reliability from normalized receipts", async () => {
+    const t = convexTest(schema);
+
+    const { agentId } = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx, { role: "creator" });
+      const agentId = await seedUser(ctx, { role: "agent" });
+
+      const bountyId = await seedBounty(ctx, creatorId, {
+        status: "completed",
+        reward: 100,
+      });
+
+      const now = Date.now();
+      await seedClaim(ctx, bountyId, agentId, {
+        status: "completed",
+        claimedAt: now - 2 * 60 * 60 * 1000,
+      });
+
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, {
+        status: "passed",
+      });
+
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "passed",
+        completedAt: now,
+      });
+
+      await seedRating(ctx, bountyId, agentId, creatorId, {
+        tierEligible: true,
+        createdAt: now,
+      });
+
+      await ctx.db.insert("verificationReceipts", {
+        verificationId,
+        submissionId,
+        bountyId,
+        agentId,
+        attemptNumber: 1,
+        legKey: "snyk_no_new_high_critical",
+        orderIndex: 6,
+        status: "pass",
+        blocking: false,
+        startedAt: now - 60_000,
+        completedAt: now - 59_000,
+        durationMs: 1_000,
+        summaryLine: "PASS",
+        normalizedJson: JSON.stringify({
+          tool: "snyk",
+          blocking: {
+            isBlocking: false,
+            reasonCode: "within_threshold",
+            reasonText: "PASS",
+            threshold: "new_high_critical_delta>0",
+            comparedToBaseline: true,
+          },
+          counts: {
+            critical: 0,
+            high: 0,
+            medium: 2,
+            low: 1,
+            bugs: 0,
+            codeSmells: 0,
+            complexityDelta: 0,
+            introducedTotal: 3,
+          },
+          issues: [],
+          truncated: false,
+        }),
+        createdAt: now,
+      });
+
+      await ctx.db.insert("verificationReceipts", {
+        verificationId,
+        submissionId,
+        bountyId,
+        agentId,
+        attemptNumber: 1,
+        legKey: "sonarqube_new_code",
+        orderIndex: 7,
+        status: "pass",
+        blocking: false,
+        startedAt: now - 58_000,
+        completedAt: now - 57_000,
+        durationMs: 1_000,
+        summaryLine: "PASS",
+        normalizedJson: JSON.stringify({
+          tool: "sonarqube",
+          blocking: {
+            isBlocking: false,
+            reasonCode: "quality_gate_passed",
+            reasonText: "PASS",
+            threshold: "quality_gate=OK",
+            comparedToBaseline: true,
+          },
+          counts: {
+            critical: 0,
+            high: 0,
+            medium: 0,
+            low: 0,
+            bugs: 2,
+            codeSmells: 3,
+            complexityDelta: 1,
+            introducedTotal: 6,
+          },
+          issues: [],
+          truncated: false,
+        }),
+        createdAt: now,
+      });
+
+      await ctx.db.insert("verificationReceipts", {
+        verificationId,
+        submissionId,
+        bountyId,
+        agentId,
+        attemptNumber: 1,
+        legKey: "lint_no_new_errors",
+        orderIndex: 3,
+        status: "skipped_policy_due_process",
+        blocking: false,
+        startedAt: now - 70_000,
+        completedAt: now - 69_000,
+        durationMs: 1_000,
+        summaryLine: "Lint process unavailable",
+        createdAt: now,
+      });
+
+      return { agentId };
+    });
+
+    await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
+
+    const stats = await t.run(async (ctx) =>
+      ctx.db
+        .query("agentStats")
+        .withIndex("by_agentId", (q: any) => q.eq("agentId", agentId))
+        .first()
+    );
+
+    expect(stats).not.toBeNull();
+    expect(stats!.snykMinorBurden).toBeGreaterThan(0);
+    expect(stats!.sonarRiskBurden).toBeGreaterThan(0);
+    expect(stats!.advisoryProcessFailureRate).toBeGreaterThan(0);
+    expect(stats!.snykMinorDisciplineScore).toBeLessThan(100);
+    expect(stats!.sonarRiskDisciplineScore).toBeLessThan(100);
+    expect(stats!.advisoryReliabilityScore).toBeLessThan(100);
+  });
 });
 
 describe("recomputeAllTiers", () => {

@@ -18,6 +18,12 @@ interface AgentStats {
     uniqueRaters: number;
     avgTimeToResolutionMs: number;
     gateQualityScore: number;
+    sonarRiskBurden: number;
+    snykMinorBurden: number;
+    advisoryProcessFailureRate: number;
+    sonarRiskDisciplineScore: number;
+    snykMinorDisciplineScore: number;
+    advisoryReliabilityScore: number;
     lastComputedAt: number;
   } | null;
 }
@@ -78,6 +84,13 @@ export function registerGetMyAgentStats(server: McpServer): void {
       text += `- Avg Time to Resolution: ${avgTimeHours} hours\n`;
       text += `- Gate Quality Score: ${(s.gateQualityScore * 100).toFixed(1)}%\n`;
       text += `- Total Submissions: ${s.totalSubmissions}\n\n`;
+      text += `## Risk Discipline\n`;
+      text += `- Sonar Risk Burden: ${(s.sonarRiskBurden ?? 0).toFixed(2)}\n`;
+      text += `- Snyk Minor Burden: ${(s.snykMinorBurden ?? 0).toFixed(2)}\n`;
+      text += `- Advisory Process Failure Rate: ${((s.advisoryProcessFailureRate ?? 0) * 100).toFixed(1)}%\n`;
+      text += `- Sonar Discipline Score: ${(s.sonarRiskDisciplineScore ?? 50).toFixed(1)} / 100\n`;
+      text += `- Snyk Minor Discipline Score: ${(s.snykMinorDisciplineScore ?? 50).toFixed(1)} / 100\n`;
+      text += `- Advisory Reliability Score: ${(s.advisoryReliabilityScore ?? 50).toFixed(1)} / 100\n\n`;
       text += `## Ratings\n`;
       text += `- Avg Creator Rating: ${s.avgCreatorRating.toFixed(1)} / 5.0\n`;
       text += `- Total Ratings: ${s.totalRatings}\n`;

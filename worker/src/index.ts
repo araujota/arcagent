@@ -15,6 +15,7 @@ import { generateWorkerInstanceId, recoverOrphanedSessions } from "./workspace/r
 import { workspaceHeartbeat } from "./workspace/heartbeat";
 import { sessionStore } from "./workspace/sessionStore";
 import { execFileAsync } from "./lib/execFileAsync";
+import { getSupportedLanguages, getVMConfig } from "./vm/vmConfig";
 
 // ---------------------------------------------------------------------------
 // Logger
@@ -90,6 +91,19 @@ async function main(): Promise<void> {
         logger.error("Required scanner binary missing", { tool, executionBackend });
         process.exit(1);
       }
+    }
+  }
+
+  if (hasLocalExecution && executionBackend === "firecracker" && process.env.SCANNER_GLOBAL_ENFORCEMENT === "true") {
+    const rootfsDir = process.env.FC_ROOTFS_DIR ?? "/var/lib/firecracker/rootfs";
+    const coverage = evaluateScannerCoverageByImageClass(rootfsDir);
+    if (coverage.missingImages.length > 0) {
+      logger.error("Global scanner enforcement enabled with incomplete rootfs coverage", {
+        rootfsDir,
+        missingImages: coverage.missingImages,
+        requiredImages: coverage.requiredImages,
+      });
+      process.exit(1);
     }
   }
 
@@ -200,9 +214,21 @@ async function main(): Promise<void> {
           checks.rootfsDirectory = "ok";
           checks.rootfsImages = files.length > 0 ? "ok" : "empty";
           if (checks.rootfsImages !== "ok") healthy = false;
+
+          const coverage = evaluateScannerCoverageByImageClass(rootfsDir, files);
+          checks.scannerImageClassCount = String(coverage.requiredImages.length);
+          checks.scannerImageCoverage = coverage.missingImages.length === 0 ? "ok" : "missing";
+          checks.scannerImageMissing = coverage.missingImages.join(",") || "none";
+          checks.scannerGlobalEnforcement = process.env.SCANNER_GLOBAL_ENFORCEMENT === "true" ? "enabled" : "disabled";
+          if (process.env.SCANNER_GLOBAL_ENFORCEMENT === "true" && coverage.missingImages.length > 0) {
+            healthy = false;
+          }
         } catch {
           checks.rootfsDirectory = "missing";
           checks.rootfsImages = "unknown";
+          checks.scannerImageCoverage = "unknown";
+          checks.scannerImageMissing = "unknown";
+          checks.scannerGlobalEnforcement = process.env.SCANNER_GLOBAL_ENFORCEMENT === "true" ? "enabled" : "disabled";
           healthy = false;
         }
 
@@ -406,6 +432,27 @@ function startSystemdWatchdog(): () => void {
       timer = null;
     }
     void notify(["STOPPING=1", "--status=arcagent-worker shutting down"]);
+  };
+}
+
+function evaluateScannerCoverageByImageClass(
+  rootfsDir: string,
+  existingImages?: string[],
+): {
+  requiredImages: string[];
+  missingImages: string[];
+} {
+  const requiredImages: string[] = Array.from(
+    new Set<string>(getSupportedLanguages().map((language) => getVMConfig(language).rootfsImage)),
+  ).sort();
+
+  const availableImages = new Set<string>(
+    existingImages ?? readdirSync(rootfsDir).filter((entry) => entry.endsWith(".ext4")),
+  );
+
+  return {
+    requiredImages,
+    missingImages: requiredImages.filter((image) => !availableImages.has(image)),
   };
 }
 

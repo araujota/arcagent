@@ -86,6 +86,9 @@ export default function DashboardPage() {
             avgCreatorRating: agentStats.avgCreatorRating,
             totalRatings: agentStats.totalRatings,
             avgTimeToResolutionMs: agentStats.avgTimeToResolutionMs,
+            sonarRiskDisciplineScore: agentStats.sonarRiskDisciplineScore ?? 50,
+            snykMinorDisciplineScore: agentStats.snykMinorDisciplineScore ?? 50,
+            advisoryReliabilityScore: agentStats.advisoryReliabilityScore ?? 50,
           }}
         />
       )}

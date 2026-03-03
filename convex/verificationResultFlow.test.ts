@@ -362,4 +362,69 @@ describe("verification result processing", () => {
     expect(serialized).toContain("Hidden SQL edge case");
     expect(serialized).toContain("Hidden Feature");
   });
+
+  it("agent status surfaces parsed normalized scanner receipts", async () => {
+    const t = convexTest(schema);
+    const ids = await t.run(async (ctx) => {
+      const creatorId = await seedUser(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const bountyId = await seedBounty(ctx, creatorId, { status: "in_progress" });
+      const submissionId = await seedSubmission(ctx, bountyId, agentId, { status: "running" });
+      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
+        status: "running",
+        startedAt: Date.now(),
+        timeoutSeconds: 600,
+      });
+      return { verificationId, submissionId, bountyId, agentId };
+    });
+
+    await t.mutation(internal.verificationReceipts.recordInternal, {
+      verificationId: ids.verificationId,
+      submissionId: ids.submissionId,
+      bountyId: ids.bountyId,
+      agentId: ids.agentId,
+      attemptNumber: 1,
+      legKey: "snyk_no_new_high_critical",
+      orderIndex: 6,
+      status: "pass",
+      blocking: false,
+      startedAt: Date.now() - 1_000,
+      completedAt: Date.now(),
+      durationMs: 1_000,
+      summaryLine: "PASS",
+      normalizedJson: JSON.stringify({
+        tool: "snyk",
+        blocking: {
+          isBlocking: false,
+          reasonCode: "within_threshold",
+          reasonText: "PASS",
+          threshold: "new_high_critical_delta>0",
+          comparedToBaseline: true,
+        },
+        counts: {
+          critical: 0,
+          high: 0,
+          medium: 1,
+          low: 2,
+          bugs: 0,
+          codeSmells: 0,
+          complexityDelta: 0,
+          introducedTotal: 3,
+        },
+        issues: [],
+        truncated: false,
+      }),
+    });
+
+    const status = await t.query(internal.verifications.getAgentStatus, {
+      verificationId: ids.verificationId,
+    });
+
+    expect(status).not.toBeNull();
+    expect(status!.validationReceipts.length).toBeGreaterThan(0);
+    const snykReceipt = status!.validationReceipts.find((r: any) => r.legKey === "snyk_no_new_high_critical");
+    expect(snykReceipt).toBeDefined();
+    expect(snykReceipt.normalized?.tool).toBe("snyk");
+    expect(snykReceipt.normalized?.counts?.introducedTotal).toBe(3);
+  });
 });

@@ -27,16 +27,10 @@ export async function runSnykGate(
       status: "skipped",
       durationMs: Date.now() - start,
       summary: "Snyk not configured (SNYK_TOKEN missing)",
-    };
-  }
-
-  const supportedLanguages = new Set(["typescript", "javascript"]);
-  if (!supportedLanguages.has(normalizedLanguage)) {
-    return {
-      gate: "snyk",
-      status: "skipped",
-      durationMs: Date.now() - start,
-      summary: `Snyk gate is not enabled for language "${language}" in this execution image set`,
+      details: {
+        reasonCode: "missing_token",
+        language: normalizedLanguage,
+      },
     };
   }
 
@@ -47,6 +41,10 @@ export async function runSnykGate(
       status: "error",
       durationMs: Date.now() - start,
       summary: `Snyk CLI not available in execution environment for language "${language}"`,
+      details: {
+        reasonCode: "missing_cli",
+        language: normalizedLanguage,
+      },
     };
   }
 
@@ -62,6 +60,8 @@ export async function runSnykGate(
 
   const totalHigh = scaResult.highCount + sastResult.highCount;
   const totalCritical = scaResult.criticalCount + sastResult.criticalCount;
+  const totalMedium = scaResult.mediumCount + sastResult.mediumCount;
+  const totalLow = scaResult.lowCount + sastResult.lowCount;
   const totalFindings = scaResult.totalFindings + sastResult.totalFindings;
   const hasBlockingIssues = totalHigh > 0 || totalCritical > 0;
   const scannerErrors = [scaResult.error, sastResult.error].filter(Boolean) as string[];
@@ -74,7 +74,7 @@ export async function runSnykGate(
     status = "fail";
   }
 
-  let summary = `Snyk scan passed (${totalFindings} low/medium finding(s))`;
+  let summary = `Snyk scan passed (${totalLow} low and ${totalMedium} medium finding(s))`;
   if (hasBlockingIssues) {
     summary = `Snyk found ${totalCritical} critical and ${totalHigh} high severity issue(s)`;
   }
@@ -93,7 +93,14 @@ export async function runSnykGate(
       totalFindings,
       criticalCount: totalCritical,
       highCount: totalHigh,
+      mediumCount: totalMedium,
+      lowCount: totalLow,
       scannerErrors,
+      findings: {
+        sca: scaResult.findings.slice(0, 200),
+        sast: sastResult.findings.slice(0, 200),
+      },
+      language: normalizedLanguage,
     },
   };
 }
@@ -106,6 +113,9 @@ interface SnykScanSummary {
   totalFindings: number;
   criticalCount: number;
   highCount: number;
+  mediumCount: number;
+  lowCount: number;
+  findings: unknown[];
   error?: string;
 }
 
@@ -120,7 +130,7 @@ async function runSnykTest(
   const result = await vm.exec(
     `cd /workspace && ` +
     `printf '%s' '${token.replace(/'/g, "'\\''")}' > /tmp/.snyk_token && chmod 600 /tmp/.snyk_token && ` +
-    `SNYK_TOKEN=$(cat /tmp/.snyk_token) snyk test --json --severity-threshold=high 2>/dev/null; ` +
+    `SNYK_TOKEN=$(cat /tmp/.snyk_token) snyk test --json --severity-threshold=low 2>/dev/null; ` +
     `ST=$?; rm -f /tmp/.snyk_token; exit $ST`,
     timeoutMs,
   );
@@ -131,6 +141,9 @@ async function runSnykTest(
       totalFindings: 0,
       criticalCount: 0,
       highCount: 0,
+      mediumCount: 0,
+      lowCount: 0,
+      findings: [],
       error: result.exitCode !== 0
         ? `Snyk test exited with code ${result.exitCode}`
         : undefined,
@@ -143,24 +156,34 @@ async function runSnykTest(
       totalFindings: 0,
       criticalCount: 0,
       highCount: 0,
+      mediumCount: 0,
+      lowCount: 0,
+      findings: [],
       error: "Failed to parse Snyk test output",
     };
   }
 
   let criticalCount = 0;
   let highCount = 0;
+  let mediumCount = 0;
+  let lowCount = 0;
   const vulns = parsed.vulnerabilities ?? [];
 
   for (const v of vulns) {
-    const severity = v.severity?.toUpperCase();
-    if (severity === "CRITICAL") criticalCount++;
-    if (severity === "HIGH") highCount++;
+    const severity = v.severity?.toLowerCase();
+    if (severity === "critical") criticalCount++;
+    else if (severity === "high") highCount++;
+    else if (severity === "medium") mediumCount++;
+    else if (severity === "low") lowCount++;
   }
 
   return {
     totalFindings: vulns.length,
     criticalCount,
     highCount,
+    mediumCount,
+    lowCount,
+    findings: vulns.slice(0, 200),
   };
 }
 
@@ -173,7 +196,7 @@ async function runSnykCode(
   const result = await vm.exec(
     `cd /workspace && ` +
     `printf '%s' '${token.replace(/'/g, "'\\''")}' > /tmp/.snyk_token && chmod 600 /tmp/.snyk_token && ` +
-    `SNYK_TOKEN=$(cat /tmp/.snyk_token) snyk code test --json --severity-threshold=high 2>/dev/null; ` +
+    `SNYK_TOKEN=$(cat /tmp/.snyk_token) snyk code test --json --severity-threshold=low 2>/dev/null; ` +
     `ST=$?; rm -f /tmp/.snyk_token; exit $ST`,
     timeoutMs,
   );
@@ -183,6 +206,9 @@ async function runSnykCode(
       totalFindings: 0,
       criticalCount: 0,
       highCount: 0,
+      mediumCount: 0,
+      lowCount: 0,
+      findings: [],
       error: result.exitCode !== 0
         ? `Snyk code test exited with code ${result.exitCode}`
         : undefined,
@@ -195,19 +221,39 @@ async function runSnykCode(
       totalFindings: 0,
       criticalCount: 0,
       highCount: 0,
+      mediumCount: 0,
+      lowCount: 0,
+      findings: [],
       error: "Failed to parse Snyk Code output",
     };
   }
 
   let criticalCount = 0;
   let highCount = 0;
+  let mediumCount = 0;
+  let lowCount = 0;
   const runs = parsed.runs ?? [];
+  const findings: unknown[] = [];
 
   for (const run of runs) {
     for (const finding of run.results ?? []) {
-      const level = finding.level?.toUpperCase();
-      if (level === "ERROR") criticalCount++;
-      if (level === "WARNING") highCount++;
+      findings.push(finding);
+
+      const severity = finding.properties?.severity?.toLowerCase();
+      if (severity === "critical") {
+        criticalCount++;
+      } else if (severity === "high") {
+        highCount++;
+      } else if (severity === "medium") {
+        mediumCount++;
+      } else if (severity === "low") {
+        lowCount++;
+      } else {
+        const level = finding.level?.toUpperCase();
+        if (level === "ERROR") highCount++;
+        else if (level === "WARNING") mediumCount++;
+        else lowCount++;
+      }
     }
   }
 
@@ -220,6 +266,9 @@ async function runSnykCode(
     totalFindings,
     criticalCount,
     highCount,
+    mediumCount,
+    lowCount,
+    findings: findings.slice(0, 200),
   };
 }
 
@@ -233,6 +282,8 @@ interface SnykTestOutput {
     severity?: string;
     title?: string;
     packageName?: string;
+    line?: number;
+    filePath?: string;
   }[];
 }
 
@@ -242,6 +293,17 @@ interface SnykCodeOutput {
       ruleId?: string;
       level?: string;
       message?: { text?: string };
+      path?: string;
+      line?: number;
+      properties?: {
+        severity?: string;
+      };
+      locations?: Array<{
+        physicalLocation?: {
+          artifactLocation?: { uri?: string };
+          region?: { startLine?: number };
+        };
+      }>;
     }[];
   }[];
 }

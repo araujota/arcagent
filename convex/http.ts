@@ -1921,6 +1921,7 @@ http.route({
       verificationStatus: latestVerification.status,
       attemptNumber: allVerifications.length,
       hiddenFailureMechanisms,
+      validationReceipts: latestAgentStatus?.validationReceipts ?? [],
     });
   }),
 });
@@ -2911,13 +2912,17 @@ const GATE_STATUS_MAP: Record<string, string> = {
   warn: "warning",
 };
 
-const RECEIPT_STATUS_MAP: Record<string, "pass" | "fail" | "error" | "warning" | "unreached" | "skipped_policy"> = {
+const RECEIPT_STATUS_MAP: Record<
+  string,
+  "pass" | "fail" | "error" | "warning" | "unreached" | "skipped_policy" | "skipped_policy_due_process"
+> = {
   pass: "pass",
   fail: "fail",
   error: "error",
   warning: "warning",
   unreached: "unreached",
   skipped_policy: "skipped_policy",
+  skipped_policy_due_process: "skipped_policy_due_process",
 };
 
 function stringifyLogDetails(value: unknown): string | undefined {
@@ -2974,6 +2979,7 @@ http.route({
         sarifJson?: string;
         policyJson?: string;
         metadataJson?: string;
+        normalizedJson?: string;
       }>;
       steps?: Array<{
         scenarioName: string;
@@ -3152,6 +3158,7 @@ http.route({
             sarifJson: receipt.sarifJson,
             policyJson: receipt.policyJson,
             metadataJson: receipt.metadataJson,
+            normalizedJson: receipt.normalizedJson,
             createdAt: Date.now(),
           });
         }
@@ -3358,6 +3365,7 @@ http.route({
       sarifJson?: string;
       policyJson?: string;
       metadataJson?: string;
+      normalizedJson?: string;
       jobHmac?: string;
       callbackTimestampMs?: number;
       callbackNonce?: string;
@@ -3480,6 +3488,7 @@ http.route({
         sarifJson: body.sarifJson,
         policyJson: body.policyJson,
         metadataJson: body.metadataJson,
+        normalizedJson: body.normalizedJson,
         createdAt: Date.now(),
       });
 

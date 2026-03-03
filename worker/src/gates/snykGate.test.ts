@@ -34,14 +34,6 @@ describe("runSnykGate", () => {
     expect(result.summary).toContain("CLI not available");
   });
 
-  it("skips unsupported languages", async () => {
-    process.env.SNYK_TOKEN = "token";
-    const vm = makeVmExec([]);
-    const result = await runSnykGate(vm, "python", 60_000, null);
-    expect(result.status).toBe("skipped");
-    expect(result.summary).toContain("not enabled for language");
-  });
-
   it("fails when high severity vulnerabilities are found", async () => {
     process.env.SNYK_TOKEN = "token";
     const vm = makeVmExec([
@@ -61,6 +53,28 @@ describe("runSnykGate", () => {
     const result = await runSnykGate(vm, "typescript", 60_000, null);
     expect(result.status).toBe("fail");
     expect(result.summary).toContain("high severity");
+  });
+
+  it("passes when only low/medium vulnerabilities are found", async () => {
+    process.env.SNYK_TOKEN = "token";
+    const vm = makeVmExec([
+      { exitCode: 0 },
+      {
+        exitCode: 1,
+        stdout: JSON.stringify({
+          vulnerabilities: [{ severity: "medium", id: "x" }, { severity: "low", id: "y" }],
+        }),
+      },
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({ runs: [{ results: [] }] }),
+      },
+    ]);
+
+    const result = await runSnykGate(vm, "python", 60_000, null);
+    expect(result.status).toBe("pass");
+    expect(result.details?.mediumCount).toBe(1);
+    expect(result.details?.lowCount).toBe(1);
   });
 
   it("returns error instead of false pass when scanner exits without JSON", async () => {

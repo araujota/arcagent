@@ -2,6 +2,11 @@ import { Job } from "bullmq";
 import { buildGateSarif, buildBddSarif } from "../lib/sarif";
 import { sanitizeShellArg } from "../lib/shellSanitize";
 import { DiffContext } from "../lib/diffContext";
+import {
+  normalizeSonarOutput,
+  normalizeSnykOutput,
+  SnykSeverityCounts,
+} from "../lib/receiptNormalization";
 import { logger } from "../index";
 import {
   GateResult,
@@ -62,6 +67,20 @@ const LEG_SPECS: LegSpec[] = [
   { key: "regression_no_new_failures", blocking: true },
 ];
 
+const ALWAYS_RUN_LEGS_AFTER_ABORT = new Set<string>([
+  "snyk_no_new_high_critical",
+  "sonarqube_new_code",
+]);
+
+const ADVISORY_LEGS = new Set<string>([
+  "lint_no_new_errors",
+  "typecheck_no_new_errors",
+  "security_no_new_high_critical",
+  "memory",
+  "snyk_no_new_high_critical",
+  "sonarqube_new_code",
+]);
+
 export async function runVerificationLegs(args: RunLegsArgs): Promise<LegRunnerResult> {
   const receipts: ValidationReceipt[] = [];
   const legacyGates: GateResult[] = [];
@@ -79,7 +98,7 @@ export async function runVerificationLegs(args: RunLegsArgs): Promise<LegRunnerR
   for (let i = 0; i < LEG_SPECS.length; i++) {
     const spec = LEG_SPECS[i]!;
 
-    if (abortedByLeg) {
+    if (abortedByLeg && !ALWAYS_RUN_LEGS_AFTER_ABORT.has(spec.key)) {
       const now = Date.now();
       const unreached = makeReceipt({
         args,
@@ -167,15 +186,18 @@ export async function runVerificationLegs(args: RunLegsArgs): Promise<LegRunnerR
           let receiptStatus = mapGateStatus(gate.status);
           let summaryLine = receiptStatus === "pass" ? "PASS" : gate.summary;
           let rawBody = receiptStatus === "pass" ? undefined : extractRawBody(gate);
+          let blocking = receiptStatus === "skipped_policy" ? false : spec.blocking;
+          let processFailureReason = extractAdvisoryProcessFailureReason(spec, gate);
 
-          const candidateCounts = extractHighCriticalCounts(gate);
-          if (candidateCounts) {
-            policy.candidate = candidateCounts;
-          }
+          const candidateCounts = extractSnykSeverityCounts(gate);
+          let introducedCounts = candidateCounts;
+          let baselineCounts: SnykSeverityCounts | undefined;
+          let comparedToBaseline = false;
 
-          if (gate.status === "fail") {
+          if (!processFailureReason && candidateCounts) {
             const baselineCommit = await resolveBaselineCommit(args.vm, args.baseCommitSha, args.candidateCommitSha);
             if (baselineCommit) {
+              policy.baselineCommit = baselineCommit;
               const baseline = await runSnykBaselineComparison({
                 vm: args.vm,
                 language: args.language,
@@ -184,38 +206,89 @@ export async function runVerificationLegs(args: RunLegsArgs): Promise<LegRunnerR
                 candidateCommitSha: args.candidateCommitSha,
                 baselineCommitSha: baselineCommit,
               });
-              policy.baselineCommit = baselineCommit;
-              if (baseline.counts) {
-                policy.baseline = baseline.counts;
-              }
               if (baseline.error) {
-                receiptStatus = "error";
-                summaryLine = "Snyk baseline comparison failed";
+                processFailureReason = "Snyk baseline comparison failed";
+                receiptStatus = "skipped_policy_due_process";
+                summaryLine = processFailureReason;
                 rawBody = baseline.error;
-              } else if (baseline.counts && candidateCounts) {
-                const candidateTotal = candidateCounts.highCount + candidateCounts.criticalCount;
-                const baselineTotal = baseline.counts.highCount + baseline.counts.criticalCount;
-                const delta = candidateTotal - baselineTotal;
-                policy.deltaHighCritical = delta;
-                if (delta <= 0) {
-                  receiptStatus = "pass";
-                  summaryLine = "PASS";
-                  rawBody = undefined;
-                } else {
-                  receiptStatus = "fail";
-                  summaryLine = `Snyk introduced ${delta} new high/critical issue(s)`;
-                }
+                blocking = false;
+              } else if (baseline.counts) {
+                comparedToBaseline = true;
+                baselineCounts = baseline.counts;
+                introducedCounts = {
+                  criticalCount: Math.max(0, candidateCounts.criticalCount - baseline.counts.criticalCount),
+                  highCount: Math.max(0, candidateCounts.highCount - baseline.counts.highCount),
+                  mediumCount: Math.max(0, candidateCounts.mediumCount - baseline.counts.mediumCount),
+                  lowCount: Math.max(0, candidateCounts.lowCount - baseline.counts.lowCount),
+                };
               }
             } else {
+              processFailureReason = "Snyk baseline commit could not be resolved";
+              receiptStatus = "skipped_policy_due_process";
+              summaryLine = processFailureReason;
+              rawBody = processFailureReason;
+              blocking = false;
               policy.baselineReason = "missing_baseline_commit";
             }
           }
+
+          if (!processFailureReason && introducedCounts) {
+            const deltaHighCritical = introducedCounts.highCount + introducedCounts.criticalCount;
+            const deltaMinor = introducedCounts.mediumCount + introducedCounts.lowCount;
+            policy.candidate = candidateCounts;
+            if (baselineCounts) policy.baseline = baselineCounts;
+            policy.deltaCounts = introducedCounts;
+            policy.deltaHighCritical = deltaHighCritical;
+            policy.deltaMinor = deltaMinor;
+
+            if (deltaHighCritical > 0) {
+              receiptStatus = "fail";
+              summaryLine = `Snyk introduced ${deltaHighCritical} new high/critical issue(s)`;
+              blocking = true;
+            } else {
+              receiptStatus = "pass";
+              summaryLine = "PASS";
+              blocking = false;
+              rawBody = undefined;
+            }
+          } else if (processFailureReason) {
+            receiptStatus = "skipped_policy_due_process";
+            blocking = false;
+            policy.processFailureReason = processFailureReason;
+          }
+
+          const snykFindings = extractSnykFindings(gate);
+          const normalized = normalizeSnykOutput({
+            introducedCounts: processFailureReason
+              ? {
+                  criticalCount: 0,
+                  highCount: 0,
+                  mediumCount: 0,
+                  lowCount: 0,
+                }
+              : introducedCounts ?? {
+                  criticalCount: 0,
+                  highCount: 0,
+                  mediumCount: 0,
+                  lowCount: 0,
+                },
+            comparedToBaseline,
+            scaFindings: snykFindings.scaFindings,
+            sastFindings: snykFindings.sastFindings,
+            processFailureReason,
+            summaryLine,
+            issueBudget: 20,
+          });
 
           const legacyStatus = receiptStatusToLegacyGateStatus(receiptStatus);
           legacyGates.push({
             ...gate,
             status: legacyStatus,
             summary: summaryLine,
+            details: {
+              ...(gate.details ?? {}),
+              normalized,
+            },
           });
 
           receipt = makeReceipt({
@@ -226,7 +299,7 @@ export async function runVerificationLegs(args: RunLegsArgs): Promise<LegRunnerR
             startedAt,
             completedAt: Date.now(),
             summaryLine,
-            blocking: receiptStatus === "skipped_policy" ? false : spec.blocking,
+            blocking,
             rawBody,
             sarifJson: buildGateSarif({
               ...gate,
@@ -235,15 +308,60 @@ export async function runVerificationLegs(args: RunLegsArgs): Promise<LegRunnerR
             }),
             policyJson: JSON.stringify(policy),
             metadataJson: safeStringify(gate.details),
+            normalizedJson: JSON.stringify(normalized),
           });
           break;
         }
         case "sonarqube_new_code": {
           const gate = await runSonarQubeGate(args.vm, args.language, vmConfig.defaultGateTimeoutMs, args.diff);
-          legacyGates.push(gate);
-          receipt = gateToReceipt(args, spec, i, gate, startedAt, {
-            mode: "new_code_only",
-            strategy: "sonar_pr_analysis",
+          const processFailureReason = extractAdvisoryProcessFailureReason(spec, gate);
+          let receiptStatus = mapGateStatus(gate.status);
+          let summaryLine = receiptStatus === "pass" ? "PASS" : gate.summary;
+          let rawBody = receiptStatus === "pass" ? undefined : extractRawBody(gate);
+          let blocking = receiptStatus === "skipped_policy" ? false : spec.blocking;
+
+          if (processFailureReason) {
+            receiptStatus = "skipped_policy_due_process";
+            blocking = false;
+            summaryLine = gate.summary;
+            rawBody = extractRawBody(gate);
+          }
+
+          const normalized = normalizeSonarOutput({
+            issues: extractSonarIssues(gate),
+            metrics: extractSonarMetrics(gate),
+            processFailureReason,
+            summaryLine,
+            qualityGateFailed: receiptStatus === "fail",
+            issueBudget: 20,
+          });
+
+          legacyGates.push({
+            ...gate,
+            details: {
+              ...(gate.details ?? {}),
+              normalized,
+            },
+          });
+
+          receipt = makeReceipt({
+            args,
+            spec,
+            orderIndex: i,
+            status: receiptStatus,
+            startedAt,
+            completedAt: Date.now(),
+            summaryLine,
+            rawBody,
+            sarifJson: buildGateSarif(gate),
+            blocking,
+            policyJson: JSON.stringify({
+              mode: "new_code_only",
+              strategy: "sonar_pr_analysis",
+              ...(processFailureReason ? { processFailureReason } : {}),
+            }),
+            metadataJson: safeStringify(gate.details),
+            normalizedJson: JSON.stringify(normalized),
           });
           break;
         }
@@ -410,7 +528,7 @@ export async function runVerificationLegs(args: RunLegsArgs): Promise<LegRunnerR
   if (testReceipt) {
     legacyGates.push({
       gate: "test",
-      status: testReceipt.status === "pass" ? "pass" : testReceipt.status === "warning" ? "error" : testReceipt.status === "skipped_policy" ? "skipped" : testReceipt.status === "unreached" ? "skipped" : testReceipt.status,
+      status: receiptStatusToLegacyGateStatus(testReceipt.status),
       durationMs: testReceipt.durationMs,
       summary: testReceipt.summaryLine,
       details: {
@@ -432,7 +550,21 @@ function gateToReceipt(
   startedAt: number,
   policy?: Record<string, unknown>,
 ): ValidationReceipt {
-  const mappedStatus = mapGateStatus(gate.status);
+  let mappedStatus = mapGateStatus(gate.status);
+  let blocking = mappedStatus === "skipped_policy" ? false : spec.blocking;
+  const processFailureReason = extractAdvisoryProcessFailureReason(spec, gate);
+  if (processFailureReason) {
+    mappedStatus = "skipped_policy_due_process";
+    blocking = false;
+  }
+
+  const effectivePolicy = processFailureReason
+    ? {
+        ...(policy ?? {}),
+        processFailureReason,
+      }
+    : policy;
+
   return makeReceipt({
     args,
     spec,
@@ -443,8 +575,8 @@ function gateToReceipt(
     summaryLine: mappedStatus === "pass" ? "PASS" : gate.summary,
     rawBody: mappedStatus === "pass" ? undefined : extractRawBody(gate),
     sarifJson: buildGateSarif(gate),
-    blocking: mappedStatus === "skipped_policy" ? false : spec.blocking,
-    policyJson: policy ? JSON.stringify(policy) : undefined,
+    blocking,
+    policyJson: effectivePolicy ? JSON.stringify(effectivePolicy) : undefined,
     metadataJson: safeStringify(gate.details),
   });
 }
@@ -463,6 +595,7 @@ function makeReceipt(args: {
   sarifJson?: string;
   policyJson?: string;
   metadataJson?: string;
+  normalizedJson?: string;
 }): ValidationReceipt {
   return {
     verificationId: args.args.job.data.verificationId,
@@ -483,6 +616,7 @@ function makeReceipt(args: {
     sarifJson: args.sarifJson,
     policyJson: args.policyJson,
     metadataJson: args.metadataJson,
+    normalizedJson: args.normalizedJson,
   };
 }
 
@@ -500,14 +634,65 @@ function receiptStatusToLegacyGateStatus(status: ValidationReceipt["status"]): G
   return "skipped";
 }
 
-function extractHighCriticalCounts(gate: GateResult): { highCount: number; criticalCount: number } | undefined {
+function extractSnykSeverityCounts(gate: GateResult): SnykSeverityCounts | undefined {
   const details = gate.details as Record<string, unknown> | undefined;
   if (!details) return undefined;
+  const low = details.lowCount;
+  const medium = details.mediumCount;
   const high = details.highCount;
   const critical = details.criticalCount;
-  if (typeof high === "number" && typeof critical === "number") {
-    return { highCount: high, criticalCount: critical };
+  if (
+    typeof low === "number" &&
+    typeof medium === "number" &&
+    typeof high === "number" &&
+    typeof critical === "number"
+  ) {
+    return {
+      lowCount: low,
+      mediumCount: medium,
+      highCount: high,
+      criticalCount: critical,
+    };
   }
+  return undefined;
+}
+
+function extractSnykFindings(gate: GateResult): {
+  scaFindings: unknown[];
+  sastFindings: unknown[];
+} {
+  const details = gate.details as Record<string, unknown> | undefined;
+  const findings = details?.findings as Record<string, unknown> | undefined;
+  const sca = Array.isArray(findings?.sca) ? findings?.sca : [];
+  const sast = Array.isArray(findings?.sast) ? findings?.sast : [];
+  return { scaFindings: sca, sastFindings: sast };
+}
+
+function extractSonarMetrics(gate: GateResult): Record<string, number> {
+  const details = gate.details as Record<string, unknown> | undefined;
+  const metrics = details?.metrics;
+  if (!metrics || typeof metrics !== "object") return {};
+  const record = metrics as Record<string, unknown>;
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value === "number" && Number.isFinite(value)) out[key] = value;
+  }
+  return out;
+}
+
+function extractSonarIssues(gate: GateResult): Array<Record<string, unknown>> {
+  const details = gate.details as Record<string, unknown> | undefined;
+  const issues = details?.issues;
+  if (!Array.isArray(issues)) return [];
+  return issues.filter((issue): issue is Record<string, unknown> => Boolean(issue) && typeof issue === "object");
+}
+
+function extractAdvisoryProcessFailureReason(spec: LegSpec, gate: GateResult): string | undefined {
+  if (!ADVISORY_LEGS.has(spec.key)) return undefined;
+  if (gate.status === "error") return gate.summary;
+  if (gate.status === "skipped") return gate.summary;
+  const details = gate.details as Record<string, unknown> | undefined;
+  if (details && typeof details.reasonCode === "string") return gate.summary;
   return undefined;
 }
 
@@ -730,7 +915,7 @@ async function runSnykBaselineComparison(args: {
   candidateCommitSha: string;
   baselineCommitSha: string;
 }): Promise<{
-  counts?: { highCount: number; criticalCount: number };
+  counts?: SnykSeverityCounts;
   error?: string;
 }> {
   try {
@@ -740,7 +925,7 @@ async function runSnykBaselineComparison(args: {
     if (baselineGate.status === "error") {
       return { error: baselineGate.summary };
     }
-    const counts = extractHighCriticalCounts(baselineGate);
+    const counts = extractSnykSeverityCounts(baselineGate);
     if (!counts) {
       return { error: "Unable to parse baseline high/critical counts" };
     }

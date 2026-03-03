@@ -102,7 +102,7 @@ export interface ValidationReceipt {
   attemptNumber: number;
   legKey: string;
   orderIndex: number;
-  status: "pass" | "fail" | "error" | "warning" | "unreached" | "skipped_policy";
+  status: "pass" | "fail" | "error" | "warning" | "unreached" | "skipped_policy" | "skipped_policy_due_process";
   blocking: boolean;
   unreachedByLegKey?: string;
   startedAt: number;
@@ -113,6 +113,39 @@ export interface ValidationReceipt {
   sarif?: unknown;
   policy?: unknown;
   metadata?: unknown;
+  normalized?: {
+    tool: "sonarqube" | "snyk";
+    blocking: {
+      isBlocking: boolean;
+      reasonCode: string;
+      reasonText: string;
+      threshold: string;
+      comparedToBaseline: boolean;
+    };
+    counts: {
+      critical: number;
+      high: number;
+      medium: number;
+      low: number;
+      bugs: number;
+      codeSmells: number;
+      complexityDelta: number;
+      introducedTotal: number;
+    };
+    issues: Array<{
+      tool: "sonarqube" | "snyk";
+      category: string;
+      severity: "critical" | "high" | "medium" | "low" | "info";
+      isBlocking: boolean;
+      file?: string;
+      line?: number;
+      rule?: string;
+      message: string;
+      suggestion?: string;
+      introducedOnNewCode: boolean;
+    }>;
+    truncated: boolean;
+  };
 }
 
 /** Agent-facing verification status — all scenarios visible with verbose output. */
