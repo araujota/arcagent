@@ -444,7 +444,7 @@ function evaluateScannerCoverageByImageClass(
 } {
   const requiredImages: string[] = Array.from(
     new Set<string>(getSupportedLanguages().map((language) => getVMConfig(language).rootfsImage)),
-  ).sort();
+  ).sort((a, b) => a.localeCompare(b));
 
   const availableImages = new Set<string>(
     existingImages ?? readdirSync(rootfsDir).filter((entry) => entry.endsWith(".ext4")),
@@ -463,7 +463,7 @@ function resolveEncryptedRootfsSamplePath(): string | null {
   try {
     const mapperEntries = readdirSync("/dev/mapper")
       .filter((entry) => entry.startsWith("fc-crypt-"))
-      .sort();
+      .sort((a, b) => a.localeCompare(b));
     if (mapperEntries.length > 0) {
       return `/dev/mapper/${mapperEntries[0]}`;
     }

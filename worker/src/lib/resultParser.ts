@@ -17,7 +17,7 @@
  * from there.
  */
 export function parseJsonSafe<T = unknown>(raw: string): T | null {
-  if (!raw || !raw.trim()) return null;
+  if (!raw?.trim()) return null;
 
   // Fast path: try direct parse
   try {
@@ -44,7 +44,7 @@ export function parseJsonSafe<T = unknown>(raw: string): T | null {
  * Returns an array of successfully parsed objects; invalid lines are skipped.
  */
 export function parseNdjson<T = unknown>(raw: string): T[] {
-  if (!raw || !raw.trim()) return [];
+  if (!raw?.trim()) return [];
 
   const results: T[] = [];
 
@@ -71,7 +71,7 @@ export function parseNdjson<T = unknown>(raw: string): T[] {
 export function parseCommandOutput(
   output: string,
 ): Record<string, unknown> | undefined {
-  if (!output || !output.trim()) return undefined;
+  if (!output?.trim()) return undefined;
 
   // First, try JSON
   const json = parseJsonSafe<Record<string, unknown>>(output);
@@ -123,62 +123,70 @@ export function extractMetrics(
  * non-JSON content before or after the JSON payload.
  */
 function extractJson(raw: string): string | null {
-  // Find the first { or [
-  const objStart = raw.indexOf("{");
-  const arrStart = raw.indexOf("[");
-
-  let start: number;
-  let closeChar: string;
-
-  if (objStart === -1 && arrStart === -1) return null;
-
-  if (objStart === -1) {
-    start = arrStart;
-    closeChar = "]";
-  } else if (arrStart === -1) {
-    start = objStart;
-    closeChar = "}";
-  } else if (objStart < arrStart) {
-    start = objStart;
-    closeChar = "}";
-  } else {
-    start = arrStart;
-    closeChar = "]";
-  }
-
-  // Find the matching close bracket by tracking nesting
-  const openChar = raw[start]!;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
+  const envelope = findJsonEnvelope(raw);
+  if (!envelope) return null;
+  const { start, openChar, closeChar } = envelope;
+  const state = {
+    depth: 0,
+    inString: false,
+    escaped: false,
+  };
 
   for (let i = start; i < raw.length; i++) {
     const ch = raw[i]!;
-
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-
-    if (inString) continue;
-
-    if (ch === openChar) depth++;
-    if (ch === closeChar) depth--;
-
-    if (depth === 0) {
+    updateJsonParseState(state, ch, openChar, closeChar);
+    if (state.depth === 0) {
       return raw.slice(start, i + 1);
     }
   }
 
   return null;
+}
+
+function findJsonEnvelope(raw: string): {
+  start: number;
+  openChar: "{" | "[";
+  closeChar: "}" | "]";
+} | null {
+  const objStart = raw.indexOf("{");
+  const arrStart = raw.indexOf("[");
+  if (objStart === -1 && arrStart === -1) return null;
+
+  if (objStart === -1 || (arrStart !== -1 && arrStart < objStart)) {
+    return { start: arrStart, openChar: "[", closeChar: "]" };
+  }
+  return { start: objStart, openChar: "{", closeChar: "}" };
+}
+
+function updateJsonParseState(
+  state: { depth: number; inString: boolean; escaped: boolean },
+  ch: string,
+  openChar: "{" | "[",
+  closeChar: "}" | "]",
+): void {
+  if (state.escaped) {
+    state.escaped = false;
+    return;
+  }
+
+  if (ch === "\\") {
+    state.escaped = true;
+    return;
+  }
+
+  if (ch === '"') {
+    state.inString = !state.inString;
+    return;
+  }
+
+  if (state.inString) {
+    return;
+  }
+
+  if (ch === openChar) {
+    state.depth += 1;
+  }
+  if (ch === closeChar) {
+    state.depth -= 1;
+  }
 }

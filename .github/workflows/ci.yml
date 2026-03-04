@@ -1,12 +1,45 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
-    branches: [main]
+    branches: ["**"]
 
 jobs:
+  pre-push-security-gates:
+    name: Pre-push Security Gates (Snyk + SonarQube)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      SNYK_ORG: ${{ vars.SNYK_ORG }}
+      SONARQUBE_URL: ${{ secrets.SONARQUBE_URL }}
+      SONARQUBE_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+      SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY || github.repository }}
+      SONAR_PROJECT_NAME: ${{ vars.SONAR_PROJECT_NAME || github.repository }}
+      SONAR_BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Run Snyk Scan (blocking)
+        run: bash scripts/ci/run-snyk-scan.sh
+      - name: Run SonarQube Scan (blocking)
+        run: bash scripts/ci/run-sonarqube-scan.sh
+      - name: Upload Security Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scan-artifacts
+          path: .artifacts/security/
+          retention-days: 7
+
   typecheck:
+    needs: pre-push-security-gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +56,7 @@ jobs:
       - run: cd mcp-server && npx tsc --noEmit
 
   lint:
+    needs: pre-push-security-gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +69,7 @@ jobs:
       - run: npm run lint
 
   test-convex-and-frontend:
+    needs: pre-push-security-gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +85,7 @@ jobs:
           path: coverage/
 
   test-worker:
+    needs: pre-push-security-gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +100,7 @@ jobs:
           path: worker/coverage/
 
   test-mcp:
+    needs: pre-push-security-gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +116,7 @@ jobs:
           path: mcp-server/coverage/
 
   release-readiness-mcp:
+    needs: pre-push-security-gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

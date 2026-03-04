@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { timingSafeEqual as cryptoTimingSafeEqual, createHmac } from "node:crypto";
+import { timingSafeEqual as cryptoTimingSafeEqual, createHash, createHmac } from "node:crypto";
 import { logger } from "../index";
 
 const WORKSPACE_AGENT_TOKEN_AUDIENCE = "arcagent-worker-workspace";
@@ -136,7 +136,7 @@ export function authMiddleware(
  * mismatch.
  */
 function timingSafeEqual(a: string, b: string): boolean {
-  const hmacA = createHmac("sha256", "constant-time-compare").update(a).digest();
-  const hmacB = createHmac("sha256", "constant-time-compare").update(b).digest();
-  return cryptoTimingSafeEqual(hmacA, hmacB);
+  const digestA = createHash("sha256").update(a).digest();
+  const digestB = createHash("sha256").update(b).digest();
+  return cryptoTimingSafeEqual(digestA, digestB);
 }

@@ -121,6 +121,85 @@ const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 1_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 
+function requireSharedSecret(): string {
+  const secret = process.env.WORKER_SHARED_SECRET;
+  if (!secret) {
+    throw new Error("WORKER_SHARED_SECRET must be configured");
+  }
+  return secret;
+}
+
+function assertResultPayloadReady(payload: ConvexResultPayload): void {
+  if (!payload.jobHmac) {
+    throw new Error("Missing jobHmac in verification result payload");
+  }
+}
+
+function shouldTreatStatusAsClientError(status: number): boolean {
+  return status >= 400 && status < 500;
+}
+
+function isClientHttpError(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith("Convex HTTP 4");
+}
+
+function applyResultCallbackEnvelope(
+  payload: ConvexResultPayload,
+  secret: string,
+): void {
+  const callbackEnvelope = buildWorkerCallbackEnvelope({
+    secret,
+    submissionId: payload.submissionId,
+    bountyId: payload.bountyId,
+    jobId: payload.jobId,
+    overallStatus: payload.overallStatus,
+    jobHmac: payload.jobHmac!,
+  });
+  payload.callbackTimestampMs = callbackEnvelope.callbackTimestampMs;
+  payload.callbackNonce = callbackEnvelope.callbackNonce;
+  payload.callbackSignature = callbackEnvelope.callbackSignature;
+}
+
+async function throwConvexClientError(
+  response: Response,
+  jobId: string,
+): Promise<never> {
+  const body = await response.text().catch(() => "");
+  logger.error("Convex returned client error (not retrying)", {
+    jobId,
+    status: response.status,
+    body: body.slice(0, 500),
+  });
+  throw new Error(`Convex HTTP ${response.status}: ${body.slice(0, 200)}`);
+}
+
+async function postResultAttempt(
+  url: string,
+  payload: ConvexResultPayload,
+  secret: string,
+  jobId: string,
+  attempt: number,
+): Promise<void> {
+  applyResultCallbackEnvelope(payload, secret);
+  const response = await postJson(url, payload, secret);
+  if (response.ok) {
+    logger.info("Successfully posted result to Convex", {
+      jobId,
+      status: response.status,
+    });
+    return;
+  }
+  if (shouldTreatStatusAsClientError(response.status)) {
+    await throwConvexClientError(response, jobId);
+  }
+  logger.warn("Convex returned server error", {
+    jobId,
+    status: response.status,
+    attempt,
+  });
+  throw new Error(`Convex HTTP ${response.status}: retryable server error`);
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -180,64 +259,15 @@ export async function postVerificationResult(
     steps: result.steps,
     jobHmac: result.jobHmac,
   };
-
-  const secret = process.env.WORKER_SHARED_SECRET;
-
-  if (!payload.jobHmac) {
-    throw new Error("Missing jobHmac in verification result payload");
-  }
-  if (!secret) {
-    throw new Error("WORKER_SHARED_SECRET must be configured");
-  }
+  assertResultPayloadReady(payload);
+  const secret = requireSharedSecret();
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const callbackEnvelope = buildWorkerCallbackEnvelope({
-        secret,
-        submissionId: payload.submissionId,
-        bountyId: payload.bountyId,
-        jobId: payload.jobId,
-        overallStatus: payload.overallStatus,
-        jobHmac: payload.jobHmac,
-      });
-      payload.callbackTimestampMs = callbackEnvelope.callbackTimestampMs;
-      payload.callbackNonce = callbackEnvelope.callbackNonce;
-      payload.callbackSignature = callbackEnvelope.callbackSignature;
-
-      const response = await postJson(url, payload, secret);
-
-      if (response.ok) {
-        logger.info("Successfully posted result to Convex", {
-          jobId: result.jobId,
-          status: response.status,
-        });
-        return;
-      }
-
-      // Non-retryable client errors
-      if (response.status >= 400 && response.status < 500) {
-        const body = await response.text().catch(() => "");
-        logger.error("Convex returned client error (not retrying)", {
-          jobId: result.jobId,
-          status: response.status,
-          body: body.slice(0, 500),
-        });
-        throw new Error(
-          `Convex HTTP ${response.status}: ${body.slice(0, 200)}`,
-        );
-      }
-
-      // Server errors are retryable
-      logger.warn("Convex returned server error", {
-        jobId: result.jobId,
-        status: response.status,
-        attempt,
-      });
+      await postResultAttempt(url, payload, secret, result.jobId, attempt);
+      return;
     } catch (err) {
-      if (
-        err instanceof Error &&
-        err.message.startsWith("Convex HTTP 4")
-      ) {
+      if (isClientHttpError(err)) {
         throw err; // Don't retry client errors
       }
 

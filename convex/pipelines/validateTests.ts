@@ -39,6 +39,8 @@ const MIN_PUBLIC_SCENARIOS = 8;
 const MIN_HIDDEN_SCENARIOS = 8;
 const MIN_LLM_SCORE = 7;
 
+type GherkinValidation = ReturnType<typeof validateGherkin>;
+
 function countRegexMatches(content: string, pattern: RegExp): number {
   return (content.match(pattern) ?? []).length;
 }
@@ -65,6 +67,94 @@ function hasExamplesTableWithMinRows(content: string, minRows: number): boolean 
   return false;
 }
 
+function appendValidationErrors(
+  label: "Public" | "Hidden",
+  validation: GherkinValidation,
+  issues: string[],
+): void {
+  if (validation.valid) return;
+  for (const error of validation.errors) {
+    issues.push(`${label} Gherkin line ${error.line}: ${error.message}`);
+  }
+}
+
+function appendValidationWarnings(
+  validations: GherkinValidation[],
+  warnings: string[],
+): void {
+  for (const warning of validations.flatMap((validation) => validation.warnings)) {
+    warnings.push(`Line ${warning.line}: ${warning.message}`);
+  }
+}
+
+function appendScenarioCountIssues(
+  publicScenarioCount: number,
+  hiddenScenarioCount: number,
+  issues: string[],
+): void {
+  if (publicScenarioCount < MIN_PUBLIC_SCENARIOS) {
+    issues.push(
+      `Public Gherkin has ${publicScenarioCount} scenarios; minimum is ${MIN_PUBLIC_SCENARIOS}`
+    );
+  }
+  if (hiddenScenarioCount < MIN_HIDDEN_SCENARIOS) {
+    issues.push(
+      `Hidden Gherkin has ${hiddenScenarioCount} scenarios; minimum is ${MIN_HIDDEN_SCENARIOS}`
+    );
+  }
+}
+
+function evaluateOutlineQuality(
+  gherkinPublic: string,
+  gherkinHidden: string,
+  issues: string[],
+): { outlineCount: number; hasOutlineExamplesWithMinRows: boolean } {
+  const outlineCount =
+    countRegexMatches(gherkinPublic, /^\s*Scenario Outline:\s+/gim) +
+    countRegexMatches(gherkinHidden, /^\s*Scenario Outline:\s+/gim);
+  if (outlineCount < 2) {
+    issues.push("At least 2 Scenario Outline cases are required across public+hidden tests");
+  }
+
+  const hasOutlineExamplesWithMinRows = hasExamplesTableWithMinRows(
+    `${gherkinPublic}\n${gherkinHidden}`,
+    4
+  );
+  if (!hasOutlineExamplesWithMinRows) {
+    issues.push("At least one Examples table must contain 4 or more data rows");
+  }
+
+  return { outlineCount, hasOutlineExamplesWithMinRows };
+}
+
+function evaluateTagCoverage(
+  gherkinPublic: string,
+  gherkinHidden: string,
+  issues: string[],
+): { hasPublicTagCoverage: boolean; hasHiddenTagCoverage: boolean } {
+  const hasPublicTagCoverage = hasRequiredTags(gherkinPublic, [
+    "@public",
+    "@happy-path",
+    "@validation",
+    "@error",
+  ]);
+  if (!hasPublicTagCoverage) {
+    issues.push("Public tests must include tags: @public, @happy-path, @validation, @error");
+  }
+
+  const hasHiddenTagCoverage = hasRequiredTags(gherkinHidden, [
+    "@hidden",
+    "@boundary",
+    "@security",
+    "@anti-gaming",
+  ]);
+  if (!hasHiddenTagCoverage) {
+    issues.push("Hidden tests must include tags: @hidden, @boundary, @security, @anti-gaming");
+  }
+
+  return { hasPublicTagCoverage, hasHiddenTagCoverage };
+}
+
 /**
  * Run static (non-LLM) validation on generated Gherkin + step definitions.
  */
@@ -78,24 +168,9 @@ export function runStaticValidation(
   const publicValidation = validateGherkin(args.gherkinPublic);
   const hiddenValidation = validateGherkin(args.gherkinHidden);
 
-  if (!publicValidation.valid) {
-    for (const error of publicValidation.errors) {
-      issues.push(`Public Gherkin line ${error.line}: ${error.message}`);
-    }
-  }
-
-  if (!hiddenValidation.valid) {
-    for (const error of hiddenValidation.errors) {
-      issues.push(`Hidden Gherkin line ${error.line}: ${error.message}`);
-    }
-  }
-
-  for (const warning of [
-    ...publicValidation.warnings,
-    ...hiddenValidation.warnings,
-  ]) {
-    warnings.push(`Line ${warning.line}: ${warning.message}`);
-  }
+  appendValidationErrors("Public", publicValidation, issues);
+  appendValidationErrors("Hidden", hiddenValidation, issues);
+  appendValidationWarnings([publicValidation, hiddenValidation], warnings);
 
   // 2. Check scenario inventory
   const publicScenarios = extractScenarioNames(args.gherkinPublic);
@@ -129,60 +204,26 @@ export function runStaticValidation(
   issues.push(...stepCoverage.issues);
   warnings.push(...stepCoverage.warnings);
 
-  if (publicScenarios.length < MIN_PUBLIC_SCENARIOS) {
-    issues.push(
-      `Public Gherkin has ${publicScenarios.length} scenarios; minimum is ${MIN_PUBLIC_SCENARIOS}`
-    );
-  }
-  if (hiddenScenarios.length < MIN_HIDDEN_SCENARIOS) {
-    issues.push(
-      `Hidden Gherkin has ${hiddenScenarios.length} scenarios; minimum is ${MIN_HIDDEN_SCENARIOS}`
-    );
-  }
-
-  const outlineCount =
-    countRegexMatches(args.gherkinPublic, /^\s*Scenario Outline:\s+/gim) +
-    countRegexMatches(args.gherkinHidden, /^\s*Scenario Outline:\s+/gim);
-  if (outlineCount < 2) {
-    issues.push("At least 2 Scenario Outline cases are required across public+hidden tests");
-  }
-
-  const hasOutlineExamplesWithMinRows = hasExamplesTableWithMinRows(
-    `${args.gherkinPublic}\n${args.gherkinHidden}`,
-    4
+  appendScenarioCountIssues(publicScenarios.length, hiddenScenarios.length, issues);
+  const outlineQuality = evaluateOutlineQuality(
+    args.gherkinPublic,
+    args.gherkinHidden,
+    issues,
   );
-  if (!hasOutlineExamplesWithMinRows) {
-    issues.push("At least one Examples table must contain 4 or more data rows");
-  }
-
-  const hasPublicTagCoverage = hasRequiredTags(args.gherkinPublic, [
-    "@public",
-    "@happy-path",
-    "@validation",
-    "@error",
-  ]);
-  if (!hasPublicTagCoverage) {
-    issues.push("Public tests must include tags: @public, @happy-path, @validation, @error");
-  }
-
-  const hasHiddenTagCoverage = hasRequiredTags(args.gherkinHidden, [
-    "@hidden",
-    "@boundary",
-    "@security",
-    "@anti-gaming",
-  ]);
-  if (!hasHiddenTagCoverage) {
-    issues.push("Hidden tests must include tags: @hidden, @boundary, @security, @anti-gaming");
-  }
+  const tagCoverage = evaluateTagCoverage(
+    args.gherkinPublic,
+    args.gherkinHidden,
+    issues,
+  );
 
   return {
     issues,
     warnings,
     quality: {
-      hasPublicTagCoverage,
-      hasHiddenTagCoverage,
-      outlineCount,
-      hasOutlineExamplesWithMinRows,
+      hasPublicTagCoverage: tagCoverage.hasPublicTagCoverage,
+      hasHiddenTagCoverage: tagCoverage.hasHiddenTagCoverage,
+      outlineCount: outlineQuality.outlineCount,
+      hasOutlineExamplesWithMinRows: outlineQuality.hasOutlineExamplesWithMinRows,
     },
     stats: {
       publicScenarios: publicScenarios.length,

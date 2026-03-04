@@ -1,6 +1,38 @@
 import { WorkItem, WorkProviderConfig } from "./types";
 import { htmlToMarkdown } from "../htmlToMarkdown";
 
+type AsanaTaskField = {
+  name?: string;
+  number_value?: number | null;
+};
+
+function ensureAsanaSuccess(response: Response, taskGid: string): void {
+  if (response.ok) return;
+  if (response.status === 404) throw new Error(`Task not found: ${taskGid}`);
+  if (response.status === 401) throw new Error("Invalid Asana token");
+  throw new Error(`Asana API error: ${response.status} ${response.statusText}`);
+}
+
+function extractAsanaDescription(task: Record<string, any>): string {
+  if (task.html_notes) {
+    return htmlToMarkdown(task.html_notes);
+  }
+  return task.notes ?? "";
+}
+
+function extractAsanaEstimate(fields: AsanaTaskField[] | undefined): number | undefined {
+  if (!fields) return undefined;
+  for (const field of fields) {
+    const name = (field.name ?? "").toLowerCase();
+    const isEstimateField = name.includes("story points") || name.includes("estimate") || name.includes("points");
+    if (!isEstimateField) continue;
+    if (field.number_value !== null && field.number_value !== undefined) {
+      return field.number_value;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Fetch an Asana task by GID (numeric ID).
  * Auth: Bearer token (PAT).
@@ -22,44 +54,19 @@ export async function fetchAsanaTask(
     }
   );
 
-  if (!response.ok) {
-    if (response.status === 404) throw new Error(`Task not found: ${taskGid}`);
-    if (response.status === 401) throw new Error("Invalid Asana token");
-    throw new Error(`Asana API error: ${response.status} ${response.statusText}`);
-  }
+  ensureAsanaSuccess(response, taskGid);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const result = await response.json() as Record<string, any>;
   const task = result.data;
 
-  // Prefer html_notes → Markdown, fallback to plain text notes
-  let description = "";
-  if (task.html_notes) {
-    description = htmlToMarkdown(task.html_notes);
-  } else if (task.notes) {
-    description = task.notes;
-  }
+  const description = extractAsanaDescription(task);
 
   // Extract labels from tags
   const labels = (task.tags || []).map((t: { name: string }) => t.name);
 
   // Extract story points from custom fields
-  let estimate: number | undefined;
-  if (task.custom_fields) {
-    for (const field of task.custom_fields) {
-      const name = (field.name || "").toLowerCase();
-      if (
-        name.includes("story points") ||
-        name.includes("estimate") ||
-        name.includes("points")
-      ) {
-        if (field.number_value !== null && field.number_value !== undefined) {
-          estimate = field.number_value;
-          break;
-        }
-      }
-    }
-  }
+  const estimate = extractAsanaEstimate(task.custom_fields as AsanaTaskField[] | undefined);
 
   return {
     externalId: taskGid,

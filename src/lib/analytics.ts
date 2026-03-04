@@ -24,17 +24,15 @@ export function useProductAnalytics() {
         typeof window !== "undefined" ? window.location.pathname + window.location.search : undefined;
 
       try {
-        const result = trackEventMutation({
-          eventName,
-          path,
-          detailsJson: details ? JSON.stringify(details) : undefined,
+        void Promise.resolve(
+          trackEventMutation({
+            eventName,
+            path,
+            detailsJson: details ? JSON.stringify(details) : undefined,
+          })
+        ).catch(() => {
+          // Do not block product interactions on analytics failures.
         });
-
-        if (result && typeof (result as PromiseLike<unknown>).then === "function") {
-          void (result as Promise<unknown>).catch(() => {
-            // Do not block product interactions on analytics failures.
-          });
-        }
       } catch {
         // Do not block product interactions on analytics failures.
       }

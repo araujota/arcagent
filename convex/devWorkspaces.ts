@@ -5,6 +5,72 @@ import { fetchWithRetry } from "./lib/httpRetry";
 import { requiresCloneAuthToken, resolveRepoAuth } from "./lib/repoAuth";
 import { detectProvider } from "./lib/repoProviders";
 
+type WorkspaceRepoConnection = {
+  _id: string;
+  githubInstallationId?: number;
+  githubInstallationAccountLogin?: string;
+} | null;
+
+type WorkspaceBounty = {
+  creatorId: string;
+} | null;
+
+type WorkspaceDispatchContext = {
+  runMutation: (mutation: unknown, args: Record<string, unknown>) => Promise<unknown>;
+  runQuery: (query: unknown, args: Record<string, unknown>) => Promise<unknown>;
+};
+
+function formatWorkspaceAuthError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function resolveWorkspaceRepoAuth(params: {
+  ctx: WorkspaceDispatchContext;
+  repositoryUrl: string;
+  repoConnection: WorkspaceRepoConnection;
+  bounty: WorkspaceBounty;
+}): Promise<{ repoAuthToken?: string; repoAuthUsername?: string }> {
+  const providerName = detectProvider(params.repositoryUrl);
+  const providerAuthConnection =
+    providerName && providerName !== "github" && params.bounty
+      ? await params.ctx.runQuery(internal.providerConnections.getActiveAuthByUserAndProviderInternal, {
+          userId: params.bounty.creatorId,
+          provider: providerName,
+        }) as { accessToken?: string } | null
+      : null;
+
+  try {
+    const repoAuthResult = await resolveRepoAuth({
+      repositoryUrl: params.repositoryUrl,
+      preferredGitHubInstallationId: params.repoConnection?.githubInstallationId,
+      writeAccess: false,
+      providerToken: providerAuthConnection?.accessToken,
+    });
+    if (
+      params.repoConnection &&
+      repoAuthResult?.installationId &&
+      (repoAuthResult.installationId !== params.repoConnection.githubInstallationId ||
+        repoAuthResult.accountLogin !== params.repoConnection.githubInstallationAccountLogin)
+    ) {
+      await params.ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
+        repoConnectionId: params.repoConnection._id,
+        githubInstallationId: repoAuthResult.installationId,
+        githubInstallationAccountLogin: repoAuthResult.accountLogin,
+      });
+    }
+
+    return {
+      repoAuthToken: repoAuthResult?.repoAuthToken,
+      repoAuthUsername: repoAuthResult?.repoAuthUsername,
+    };
+  } catch (error) {
+    console.error(
+      `[devWorkspaces] Failed to resolve repository auth token: ${formatWorkspaceAuthError(error)}`,
+    );
+    return {};
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Mutations
 // ---------------------------------------------------------------------------
@@ -213,44 +279,12 @@ export const provisionWorkspace = internalAction({
       const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
         bountyId: args.bountyId,
       });
-      const providerName = detectProvider(args.repositoryUrl);
-      const providerAuthConnection =
-        providerName && providerName !== "github" && bounty
-          ? await ctx.runQuery(internal.providerConnections.getActiveAuthByUserAndProviderInternal, {
-              userId: bounty.creatorId,
-              provider: providerName,
-            })
-          : null;
-      let repoAuthToken: string | undefined;
-      let repoAuthUsername: string | undefined;
-      try {
-        const repoAuthResult = await resolveRepoAuth({
-          repositoryUrl: args.repositoryUrl,
-          preferredGitHubInstallationId: repoConnection?.githubInstallationId,
-          writeAccess: false,
-          providerToken: providerAuthConnection?.accessToken,
-        });
-        repoAuthToken = repoAuthResult?.repoAuthToken;
-        repoAuthUsername = repoAuthResult?.repoAuthUsername;
-        if (
-          repoConnection &&
-          repoAuthResult?.installationId &&
-          (repoAuthResult.installationId !== repoConnection.githubInstallationId ||
-            repoAuthResult.accountLogin !== repoConnection.githubInstallationAccountLogin)
-        ) {
-          await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
-            repoConnectionId: repoConnection._id,
-            githubInstallationId: repoAuthResult.installationId,
-            githubInstallationAccountLogin: repoAuthResult.accountLogin,
-          });
-        }
-      } catch (err) {
-        console.error(
-          `[devWorkspaces] Failed to resolve repository auth token: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      }
+      const { repoAuthToken, repoAuthUsername } = await resolveWorkspaceRepoAuth({
+        ctx,
+        repositoryUrl: args.repositoryUrl,
+        repoConnection,
+        bounty,
+      });
 
       if (requiresCloneAuthToken(args.repositoryUrl) && !repoAuthToken) {
         throw new Error(
@@ -371,7 +405,7 @@ export const cleanupOrphaned = internalMutation({
       const claim = await ctx.db.get(ws.claimId);
 
       // Destroy if claim is gone, expired, released, or completed
-      if (!claim || claim.status !== "active") {
+      if (claim?.status !== "active") {
         await ctx.scheduler.runAfter(0, internal.devWorkspaces.destroyWorkspace, {
           workspaceDocId: ws._id,
           workspaceId: ws.workspaceId,

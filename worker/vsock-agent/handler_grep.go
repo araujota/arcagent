@@ -9,6 +9,205 @@ import (
 )
 
 const defaultGrepMaxResults = 200
+const grepOutputModeContent = "content"
+
+type rgMessage struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+}
+
+type rgMatchData struct {
+	Path struct {
+		Text string `json:"text"`
+	} `json:"path"`
+	Lines struct {
+		Text string `json:"text"`
+	} `json:"lines"`
+	LineNumber int `json:"line_number"`
+}
+
+type rgContextData struct {
+	Path struct {
+		Text string `json:"text"`
+	} `json:"path"`
+	Lines struct {
+		Text string `json:"text"`
+	} `json:"lines"`
+	LineNumber int `json:"line_number"`
+}
+
+type grepAccumulator struct {
+	outputMode      string
+	maxResults      int
+	matches         []GrepMatch
+	fileMatchCounts map[string]int
+	filesWithMatch  map[string]bool
+	totalMatches    int
+	pending         *GrepMatch
+	lastMatchFile   string
+	lastMatchLine   int
+}
+
+func newGrepAccumulator(outputMode string, maxResults int) *grepAccumulator {
+	return &grepAccumulator{
+		outputMode:      outputMode,
+		maxResults:      maxResults,
+		fileMatchCounts: make(map[string]int),
+		filesWithMatch:  make(map[string]bool),
+	}
+}
+
+func normalizeGrepOutputMode(outputMode string) string {
+	if outputMode == "" {
+		return grepOutputModeContent
+	}
+	return outputMode
+}
+
+func normalizeGrepMaxResults(maxResults int) int {
+	if maxResults <= 0 {
+		return defaultGrepMaxResults
+	}
+	return maxResults
+}
+
+func buildRipgrepArgs(req *Request, safePath string) []string {
+	args := []string{"--json"}
+	if req.CaseSensitive != nil && !*req.CaseSensitive {
+		args = append(args, "-i")
+	}
+	if req.ContextLines > 0 {
+		args = append(args, "-C", strconv.Itoa(req.ContextLines))
+	}
+	if req.Glob != "" {
+		args = append(args, "--glob", req.Glob)
+	}
+	return append(args, "--", req.Pattern, safePath)
+}
+
+func (acc *grepAccumulator) flushPending() {
+	if acc.pending == nil || len(acc.matches) >= acc.maxResults {
+		return
+	}
+	acc.matches = append(acc.matches, *acc.pending)
+	acc.pending = nil
+}
+
+func (acc *grepAccumulator) shouldCaptureContent() bool {
+	return acc.outputMode == grepOutputModeContent && len(acc.matches) < acc.maxResults
+}
+
+func (acc *grepAccumulator) handleMatch(m rgMatchData) {
+	acc.totalMatches++
+	filePath := m.Path.Text
+	acc.filesWithMatch[filePath] = true
+	acc.fileMatchCounts[filePath]++
+	if !acc.shouldCaptureContent() {
+		return
+	}
+	acc.flushPending()
+	lineText := strings.TrimRight(m.Lines.Text, "\n\r")
+	acc.pending = &GrepMatch{
+		File: filePath,
+		Line: m.LineNumber,
+		Text: lineText,
+	}
+	acc.lastMatchFile = filePath
+	acc.lastMatchLine = m.LineNumber
+}
+
+func (acc *grepAccumulator) handleContext(c rgContextData) {
+	if acc.outputMode != grepOutputModeContent || acc.pending == nil {
+		return
+	}
+	if c.Path.Text != acc.lastMatchFile {
+		return
+	}
+	lineText := strings.TrimRight(c.Lines.Text, "\n\r")
+	if c.LineNumber < acc.lastMatchLine {
+		acc.pending.ContextBefore = append(acc.pending.ContextBefore, lineText)
+		return
+	}
+	acc.pending.ContextAfter = append(acc.pending.ContextAfter, lineText)
+}
+
+func (acc *grepAccumulator) processMessage(message rgMessage) {
+	switch message.Type {
+	case "match":
+		var match rgMatchData
+		if err := json.Unmarshal(message.Data, &match); err == nil {
+			acc.handleMatch(match)
+		}
+	case "context":
+		var context rgContextData
+		if err := json.Unmarshal(message.Data, &context); err == nil {
+			acc.handleContext(context)
+		}
+	case "summary":
+		acc.flushPending()
+	}
+}
+
+func parseRipgrepOutput(scanner *bufio.Scanner, acc *grepAccumulator) {
+	for scanner.Scan() {
+		var message rgMessage
+		if err := json.Unmarshal(scanner.Bytes(), &message); err != nil {
+			continue
+		}
+		acc.processMessage(message)
+	}
+	acc.flushPending()
+}
+
+func buildFilesWithMatchesResponse(acc *grepAccumulator, truncated bool) *Response {
+	files := make([]string, 0, len(acc.filesWithMatch))
+	for filePath := range acc.filesWithMatch {
+		files = append(files, filePath)
+	}
+	return &Response{
+		Type:         "file_result",
+		Files:        files,
+		TotalMatches: intPtr(acc.totalMatches),
+		Truncated:    boolPtr(truncated),
+	}
+}
+
+func buildCountResponse(acc *grepAccumulator, truncated bool) *Response {
+	countMatches := make([]GrepMatch, 0, len(acc.fileMatchCounts))
+	for filePath, count := range acc.fileMatchCounts {
+		countMatches = append(countMatches, GrepMatch{
+			File: filePath,
+			Text: strconv.Itoa(count),
+		})
+	}
+	return &Response{
+		Type:         "file_result",
+		Matches:      countMatches,
+		TotalMatches: intPtr(acc.totalMatches),
+		Truncated:    boolPtr(truncated),
+	}
+}
+
+func buildContentResponse(acc *grepAccumulator, truncated bool) *Response {
+	return &Response{
+		Type:         "file_result",
+		Matches:      acc.matches,
+		TotalMatches: intPtr(acc.totalMatches),
+		Truncated:    boolPtr(truncated),
+	}
+}
+
+func buildGrepResponse(acc *grepAccumulator) *Response {
+	truncated := acc.totalMatches > acc.maxResults
+	switch acc.outputMode {
+	case "files_with_matches":
+		return buildFilesWithMatchesResponse(acc, truncated)
+	case "count":
+		return buildCountResponse(acc, truncated)
+	default:
+		return buildContentResponse(acc, truncated)
+	}
+}
 
 // handleFileGrep handles "file_grep" requests: ripgrep-powered search.
 // Shells out to `rg --json` and parses the structured output.
@@ -31,36 +230,9 @@ func handleFileGrep(req *Request) *Response {
 		}
 	}
 
-	maxResults := req.MaxResults
-	if maxResults <= 0 {
-		maxResults = defaultGrepMaxResults
-	}
-
-	outputMode := req.OutputMode
-	if outputMode == "" {
-		outputMode = "content"
-	}
-
-	// Build rg command arguments.
-	args := []string{"--json"}
-
-	// Case sensitivity: default is case-sensitive.
-	if req.CaseSensitive != nil && !*req.CaseSensitive {
-		args = append(args, "-i")
-	}
-
-	// Context lines.
-	if req.ContextLines > 0 {
-		args = append(args, "-C", strconv.Itoa(req.ContextLines))
-	}
-
-	// File glob filter.
-	if req.Glob != "" {
-		args = append(args, "--glob", req.Glob)
-	}
-
-	// The search pattern and path.
-	args = append(args, "--", req.Pattern, safePath)
+	maxResults := normalizeGrepMaxResults(req.MaxResults)
+	outputMode := normalizeGrepOutputMode(req.OutputMode)
+	args := buildRipgrepArgs(req, safePath)
 
 	cmd := exec.Command("rg", args...)
 	cmd.Dir = workspaceRoot
@@ -81,171 +253,10 @@ func handleFileGrep(req *Request) *Response {
 		}
 	}
 
-	// Parse rg --json output line by line.
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB line buffer
-
-	type rgMessage struct {
-		Type string          `json:"type"`
-		Data json.RawMessage `json:"data"`
-	}
-
-	type rgMatch struct {
-		Path struct {
-			Text string `json:"text"`
-		} `json:"path"`
-		Lines struct {
-			Text string `json:"text"`
-		} `json:"lines"`
-		LineNumber    int `json:"line_number"`
-		AbsoluteOffset int `json:"absolute_offset"`
-	}
-
-	type rgContext struct {
-		Path struct {
-			Text string `json:"text"`
-		} `json:"path"`
-		Lines struct {
-			Text string `json:"text"`
-		} `json:"lines"`
-		LineNumber int `json:"line_number"`
-	}
-
-	type rgSummary struct {
-		Stats struct {
-			Matched int `json:"matched_lines"`
-		} `json:"stats"`
-	}
-
-	// For "content" mode, accumulate matches with context.
-	// For "files_with_matches", collect unique files.
-	// For "count", count matches per file.
-	var matches []GrepMatch
-	fileMatchCounts := make(map[string]int)
-	filesWithMatches := make(map[string]bool)
-	totalMatches := 0
-
-	// Context accumulation: group context lines with their match.
-	type pendingMatch struct {
-		match         GrepMatch
-		contextBefore []string
-	}
-	var pending *pendingMatch
-	var lastMatchFile string
-	var lastMatchLine int
-
-	flushPending := func() {
-		if pending != nil && len(matches) < maxResults {
-			matches = append(matches, pending.match)
-			pending = nil
-		}
-	}
-
-	for scanner.Scan() {
-		var msg rgMessage
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			continue
-		}
-
-		switch msg.Type {
-		case "match":
-			var m rgMatch
-			if err := json.Unmarshal(msg.Data, &m); err != nil {
-				continue
-			}
-
-			totalMatches++
-			filePath := m.Path.Text
-			filesWithMatches[filePath] = true
-			fileMatchCounts[filePath]++
-
-			if outputMode == "content" && len(matches) < maxResults {
-				// Flush any previous pending match.
-				flushPending()
-
-				lineText := strings.TrimRight(m.Lines.Text, "\n\r")
-				pending = &pendingMatch{
-					match: GrepMatch{
-						File: filePath,
-						Line: m.LineNumber,
-						Text: lineText,
-					},
-				}
-				lastMatchFile = filePath
-				lastMatchLine = m.LineNumber
-			}
-
-		case "context":
-			if outputMode != "content" || pending == nil {
-				continue
-			}
-
-			var c rgContext
-			if err := json.Unmarshal(msg.Data, &c); err != nil {
-				continue
-			}
-
-			lineText := strings.TrimRight(c.Lines.Text, "\n\r")
-
-			if c.Path.Text == lastMatchFile {
-				if c.LineNumber < lastMatchLine {
-					// Before context.
-					pending.match.ContextBefore = append(pending.match.ContextBefore, lineText)
-				} else {
-					// After context.
-					pending.match.ContextAfter = append(pending.match.ContextAfter, lineText)
-				}
-			}
-
-		case "summary":
-			// Flush any final pending match.
-			flushPending()
-		}
-	}
-
-	// Flush final pending match if summary wasn't emitted.
-	flushPending()
-
-	// Wait for rg to finish (exit code 1 = no matches, which is fine).
+	acc := newGrepAccumulator(outputMode, maxResults)
+	parseRipgrepOutput(scanner, acc)
 	_ = cmd.Wait()
-
-	truncated := totalMatches > maxResults
-
-	switch outputMode {
-	case "files_with_matches":
-		files := make([]string, 0, len(filesWithMatches))
-		for f := range filesWithMatches {
-			files = append(files, f)
-		}
-		return &Response{
-			Type:         "file_result",
-			Files:        files,
-			TotalMatches: intPtr(totalMatches),
-			Truncated:    boolPtr(truncated),
-		}
-
-	case "count":
-		// Return matches as file + count entries.
-		countMatches := make([]GrepMatch, 0, len(fileMatchCounts))
-		for file, count := range fileMatchCounts {
-			countMatches = append(countMatches, GrepMatch{
-				File: file,
-				Text: strconv.Itoa(count),
-			})
-		}
-		return &Response{
-			Type:         "file_result",
-			Matches:      countMatches,
-			TotalMatches: intPtr(totalMatches),
-			Truncated:    boolPtr(truncated),
-		}
-
-	default: // "content"
-		return &Response{
-			Type:         "file_result",
-			Matches:      matches,
-			TotalMatches: intPtr(totalMatches),
-			Truncated:    boolPtr(truncated),
-		}
-	}
+	return buildGrepResponse(acc)
 }

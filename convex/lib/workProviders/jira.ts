@@ -1,6 +1,48 @@
 import { WorkItem, WorkProviderConfig } from "./types";
 import { adfToMarkdown } from "../adfToMarkdown";
 
+function assertJiraConfig(config: WorkProviderConfig): void {
+  if (!config.domain) throw new Error("Jira domain is required");
+  if (!config.email) throw new Error("Jira email is required");
+}
+
+function buildJiraError(response: Response, issueKey: string): Error {
+  if (response.status === 404) return new Error(`Issue not found: ${issueKey}`);
+  if (response.status === 401) return new Error("Invalid Jira credentials");
+  return new Error(`Jira API error: ${response.status} ${response.statusText}`);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractDescription(fields: Record<string, any>): string {
+  if (!fields.description) return "";
+  return typeof fields.description === "string"
+    ? fields.description
+    : adfToMarkdown(fields.description);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractAcceptanceCriteria(fields: Record<string, any>): string | undefined {
+  for (const key of Object.keys(fields)) {
+    const value = fields[key];
+    if (!key.startsWith("customfield_") || typeof value !== "string") continue;
+    if (!value.toLowerCase().includes("acceptance")) continue;
+    return value;
+  }
+  return undefined;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractEstimate(fields: Record<string, any>): number | undefined {
+  if (fields.story_points !== undefined) return fields.story_points;
+  for (const key of Object.keys(fields)) {
+    const value = fields[key];
+    if (key.startsWith("customfield_") && typeof value === "number") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Fetch a Jira issue by key (e.g., "PROJ-123").
  * Auth: Basic Auth (email:apiToken base64-encoded).
@@ -9,8 +51,7 @@ export async function fetchJiraIssue(
   config: WorkProviderConfig,
   issueKey: string
 ): Promise<WorkItem> {
-  if (!config.domain) throw new Error("Jira domain is required");
-  if (!config.email) throw new Error("Jira email is required");
+  assertJiraConfig(config);
 
   const auth = btoa(`${config.email}:${config.apiToken}`);
 
@@ -25,50 +66,15 @@ export async function fetchJiraIssue(
   );
 
   if (!response.ok) {
-    if (response.status === 404) throw new Error(`Issue not found: ${issueKey}`);
-    if (response.status === 401) throw new Error("Invalid Jira credentials");
-    throw new Error(`Jira API error: ${response.status} ${response.statusText}`);
+    throw buildJiraError(response, issueKey);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const data = await response.json() as Record<string, any>;
   const fields = data.fields;
-
-  // Convert ADF description to Markdown
-  let description = "";
-  if (fields.description) {
-    if (typeof fields.description === "string") {
-      description = fields.description;
-    } else {
-      description = adfToMarkdown(fields.description);
-    }
-  }
-
-  // Extract acceptance criteria from custom field or description
-  let acceptanceCriteria: string | undefined;
-  // Common custom field names for acceptance criteria
-  for (const key of Object.keys(fields)) {
-    if (key.startsWith("customfield_") && typeof fields[key] === "string") {
-      if (fields[key].toLowerCase().includes("acceptance")) {
-        acceptanceCriteria = fields[key];
-        break;
-      }
-    }
-  }
-
-  // Extract story points (common custom fields)
-  let estimate: number | undefined;
-  if (fields.story_points !== undefined) {
-    estimate = fields.story_points;
-  } else {
-    // Try common custom field IDs for story points
-    for (const key of Object.keys(fields)) {
-      if (key.startsWith("customfield_") && typeof fields[key] === "number") {
-        estimate = fields[key];
-        break;
-      }
-    }
-  }
+  const description = extractDescription(fields);
+  const acceptanceCriteria = extractAcceptanceCriteria(fields);
+  const estimate = extractEstimate(fields);
 
   return {
     externalId: issueKey,

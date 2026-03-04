@@ -51,138 +51,169 @@ interface PatchChange {
 export function parseV4APatch(patch: string): PatchOperation[] {
   const lines = patch.split("\n");
   const operations: PatchOperation[] = [];
-
-  let i = 0;
-
-  // Find *** Begin Patch
-  while (i < lines.length) {
-    if (lines[i].trim() === "*** Begin Patch") {
-      i++;
-      break;
-    }
-    i++;
-  }
-
-  if (i >= lines.length) {
+  const beginIndex = findBeginPatchIndex(lines);
+  if (beginIndex < 0) {
     throw new Error("Invalid V4A patch: missing '*** Begin Patch' header");
   }
 
+  let i = beginIndex + 1;
   let currentOp: PatchOperation | null = null;
   let currentSection: PatchSection | null = null;
-
-  function finalizeCurrentOp(): void {
-    if (currentOp) {
-      if (currentSection && currentOp.sections) {
-        currentOp.sections.push(currentSection);
-        currentSection = null;
-      }
-      operations.push(currentOp);
-      currentOp = null;
-    }
-  }
 
   while (i < lines.length) {
     const line = lines[i];
     const trimmed = line.trim();
 
-    // End of patch
     if (trimmed === "*** End Patch") {
-      finalizeCurrentOp();
+      finalizeCurrentOperation(operations, () => currentOp, (next) => {
+        currentOp = next;
+      }, () => currentSection, (next) => {
+        currentSection = next;
+      });
       break;
     }
 
-    // New file operation headers
-    if (trimmed.startsWith("*** Add File:")) {
-      finalizeCurrentOp();
-      const path = trimmed.slice("*** Add File:".length).trim();
-      currentOp = { type: "add", path, addLines: [] };
+    const headerOperation = parseOperationHeader(trimmed);
+    if (headerOperation) {
+      finalizeCurrentOperation(operations, () => currentOp, (next) => {
+        currentOp = next;
+      }, () => currentSection, (next) => {
+        currentSection = next;
+      });
+      currentOp = headerOperation;
       i++;
       continue;
     }
 
-    if (trimmed.startsWith("*** Delete File:")) {
-      finalizeCurrentOp();
-      const path = trimmed.slice("*** Delete File:".length).trim();
-      currentOp = { type: "delete", path };
+    if (handleUpdateDirective(line, trimmed, () => currentOp, () => currentSection, (next) => {
+      currentSection = next;
+    })) {
       i++;
       continue;
     }
 
-    if (trimmed.startsWith("*** Update File:")) {
-      finalizeCurrentOp();
-      const path = trimmed.slice("*** Update File:".length).trim();
-      currentOp = { type: "update", path, sections: [] };
+    if (appendUpdateChange(line, currentOp, currentSection)) {
       i++;
       continue;
     }
 
-    // Move directive (rename within an update)
-    if (trimmed.startsWith("*** Move to:") && currentOp?.type === "update") {
-      currentOp.moveTo = trimmed.slice("*** Move to:".length).trim();
+    if (appendAddLine(line, currentOp)) {
       i++;
       continue;
     }
 
-    // End of file marker
-    if (trimmed === "*** End of File" && currentOp?.type === "update") {
-      if (currentSection) {
-        currentSection.isEof = true;
-        currentOp.sections!.push(currentSection);
-        currentSection = null;
-      }
-      i++;
-      continue;
-    }
-
-    // Context anchor (@@)
-    if ((line === "@@" || line.startsWith("@@ ")) && currentOp?.type === "update") {
-      // Finalize previous section
-      if (currentSection && currentOp.sections) {
-        currentOp.sections.push(currentSection);
-      }
-      const anchor = line === "@@" ? null : line.slice(3);
-      currentSection = { anchor, changes: [], isEof: false };
-      i++;
-      continue;
-    }
-
-    // Change lines within an update section
-    if (currentOp?.type === "update" && currentSection) {
-      if (line.startsWith("+")) {
-        currentSection.changes.push({ type: "insert", text: line.slice(1) });
-      } else if (line.startsWith("-")) {
-        currentSection.changes.push({ type: "delete", text: line.slice(1) });
-      } else if (line.startsWith(" ")) {
-        currentSection.changes.push({ type: "context", text: line.slice(1) });
-      } else if (line === "") {
-        // Empty line in context (some patches use bare empty lines as context)
-        currentSection.changes.push({ type: "context", text: "" });
-      }
-      i++;
-      continue;
-    }
-
-    // Add lines for a new file
-    if (currentOp?.type === "add" && currentOp.addLines) {
-      if (line.startsWith("+")) {
-        currentOp.addLines.push(line.slice(1));
-      }
-      i++;
-      continue;
-    }
-
-    // Skip unrecognized lines
     i++;
   }
 
-  // Handle case where *** End Patch was missing
-  finalizeCurrentOp();
+  finalizeCurrentOperation(operations, () => currentOp, (next) => {
+    currentOp = next;
+  }, () => currentSection, (next) => {
+    currentSection = next;
+  });
 
   if (operations.length === 0) {
     throw new Error("Invalid V4A patch: no operations found");
   }
 
   return operations;
+}
+
+function findBeginPatchIndex(lines: string[]): number {
+  return lines.findIndex((line) => line.trim() === "*** Begin Patch");
+}
+
+function parseOperationHeader(trimmed: string): PatchOperation | null {
+  if (trimmed.startsWith("*** Add File:")) {
+    return { type: "add", path: trimmed.slice("*** Add File:".length).trim(), addLines: [] };
+  }
+  if (trimmed.startsWith("*** Delete File:")) {
+    return { type: "delete", path: trimmed.slice("*** Delete File:".length).trim() };
+  }
+  if (trimmed.startsWith("*** Update File:")) {
+    return { type: "update", path: trimmed.slice("*** Update File:".length).trim(), sections: [] };
+  }
+  return null;
+}
+
+function finalizeCurrentOperation(
+  operations: PatchOperation[],
+  getCurrentOp: () => PatchOperation | null,
+  setCurrentOp: (next: PatchOperation | null) => void,
+  getCurrentSection: () => PatchSection | null,
+  setCurrentSection: (next: PatchSection | null) => void,
+): void {
+  const currentOp = getCurrentOp();
+  if (!currentOp) return;
+  const currentSection = getCurrentSection();
+  if (currentSection && currentOp.sections) {
+    currentOp.sections.push(currentSection);
+  }
+  operations.push(currentOp);
+  setCurrentSection(null);
+  setCurrentOp(null);
+}
+
+function handleUpdateDirective(
+  line: string,
+  trimmed: string,
+  getCurrentOp: () => PatchOperation | null,
+  getCurrentSection: () => PatchSection | null,
+  setCurrentSection: (next: PatchSection | null) => void,
+): boolean {
+  const currentOp = getCurrentOp();
+  if (currentOp?.type !== "update") return false;
+
+  if (trimmed.startsWith("*** Move to:")) {
+    currentOp.moveTo = trimmed.slice("*** Move to:".length).trim();
+    return true;
+  }
+  if (trimmed === "*** End of File") {
+    const currentSection = getCurrentSection();
+    if (currentSection) {
+      currentSection.isEof = true;
+      currentOp.sections?.push(currentSection);
+      setCurrentSection(null);
+    }
+    return true;
+  }
+  if (line === "@@" || line.startsWith("@@ ")) {
+    const currentSection = getCurrentSection();
+    if (currentSection && currentOp.sections) {
+      currentOp.sections.push(currentSection);
+    }
+    const anchor = line === "@@" ? null : line.slice(3);
+    setCurrentSection({ anchor, changes: [], isEof: false });
+    return true;
+  }
+  return false;
+}
+
+function appendUpdateChange(line: string, currentOp: PatchOperation | null, currentSection: PatchSection | null): boolean {
+  if (currentOp?.type !== "update" || !currentSection) return false;
+  if (line.startsWith("+")) {
+    currentSection.changes.push({ type: "insert", text: line.slice(1) });
+    return true;
+  }
+  if (line.startsWith("-")) {
+    currentSection.changes.push({ type: "delete", text: line.slice(1) });
+    return true;
+  }
+  if (line.startsWith(" ")) {
+    currentSection.changes.push({ type: "context", text: line.slice(1) });
+    return true;
+  }
+  if (line === "") {
+    currentSection.changes.push({ type: "context", text: "" });
+    return true;
+  }
+  return false;
+}
+
+function appendAddLine(line: string, currentOp: PatchOperation | null): boolean {
+  if (currentOp?.type !== "add" || !currentOp.addLines) return false;
+  if (!line.startsWith("+")) return true;
+  currentOp.addLines.push(line.slice(1));
+  return true;
 }
 
 // ---------------------------------------------------------------------------

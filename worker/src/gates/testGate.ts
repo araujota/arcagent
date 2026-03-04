@@ -107,9 +107,11 @@ async function runTaggedBddTests(
   stepDefinitionsPublic?: string,
   stepDefinitionsHidden?: string,
 ): Promise<GateResult> {
-  const allSteps: StepResult[] = [];
-  let stepCounter = 0;
-  let overallFailed = false;
+  const state: BddExecutionState = {
+    allSteps: [],
+    stepCounter: 0,
+    overallFailed: false,
+  };
 
   // SECURITY: Inject step definitions into root-owned directory in the VM.
   // The agent user cannot read /run/bdd_steps/ directly.
@@ -121,46 +123,21 @@ async function runTaggedBddTests(
     "root",
   );
 
-  const injectStepDefs = async (stepDefsJson: string | undefined, label: string): Promise<string[]> => {
-    if (!stepDefsJson) return [];
-    const injectedPaths: string[] = [];
-    const files = JSON.parse(stepDefsJson);
-    if (!Array.isArray(files)) return injectedPaths;
-    for (const file of files) {
-      if (typeof file?.path !== "string" || typeof file?.content !== "string") {
-        continue;
-      }
-      const targetPath = `${stepDefsDir}/${label}_${file.path.replace(/\//g, "_")}`;
-      const normalizedContent = normalizeStepDefinitionContent(file.content);
-      if (vm.execWithStdin) {
-        const result = await vm.execWithStdin(
-          `cat > ${shellQuote(targetPath)} && chmod 0400 ${shellQuote(targetPath)} && chown root:root ${shellQuote(targetPath)}`,
-          normalizedContent,
-          30_000,
-          "root",
-        );
-        if (result.exitCode !== 0) {
-          throw new Error(`failed writing step defs to ${targetPath}: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`);
-        }
-      } else {
-        const b64 = Buffer.from(normalizedContent, "utf-8").toString("base64");
-        await execOrThrow(
-          vm,
-          `echo ${shellQuote(b64)} | base64 -d > ${shellQuote(targetPath)} && chmod 0400 ${shellQuote(targetPath)} && chown root:root ${shellQuote(targetPath)}`,
-          30_000,
-          "root",
-        );
-      }
-      injectedPaths.push(targetPath);
-    }
-    return injectedPaths;
-  };
-
   let publicStepDefPaths: string[];
   let hiddenStepDefPaths: string[];
   try {
-    publicStepDefPaths = await injectStepDefs(stepDefinitionsPublic, "public");
-    hiddenStepDefPaths = await injectStepDefs(stepDefinitionsHidden, "hidden");
+    publicStepDefPaths = await injectStepDefinitions({
+      vm,
+      stepDefsDir,
+      stepDefsJson: stepDefinitionsPublic,
+      label: "public",
+    });
+    hiddenStepDefPaths = await injectStepDefinitions({
+      vm,
+      stepDefsDir,
+      stepDefsJson: stepDefinitionsHidden,
+      label: "hidden",
+    });
   } catch (err) {
     logger.error("Failed to inject BDD step definitions", { error: String(err) });
     return {
@@ -174,69 +151,25 @@ async function runTaggedBddTests(
     };
   }
 
-  const publicSuites = testSuites.filter((ts) => ts.visibility === "public");
-  const hiddenSuites = testSuites.filter((ts) => ts.visibility === "hidden");
+  const publicSuites = testSuites.filter((testSuite) => testSuite.visibility === "public");
+  const hiddenSuites = testSuites.filter((testSuite) => testSuite.visibility === "hidden");
   const bddExecUser = (publicStepDefPaths.length > 0 || hiddenStepDefPaths.length > 0)
     ? "root"
     : undefined;
 
   // Run public suites first, then hidden
-  for (const group of [
-    { suites: publicSuites, visibility: "public" as const },
-    { suites: hiddenSuites, visibility: "hidden" as const },
-  ]) {
+  for (const group of suiteGroups(publicSuites, hiddenSuites)) {
     for (const suite of group.suites) {
-      // Write feature file to the VM using base64 to prevent injection.
-      const featurePath = `/tmp/bdd_${group.visibility}_${stepCounter}.feature`;
-      const b64 = Buffer.from(suite.gherkinContent).toString("base64");
-      await vm.exec(
-        `echo '${b64}' | base64 -d > ${featurePath}`,
-        5_000,
-      );
-
-      // Run the test for this feature
-      const command = getBddTestCommand(
+      await executeBddSuite({
+        vm,
         language,
-        featurePath,
-        group.visibility === "public" ? publicStepDefPaths : hiddenStepDefPaths,
-      );
-      if (!command) continue;
-
-      const result = await vm.exec(
-        `cd /workspace && ${command} 2>&1`,
         timeoutMs,
+        suite,
+        visibility: group.visibility,
+        stepDefPaths: group.visibility === "public" ? publicStepDefPaths : hiddenStepDefPaths,
         bddExecUser,
-      );
-
-      const featureName = suite.title;
-      const scenarios = parseScenarios(suite.gherkinContent);
-
-      if (result.exitCode === 0) {
-        for (const scenario of scenarios) {
-          allSteps.push({
-            scenarioName: scenario,
-            featureName,
-            status: "pass",
-            executionTimeMs: 0,
-            stepNumber: stepCounter++,
-            visibility: group.visibility,
-          });
-        }
-      } else {
-        overallFailed = true;
-        // Return verbose output so agents see full error messages and stack traces
-        for (const scenario of scenarios) {
-          allSteps.push({
-            scenarioName: scenario,
-            featureName,
-            status: "fail",
-            executionTimeMs: 0,
-            output: truncate(result.stdout, 5_000),
-            stepNumber: stepCounter++,
-            visibility: group.visibility,
-          });
-        }
-      }
+        state,
+      });
     }
   }
 
@@ -244,24 +177,163 @@ async function runTaggedBddTests(
   await vm.exec(`rm -rf ${shellQuote(stepDefsDir)}`, 5_000, "root").catch(() => {});
 
   const durationMs = Date.now() - start;
-  const passed = allSteps.filter((s) => s.status === "pass").length;
-  const failed = allSteps.filter((s) => s.status === "fail").length;
+  const passed = state.allSteps.filter((step) => step.status === "pass").length;
+  const failed = state.allSteps.filter((step) => step.status === "fail").length;
 
   return {
     gate: "test",
-    status: overallFailed ? "fail" : "pass",
+    status: state.overallFailed ? "fail" : "pass",
     durationMs,
-    summary: overallFailed
-      ? `Tests failed: ${failed} of ${allSteps.length} scenario(s) failed`
-      : `All tests passed (${passed} passed, ${allSteps.length} total)`,
+    summary: state.overallFailed
+      ? `Tests failed: ${failed} of ${state.allSteps.length} scenario(s) failed`
+      : `All tests passed (${passed} passed, ${state.allSteps.length} total)`,
     details: {
-      total: allSteps.length,
+      total: state.allSteps.length,
       passed,
       failed,
-      exitCode: overallFailed ? 1 : 0,
+      exitCode: state.overallFailed ? 1 : 0,
     },
-    steps: allSteps,
+    steps: state.allSteps,
   };
+}
+
+interface BddExecutionState {
+  allSteps: StepResult[];
+  stepCounter: number;
+  overallFailed: boolean;
+}
+
+interface StepDefinitionFile {
+  path: string;
+  content: string;
+}
+
+function suiteGroups(publicSuites: TestSuiteInput[], hiddenSuites: TestSuiteInput[]) {
+  return [
+    { suites: publicSuites, visibility: "public" as const },
+    { suites: hiddenSuites, visibility: "hidden" as const },
+  ];
+}
+
+function parseStepDefinitionFiles(stepDefsJson?: string): StepDefinitionFile[] {
+  if (!stepDefsJson) return [];
+  const files = JSON.parse(stepDefsJson);
+  if (!Array.isArray(files)) return [];
+
+  const parsedFiles: StepDefinitionFile[] = [];
+  for (const file of files) {
+    if (typeof file?.path === "string" && typeof file?.content === "string") {
+      parsedFiles.push({ path: file.path, content: file.content });
+    }
+  }
+  return parsedFiles;
+}
+
+async function injectStepDefinitions(args: {
+  vm: VMHandle;
+  stepDefsDir: string;
+  stepDefsJson?: string;
+  label: string;
+}): Promise<string[]> {
+  const injectedPaths: string[] = [];
+  for (const file of parseStepDefinitionFiles(args.stepDefsJson)) {
+    const targetPath = `${args.stepDefsDir}/${args.label}_${file.path.replaceAll("/", "_")}`;
+    const normalizedContent = normalizeStepDefinitionContent(file.content);
+
+    if (args.vm.execWithStdin) {
+      const result = await args.vm.execWithStdin(
+        `cat > ${shellQuote(targetPath)} && chmod 0400 ${shellQuote(targetPath)} && chown root:root ${shellQuote(targetPath)}`,
+        normalizedContent,
+        30_000,
+        "root",
+      );
+      if (result.exitCode !== 0) {
+        const failureReason = result.stderr || result.stdout || `exit ${result.exitCode}`;
+        throw new Error(`failed writing step defs to ${targetPath}: ${failureReason}`);
+      }
+    } else {
+      const b64 = Buffer.from(normalizedContent, "utf-8").toString("base64");
+      await execOrThrow(
+        args.vm,
+        `echo ${shellQuote(b64)} | base64 -d > ${shellQuote(targetPath)} && chmod 0400 ${shellQuote(targetPath)} && chown root:root ${shellQuote(targetPath)}`,
+        30_000,
+        "root",
+      );
+    }
+
+    injectedPaths.push(targetPath);
+  }
+  return injectedPaths;
+}
+
+function appendSuiteStepResults(args: {
+  state: BddExecutionState;
+  scenarios: string[];
+  featureName: string;
+  visibility: "public" | "hidden";
+  status: "pass" | "fail";
+  output?: string;
+}): void {
+  if (args.status === "fail") {
+    args.state.overallFailed = true;
+  }
+  for (const scenario of args.scenarios) {
+    args.state.allSteps.push({
+      scenarioName: scenario,
+      featureName: args.featureName,
+      status: args.status,
+      executionTimeMs: 0,
+      output: args.output,
+      stepNumber: args.state.stepCounter++,
+      visibility: args.visibility,
+    });
+  }
+}
+
+async function executeBddSuite(args: {
+  vm: VMHandle;
+  language: string;
+  timeoutMs: number;
+  suite: TestSuiteInput;
+  visibility: "public" | "hidden";
+  stepDefPaths: string[];
+  bddExecUser?: string;
+  state: BddExecutionState;
+}): Promise<void> {
+  const featurePath = `/tmp/bdd_${args.visibility}_${args.state.stepCounter}.feature`;
+  const b64 = Buffer.from(args.suite.gherkinContent).toString("base64");
+  await args.vm.exec(`echo '${b64}' | base64 -d > ${featurePath}`, 5_000);
+
+  const command = getBddTestCommand(args.language, featurePath, args.stepDefPaths);
+  if (!command) return;
+
+  const result = await args.vm.exec(
+    `cd /workspace && ${command} 2>&1`,
+    args.timeoutMs,
+    args.bddExecUser,
+  );
+
+  const scenarios = parseScenarios(args.suite.gherkinContent);
+  const featureName = args.suite.title;
+  if (result.exitCode === 0) {
+    appendSuiteStepResults({
+      state: args.state,
+      scenarios,
+      featureName,
+      visibility: args.visibility,
+      status: "pass",
+    });
+    return;
+  }
+
+  appendSuiteStepResults({
+    state: args.state,
+    scenarios,
+    featureName,
+    visibility: args.visibility,
+    status: "fail",
+    output: truncate(result.stdout, 5_000),
+  });
 }
 
 async function execOrThrow(
@@ -572,7 +644,7 @@ function parseGoTest(output: string): TestSummary | null {
 
   for (const line of lines) {
     const event = parseJsonSafe<GoTestEvent>(line);
-    if (!event || !event.Action) continue;
+    if (!event?.Action) continue;
 
     switch (event.Action) {
       case "pass":

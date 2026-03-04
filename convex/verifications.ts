@@ -87,85 +87,79 @@ function normalizeLogLimit(limit?: number): number {
   return normalized;
 }
 
-async function queryVerificationLogs(
-  ctx: {
-    db: {
-      query: (table: "verificationLogs") => {
-        withIndex: (index: string, cb: (q: { eq: (field: string, value: unknown) => unknown }) => unknown) => {
-          order: (dir: "asc" | "desc") => { take: (count: number) => Promise<Array<Record<string, unknown>>> };
-        };
-        order: (dir: "asc" | "desc") => { take: (count: number) => Promise<Array<Record<string, unknown>>> };
-      };
-    };
-  },
-  args: VerificationLogSearchArgs,
-): Promise<Array<Record<string, unknown>>> {
-  const limit = normalizeLogLimit(args.limit);
-  const scanLimit = Math.min(limit * VERIFICATION_LOG_SCAN_MULTIPLIER, VERIFICATION_LOG_MAX_LIMIT);
+type VerificationLogRow = Record<string, unknown>;
 
-  let rows: Array<Record<string, unknown>>;
-  if (args.verificationId) {
-    rows = await ctx.db
-      .query("verificationLogs")
-      .withIndex("by_verificationId_and_createdAt", (q) => q.eq("verificationId", args.verificationId))
-      .order("desc")
-      .take(scanLimit);
-  } else if (args.submissionId) {
-    rows = await ctx.db
-      .query("verificationLogs")
-      .withIndex("by_submissionId_and_createdAt", (q) => q.eq("submissionId", args.submissionId))
-      .order("desc")
-      .take(scanLimit);
-  } else if (args.bountyId) {
-    rows = await ctx.db
-      .query("verificationLogs")
-      .withIndex("by_bountyId_and_createdAt", (q) => q.eq("bountyId", args.bountyId))
-      .order("desc")
-      .take(scanLimit);
-  } else if (args.agentId) {
-    rows = await ctx.db
-      .query("verificationLogs")
-      .withIndex("by_agentId_and_createdAt", (q) => q.eq("agentId", args.agentId))
-      .order("desc")
-      .take(scanLimit);
-  } else if (args.eventType) {
-    rows = await ctx.db
-      .query("verificationLogs")
-      .withIndex("by_eventType_and_createdAt", (q) => q.eq("eventType", args.eventType))
-      .order("desc")
-      .take(scanLimit);
-  } else if (args.source) {
-    rows = await ctx.db
-      .query("verificationLogs")
-      .withIndex("by_source_and_createdAt", (q) => q.eq("source", args.source))
-      .order("desc")
-      .take(scanLimit);
-  } else if (args.level) {
-    rows = await ctx.db
-      .query("verificationLogs")
-      .withIndex("by_level_and_createdAt", (q) => q.eq("level", args.level))
-      .order("desc")
-      .take(scanLimit);
-  } else {
-    rows = await ctx.db
+type VerificationLogQueryCtx = {
+  db: {
+    query: (table: "verificationLogs") => {
+      withIndex: (index: string, cb: (q: { eq: (field: string, value: unknown) => unknown }) => unknown) => {
+        order: (dir: "asc" | "desc") => { take: (count: number) => Promise<Array<VerificationLogRow>> };
+      };
+      order: (dir: "asc" | "desc") => { take: (count: number) => Promise<Array<VerificationLogRow>> };
+    };
+  };
+};
+
+const LOG_FILTER_FIELDS = [
+  "verificationId",
+  "submissionId",
+  "bountyId",
+  "agentId",
+  "source",
+  "level",
+  "eventType",
+  "gate",
+  "visibility",
+] as const;
+
+async function fetchVerificationLogRows(
+  ctx: VerificationLogQueryCtx,
+  args: VerificationLogSearchArgs,
+  scanLimit: number,
+): Promise<VerificationLogRow[]> {
+  const indexedFilters: Array<{ value: string | undefined; index: string; field: string }> = [
+    { value: args.verificationId, index: "by_verificationId_and_createdAt", field: "verificationId" },
+    { value: args.submissionId, index: "by_submissionId_and_createdAt", field: "submissionId" },
+    { value: args.bountyId, index: "by_bountyId_and_createdAt", field: "bountyId" },
+    { value: args.agentId, index: "by_agentId_and_createdAt", field: "agentId" },
+    { value: args.eventType, index: "by_eventType_and_createdAt", field: "eventType" },
+    { value: args.source, index: "by_source_and_createdAt", field: "source" },
+    { value: args.level, index: "by_level_and_createdAt", field: "level" },
+  ];
+  const selected = indexedFilters.find((filter) => Boolean(filter.value));
+  if (!selected?.value) {
+    return ctx.db
       .query("verificationLogs")
       .order("desc")
       .take(scanLimit);
   }
+  return ctx.db
+    .query("verificationLogs")
+    .withIndex(selected.index, (q) => q.eq(selected.field, selected.value))
+    .order("desc")
+    .take(scanLimit);
+}
+
+function matchesVerificationLogSearchArgs(row: VerificationLogRow, args: VerificationLogSearchArgs): boolean {
+  for (const field of LOG_FILTER_FIELDS) {
+    const expectedValue = args[field];
+    if (expectedValue && row[field] !== expectedValue) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function queryVerificationLogs(
+  ctx: VerificationLogQueryCtx,
+  args: VerificationLogSearchArgs,
+): Promise<Array<Record<string, unknown>>> {
+  const limit = normalizeLogLimit(args.limit);
+  const scanLimit = Math.min(limit * VERIFICATION_LOG_SCAN_MULTIPLIER, VERIFICATION_LOG_MAX_LIMIT);
+  const rows = await fetchVerificationLogRows(ctx, args, scanLimit);
 
   return rows
-    .filter((row) => {
-      if (args.verificationId && row.verificationId !== args.verificationId) return false;
-      if (args.submissionId && row.submissionId !== args.submissionId) return false;
-      if (args.bountyId && row.bountyId !== args.bountyId) return false;
-      if (args.agentId && row.agentId !== args.agentId) return false;
-      if (args.source && row.source !== args.source) return false;
-      if (args.level && row.level !== args.level) return false;
-      if (args.eventType && row.eventType !== args.eventType) return false;
-      if (args.gate && row.gate !== args.gate) return false;
-      if (args.visibility && row.visibility !== args.visibility) return false;
-      return true;
-    })
+    .filter((row) => matchesVerificationLogSearchArgs(row, args))
     .slice(0, limit);
 }
 
@@ -184,12 +178,12 @@ async function requireBountyAccess(
 
   // Check if user is the bounty creator
   const bounty = await ctx.db.get(bountyId) as { creatorId: string } | null;
-  if (bounty && bounty.creatorId === userId) return;
+  if (bounty?.creatorId === userId) return;
 
   // Check if user is the submitting agent
   if (submissionId) {
     const submission = await ctx.db.get(submissionId) as { agentId: string } | null;
-    if (submission && submission.agentId === userId) return;
+    if (submission?.agentId === userId) return;
   }
 
   throw new Error("Access denied: you must be the bounty creator, the submitting agent, or an admin");
@@ -1078,7 +1072,7 @@ export const triggerPayoutOnVerificationPass = internalAction({
         }
       };
 
-      if (!verification || verification.status !== "passed") {
+      if (verification?.status !== "passed") {
         console.log(`[payout] Verification ${args.verificationId} is not passed, skipping`);
         await recordLifecycleLog(
           "warning",

@@ -19,6 +19,112 @@ function normalizeLimit(limit?: number): number {
   return normalized;
 }
 
+type SearchArgs = {
+  requestId?: string;
+  agentId?: string;
+  bountyId?: string;
+  claimId?: string;
+  submissionId?: string;
+  verificationId?: string;
+  workspaceId?: string;
+  eventType?: string;
+  level?: "info" | "warning" | "error";
+  limit?: number;
+};
+
+async function fetchSearchRows(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ctx: any,
+  args: SearchArgs,
+  scanLimit: number,
+): Promise<Array<Record<string, unknown>>> {
+  if (args.submissionId) {
+    return await ctx.db
+      .query("mcpAuditLogs")
+      .withIndex("by_submissionId_and_createdAt", (q: any) =>
+        q.eq("submissionId", args.submissionId)
+      )
+      .order("desc")
+      .take(scanLimit);
+  }
+  if (args.verificationId) {
+    return await ctx.db
+      .query("mcpAuditLogs")
+      .withIndex("by_verificationId_and_createdAt", (q: any) =>
+        q.eq("verificationId", args.verificationId)
+      )
+      .order("desc")
+      .take(scanLimit);
+  }
+  if (args.agentId) {
+    return await ctx.db
+      .query("mcpAuditLogs")
+      .withIndex("by_agentId_and_createdAt", (q: any) => q.eq("agentId", args.agentId))
+      .order("desc")
+      .take(scanLimit);
+  }
+  if (args.bountyId) {
+    return await ctx.db
+      .query("mcpAuditLogs")
+      .withIndex("by_bountyId_and_createdAt", (q: any) => q.eq("bountyId", args.bountyId))
+      .order("desc")
+      .take(scanLimit);
+  }
+  if (args.claimId) {
+    return await ctx.db
+      .query("mcpAuditLogs")
+      .withIndex("by_claimId_and_createdAt", (q: any) => q.eq("claimId", args.claimId))
+      .order("desc")
+      .take(scanLimit);
+  }
+  if (args.workspaceId) {
+    return await ctx.db
+      .query("mcpAuditLogs")
+      .withIndex("by_workspaceId_and_createdAt", (q: any) => q.eq("workspaceId", args.workspaceId))
+      .order("desc")
+      .take(scanLimit);
+  }
+  if (args.requestId) {
+    return await ctx.db
+      .query("mcpAuditLogs")
+      .withIndex("by_requestId_and_createdAt", (q: any) => q.eq("requestId", args.requestId))
+      .order("desc")
+      .take(scanLimit);
+  }
+  if (args.eventType) {
+    return await ctx.db
+      .query("mcpAuditLogs")
+      .withIndex("by_eventType_and_createdAt", (q: any) => q.eq("eventType", args.eventType))
+      .order("desc")
+      .take(scanLimit);
+  }
+  if (args.level) {
+    return await ctx.db
+      .query("mcpAuditLogs")
+      .withIndex("by_level_and_createdAt", (q: any) => q.eq("level", args.level))
+      .order("desc")
+      .take(scanLimit);
+  }
+  return await ctx.db
+    .query("mcpAuditLogs")
+    .order("desc")
+    .take(scanLimit);
+}
+
+function rowMatchesSearchFilters(row: Record<string, unknown>, args: SearchArgs): boolean {
+  return (
+    (!args.requestId || row.requestId === args.requestId) &&
+    (!args.agentId || row.agentId === args.agentId) &&
+    (!args.bountyId || row.bountyId === args.bountyId) &&
+    (!args.claimId || row.claimId === args.claimId) &&
+    (!args.submissionId || row.submissionId === args.submissionId) &&
+    (!args.verificationId || row.verificationId === args.verificationId) &&
+    (!args.workspaceId || row.workspaceId === args.workspaceId) &&
+    (!args.eventType || row.eventType === args.eventType) &&
+    (!args.level || row.level === args.level)
+  );
+}
+
 export const insert = internalMutation({
   args: {
     source: v.string(),
@@ -64,86 +170,10 @@ export const searchInternal = internalQuery({
   handler: async (ctx, args) => {
     const limit = normalizeLimit(args.limit);
     const scanLimit = Math.min(limit * SEARCH_SCAN_MULTIPLIER, SEARCH_MAX_LIMIT);
-
-    let rows: Array<Record<string, unknown>>;
-    if (args.submissionId) {
-      rows = await ctx.db
-        .query("mcpAuditLogs")
-        .withIndex("by_submissionId_and_createdAt", (q) =>
-          q.eq("submissionId", args.submissionId)
-        )
-        .order("desc")
-        .take(scanLimit);
-    } else if (args.verificationId) {
-      rows = await ctx.db
-        .query("mcpAuditLogs")
-        .withIndex("by_verificationId_and_createdAt", (q) =>
-          q.eq("verificationId", args.verificationId)
-        )
-        .order("desc")
-        .take(scanLimit);
-    } else if (args.agentId) {
-      rows = await ctx.db
-        .query("mcpAuditLogs")
-        .withIndex("by_agentId_and_createdAt", (q) => q.eq("agentId", args.agentId))
-        .order("desc")
-        .take(scanLimit);
-    } else if (args.bountyId) {
-      rows = await ctx.db
-        .query("mcpAuditLogs")
-        .withIndex("by_bountyId_and_createdAt", (q) => q.eq("bountyId", args.bountyId))
-        .order("desc")
-        .take(scanLimit);
-    } else if (args.claimId) {
-      rows = await ctx.db
-        .query("mcpAuditLogs")
-        .withIndex("by_claimId_and_createdAt", (q) => q.eq("claimId", args.claimId))
-        .order("desc")
-        .take(scanLimit);
-    } else if (args.workspaceId) {
-      rows = await ctx.db
-        .query("mcpAuditLogs")
-        .withIndex("by_workspaceId_and_createdAt", (q) => q.eq("workspaceId", args.workspaceId))
-        .order("desc")
-        .take(scanLimit);
-    } else if (args.requestId) {
-      rows = await ctx.db
-        .query("mcpAuditLogs")
-        .withIndex("by_requestId_and_createdAt", (q) => q.eq("requestId", args.requestId))
-        .order("desc")
-        .take(scanLimit);
-    } else if (args.eventType) {
-      rows = await ctx.db
-        .query("mcpAuditLogs")
-        .withIndex("by_eventType_and_createdAt", (q) => q.eq("eventType", args.eventType))
-        .order("desc")
-        .take(scanLimit);
-    } else if (args.level) {
-      rows = await ctx.db
-        .query("mcpAuditLogs")
-        .withIndex("by_level_and_createdAt", (q) => q.eq("level", args.level))
-        .order("desc")
-        .take(scanLimit);
-    } else {
-      rows = await ctx.db
-        .query("mcpAuditLogs")
-        .order("desc")
-        .take(scanLimit);
-    }
+    const rows = await fetchSearchRows(ctx, args, scanLimit);
 
     return rows
-      .filter((row) => {
-        if (args.requestId && row.requestId !== args.requestId) return false;
-        if (args.agentId && row.agentId !== args.agentId) return false;
-        if (args.bountyId && row.bountyId !== args.bountyId) return false;
-        if (args.claimId && row.claimId !== args.claimId) return false;
-        if (args.submissionId && row.submissionId !== args.submissionId) return false;
-        if (args.verificationId && row.verificationId !== args.verificationId) return false;
-        if (args.workspaceId && row.workspaceId !== args.workspaceId) return false;
-        if (args.eventType && row.eventType !== args.eventType) return false;
-        if (args.level && row.level !== args.level) return false;
-        return true;
-      })
+      .filter((row) => rowMatchesSearchFilters(row, args))
       .slice(0, limit);
   },
 });

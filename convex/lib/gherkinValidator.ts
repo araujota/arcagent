@@ -320,17 +320,17 @@ export function extractFeatureNames(content: string): string[] {
 export function countStepsByType(content: string): {
   given: number;
   when: number;
-  then: number;
+  thenStep: number;
   and: number;
   but: number;
 } {
   const lines = content.split("\n");
-  const counts = { given: 0, when: 0, then: 0, and: 0, but: 0 };
+  const counts = { given: 0, when: 0, thenStep: 0, and: 0, but: 0 };
 
   for (const line of lines) {
     if (GIVEN_REGEX.test(line)) counts.given++;
     else if (WHEN_REGEX.test(line)) counts.when++;
-    else if (THEN_REGEX.test(line)) counts.then++;
+    else if (THEN_REGEX.test(line)) counts.thenStep++;
     else if (AND_REGEX.test(line)) counts.and++;
     else if (BUT_REGEX.test(line)) counts.but++;
   }

@@ -21,7 +21,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:e2e:webhooks": "node --test scripts/e2e/webhooks.e2e.test.mjs"
+    "test:e2e:webhooks": "node --test scripts/e2e/webhooks.e2e.test.mjs",
+    "scan:snyk": "bash scripts/ci/run-snyk-scan.sh",
+    "scan:sonarqube": "bash scripts/ci/run-sonarqube-scan.sh",
+    "scan:prepush": "npm run scan:snyk && npm run scan:sonarqube"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
@@ -49,6 +52,10 @@
     "tailwind-merge": "^3.4.0",
     "web-tree-sitter": "^0.26.5",
     "zod": "^4.3.6"
+  },
+  "overrides": {
+    "ajv": "^8.18.0",
+    "qs": "^6.14.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

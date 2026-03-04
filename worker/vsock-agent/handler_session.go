@@ -24,6 +24,8 @@ const sessionIdleTimeout = 30 * time.Minute
 const sessionReapInterval = 1 * time.Minute
 const defaultSessionRows = 24
 const defaultSessionCols = 80
+const errMissingSessionID = "missing sessionId"
+const errSessionNotFoundPrefix = "session not found: "
 
 // delimiterPrefix is the record separator byte used in PROMPT_COMMAND output.
 // Format: \x1e__ARC_DONE__%d__%s__\x1e\n where %d=exit code, %s=cwd.
@@ -153,7 +155,7 @@ func handleSessionCreate(req *Request) *Response {
 // handleSessionExec executes a command in an existing PTY session.
 func handleSessionExec(req *Request) *Response {
 	if req.SessionID == "" {
-		return errorResponse("missing sessionId")
+		return errorResponse(errMissingSessionID)
 	}
 	if req.Command == "" {
 		return errorResponse("missing command")
@@ -168,7 +170,7 @@ func handleSessionExec(req *Request) *Response {
 	sessionsMu.Unlock()
 
 	if !exists {
-		return errorResponse("session not found: " + req.SessionID)
+		return errorResponse(errSessionNotFoundPrefix + req.SessionID)
 	}
 
 	sess.mu.Lock()
@@ -219,7 +221,7 @@ func handleSessionExec(req *Request) *Response {
 // handleSessionResize resizes a PTY session.
 func handleSessionResize(req *Request) *Response {
 	if req.SessionID == "" {
-		return errorResponse("missing sessionId")
+		return errorResponse(errMissingSessionID)
 	}
 
 	sessionsMu.Lock()
@@ -227,7 +229,7 @@ func handleSessionResize(req *Request) *Response {
 	sessionsMu.Unlock()
 
 	if !exists {
-		return errorResponse("session not found: " + req.SessionID)
+		return errorResponse(errSessionNotFoundPrefix + req.SessionID)
 	}
 
 	sess.mu.Lock()
@@ -262,7 +264,7 @@ func handleSessionResize(req *Request) *Response {
 // handleSessionDestroy destroys a PTY session.
 func handleSessionDestroy(req *Request) *Response {
 	if req.SessionID == "" {
-		return errorResponse("missing sessionId")
+		return errorResponse(errMissingSessionID)
 	}
 
 	sessionsMu.Lock()
@@ -273,7 +275,7 @@ func handleSessionDestroy(req *Request) *Response {
 	sessionsMu.Unlock()
 
 	if !exists {
-		return errorResponse("session not found: " + req.SessionID)
+		return errorResponse(errSessionNotFoundPrefix + req.SessionID)
 	}
 
 	destroySession(sess)
@@ -316,16 +318,13 @@ func readUntilDelimiter(ptmx *os.File, timeout time.Duration) (string, int, stri
 			}
 		}
 
-		if err != nil {
-			if isTimeout(err) {
-				continue
-			}
-			if err == io.EOF {
-				return buf.String(), 1, "", fmt.Errorf("PTY closed unexpectedly")
-			}
-			// Treat other read errors as non-fatal -- the process might still be running.
+		if err == nil || isTimeout(err) {
 			continue
 		}
+		if err == io.EOF {
+			return buf.String(), 1, "", fmt.Errorf("PTY closed unexpectedly")
+		}
+		// Treat other read errors as non-fatal -- the process might still be running.
 	}
 }
 

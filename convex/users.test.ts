@@ -115,8 +115,11 @@ describe("deleteFromClerk", () => {
 
   it("no-op for nonexistent clerkId (no throw)", async () => {
     const t = convexTest(schema);
-    // Should not throw
     await t.mutation(internal.users.deleteFromClerk, { clerkId: "clerk_nonexistent" });
+    const user = await t.query(internal.users.getByClerkIdInternal, {
+      clerkId: "clerk_nonexistent",
+    });
+    expect(user).toBeNull();
   });
 });
 

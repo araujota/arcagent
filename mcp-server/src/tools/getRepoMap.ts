@@ -8,10 +8,40 @@ import { requireScope } from "../lib/context";
 const MAX_SYMBOLS = 200;
 const MAX_DIR_DEPTH = 2;
 
+interface RepoMapPayload {
+  repoMapText: string;
+  symbolTableJson: string;
+  dependencyGraphJson: string;
+}
+
 /**
  * Filter file tree text to only include paths within relevantPaths,
  * capped at MAX_DIR_DEPTH levels deep from each relevant root.
  */
+function normalizeTreeLine(line: string): string {
+  return line.replace(/^[\s│├└─]+/, "").trim();
+}
+
+function includesPathPrefix(path: string, root: string): boolean {
+  const normalizedRoot = root.endsWith("/") ? root : `${root}/`;
+  return (
+    path.startsWith(normalizedRoot) ||
+    path.startsWith(root) ||
+    normalizedRoot.startsWith(`${path}/`) ||
+    root === path
+  );
+}
+
+function findMatchedRoot(path: string, relevantPaths: string[]): string | null {
+  return relevantPaths.find((root) => path.startsWith(root) || path.startsWith(`${root}/`)) ?? null;
+}
+
+function isWithinScopedDepth(path: string, matchedRoot: string): boolean {
+  const relative = path.slice(matchedRoot.length).replace(/^\//, "");
+  const depth = relative ? relative.split("/").length : 0;
+  return depth <= MAX_DIR_DEPTH;
+}
+
 function filterFileTree(
   repoMapText: string,
   relevantPaths: string[],
@@ -20,35 +50,16 @@ function filterFileTree(
   const filtered: string[] = [];
 
   for (const line of lines) {
-    const trimmed = line.replace(/^[\s│├└─]+/, "").trim();
+    const trimmed = normalizeTreeLine(line);
     if (!trimmed) continue;
 
-    // Check if line matches any relevantPath prefix
-    const matches = relevantPaths.some((rp) => {
-      const normalized = rp.endsWith("/") ? rp : rp + "/";
-      return (
-        trimmed.startsWith(normalized) ||
-        trimmed.startsWith(rp) ||
-        normalized.startsWith(trimmed + "/") ||
-        rp === trimmed
-      );
-    });
+    const matches = relevantPaths.some((root) => includesPathPrefix(trimmed, root));
+    if (!matches) continue;
 
-    if (matches) {
-      // Check depth relative to the closest relevant path root
-      const matchedRoot = relevantPaths.find((rp) =>
-        trimmed.startsWith(rp) || trimmed.startsWith(rp + "/")
-      );
-      if (matchedRoot) {
-        const relative = trimmed.slice(matchedRoot.length).replace(/^\//, "");
-        const depth = relative ? relative.split("/").length : 0;
-        if (depth <= MAX_DIR_DEPTH) {
-          filtered.push(line);
-        }
-      } else {
-        // Parent path leading to a relevant path — include
-        filtered.push(line);
-      }
+    const matchedRoot = findMatchedRoot(trimmed, relevantPaths);
+    if (!matchedRoot || isWithinScopedDepth(trimmed, matchedRoot)) {
+      // Include matched files and parent paths leading to a match.
+      filtered.push(line);
     }
   }
 
@@ -90,6 +101,50 @@ function filterDeps(
   return filtered;
 }
 
+function renderSymbolSection(
+  repoMap: RepoMapPayload,
+  hasScope: boolean,
+  relevantPaths: string[],
+): string {
+  try {
+    let symbols = JSON.parse(repoMap.symbolTableJson);
+    if (!Array.isArray(symbols) || symbols.length === 0) {
+      return "";
+    }
+
+    symbols = hasScope
+      ? filterSymbols(symbols, relevantPaths)
+      : symbols.slice(0, MAX_SYMBOLS);
+    const symbolJson = JSON.stringify(symbols, null, 2).slice(0, 5000);
+    return `## Symbol Table (${symbols.length} symbols${hasScope ? ", scoped" : ""})\n\`\`\`json\n${symbolJson}\n\`\`\`\n\n`;
+  } catch {
+    return "> _Note: Symbol table could not be loaded for this repository._\n\n";
+  }
+}
+
+function renderDependencySection(
+  repoMap: RepoMapPayload,
+  hasScope: boolean,
+  relevantPaths: string[],
+): string {
+  try {
+    let deps = JSON.parse(repoMap.dependencyGraphJson);
+    if (!deps || typeof deps !== "object") return "";
+
+    if (hasScope) {
+      deps = filterDeps(deps, relevantPaths);
+    }
+    const keys = Object.keys(deps);
+    if (keys.length === 0) return "";
+
+    const depJson = JSON.stringify(deps, null, 2).slice(0, 3000);
+    return `## Dependency Graph\n\`\`\`json\n${depJson}\n\`\`\`\n`;
+  } catch {
+    // dependencyGraphJson may not be valid JSON.
+    return "";
+  }
+}
+
 export function registerGetRepoMap(server: McpServer): void {
   registerTool(
     server,
@@ -107,7 +162,7 @@ export function registerGetRepoMap(server: McpServer): void {
       );
 
       const repoMap = result.bounty.repoMap;
-      const relevantPaths = result.bounty.relevantPaths;
+      const relevantPaths = result.bounty.relevantPaths ?? [];
 
       if (!repoMap) {
         return {
@@ -120,51 +175,22 @@ export function registerGetRepoMap(server: McpServer): void {
         };
       }
 
-      const hasScope = relevantPaths && relevantPaths.length > 0;
+      const hasScope = relevantPaths.length > 0;
 
       // File tree — optionally scoped
       const fileTree = hasScope
         ? filterFileTree(repoMap.repoMapText, relevantPaths)
         : repoMap.repoMapText;
 
-      let text = `# Repository Map\n\n`;
-      if (hasScope) {
-        text += `> Scoped to: ${relevantPaths.join(", ")}\n\n`;
-      }
-      text += `## File Structure\n\`\`\`\n${fileTree}\n\`\`\`\n\n`;
-
-      // Symbol table — optionally scoped and capped
-      try {
-        let symbols = JSON.parse(repoMap.symbolTableJson);
-        if (Array.isArray(symbols) && symbols.length > 0) {
-          if (hasScope) {
-            symbols = filterSymbols(symbols, relevantPaths);
-          } else {
-            symbols = symbols.slice(0, MAX_SYMBOLS);
-          }
-          const symbolJson = JSON.stringify(symbols, null, 2).slice(0, 5000);
-          text += `## Symbol Table (${symbols.length} symbols${hasScope ? ", scoped" : ""})\n\`\`\`json\n${symbolJson}\n\`\`\`\n\n`;
-        }
-      } catch {
-        text += `> _Note: Symbol table could not be loaded for this repository._\n\n`;
-      }
-
-      // Dependency graph — optionally scoped
-      try {
-        let deps = JSON.parse(repoMap.dependencyGraphJson);
-        if (deps && typeof deps === "object") {
-          if (hasScope) {
-            deps = filterDeps(deps, relevantPaths);
-          }
-          const keys = Object.keys(deps);
-          if (keys.length > 0) {
-            const depJson = JSON.stringify(deps, null, 2).slice(0, 3000);
-            text += `## Dependency Graph\n\`\`\`json\n${depJson}\n\`\`\`\n`;
-          }
-        }
-      } catch {
-        // dependencyGraphJson might not be valid JSON
-      }
+      const sections: string[] = [
+        "# Repository Map",
+        "",
+        ...(hasScope ? [`> Scoped to: ${relevantPaths.join(", ")}`, ""] : []),
+        `## File Structure\n\`\`\`\n${fileTree}\n\`\`\`\n`,
+        renderSymbolSection(repoMap as RepoMapPayload, hasScope, relevantPaths),
+        renderDependencySection(repoMap as RepoMapPayload, hasScope, relevantPaths),
+      ];
+      const text = sections.filter(Boolean).join("\n");
 
       return {
         content: [{ type: "text" as const, text }],

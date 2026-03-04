@@ -109,6 +109,76 @@ function toIssueLine(value: unknown): number | undefined {
   return i > 0 ? i : undefined;
 }
 
+function resolveSonarComplexityDelta(metrics: Record<string, number>): number {
+  return (
+    metrics.new_maintainability_issues ??
+    metrics.new_cognitive_complexity ??
+    metrics.new_complexity ??
+    0
+  );
+}
+
+function buildSonarBlocking(args: {
+  processFailureReason?: string;
+  qualityGateFailed: boolean;
+  summaryLine: string;
+}): NormalizedBlocking {
+  if (args.processFailureReason) {
+    return {
+      isBlocking: false,
+      reasonCode: "process_failure",
+      reasonText: args.processFailureReason,
+      threshold: "quality_gate=OK",
+      comparedToBaseline: true,
+    };
+  }
+
+  if (args.qualityGateFailed) {
+    return {
+      isBlocking: true,
+      reasonCode: "quality_gate_failed",
+      reasonText: args.summaryLine,
+      threshold: "quality_gate=OK",
+      comparedToBaseline: true,
+    };
+  }
+
+  return {
+    isBlocking: false,
+    reasonCode: "quality_gate_passed",
+    reasonText: args.summaryLine,
+    threshold: "quality_gate=OK",
+    comparedToBaseline: true,
+  };
+}
+
+function normalizeSonarIssue(issue: unknown, qualityGateFailed: boolean): NormalizedIssue | null {
+  const rec = asRecord(issue);
+  if (!rec) {
+    return null;
+  }
+  const type = asString(rec.type)?.toLowerCase();
+  const category = type === "bug"
+    ? "bug"
+    : type === "code_smell"
+      ? "code_smell"
+      : "sonar_issue";
+  const severity = toSeverity(asString(rec.severity));
+
+  return {
+    tool: "sonarqube",
+    category,
+    severity,
+    isBlocking: qualityGateFailed && (severity === "critical" || category === "bug"),
+    file: asString(rec.component) ?? asString(rec.file),
+    line: toIssueLine(rec.line),
+    rule: asString(rec.rule),
+    message: asString(rec.message) ?? "Sonar issue detected on new code",
+    suggestion: "Refactor to reduce complexity and resolve reliability/maintainability findings.",
+    introducedOnNewCode: true,
+  };
+}
+
 export function normalizeSnykOutput(args: {
   introducedCounts: SnykSeverityCounts;
   comparedToBaseline: boolean;
@@ -227,73 +297,25 @@ export function normalizeSonarOutput(args: {
 }): NormalizedReceiptOutput {
   const budget = args.issueBudget ?? 20;
   const metrics = args.metrics ?? {};
+  const hasProcessFailure = Boolean(args.processFailureReason);
 
-  const bugs = args.processFailureReason ? 0 : metrics.new_bugs ?? 0;
-  const codeSmells = args.processFailureReason ? 0 : metrics.new_code_smells ?? 0;
-  const complexityDelta = args.processFailureReason
-    ? 0
-    : (
-      metrics.new_maintainability_issues ??
-      metrics.new_cognitive_complexity ??
-      metrics.new_complexity ??
-      0
-    );
+  const bugs = hasProcessFailure ? 0 : metrics.new_bugs ?? 0;
+  const codeSmells = hasProcessFailure ? 0 : metrics.new_code_smells ?? 0;
+  const complexityDelta = hasProcessFailure ? 0 : resolveSonarComplexityDelta(metrics);
 
   const rawIssues: NormalizedIssue[] = [];
-
-  if (!args.processFailureReason) {
+  if (!hasProcessFailure) {
     for (const issue of args.issues ?? []) {
-      const rec = asRecord(issue);
-      if (!rec) continue;
-      const type = asString(rec.type)?.toLowerCase();
-      const category = type === "bug"
-        ? "bug"
-        : type === "code_smell"
-          ? "code_smell"
-          : "sonar_issue";
-      const severity = toSeverity(asString(rec.severity));
-
-      rawIssues.push({
-        tool: "sonarqube",
-        category,
-        severity,
-        isBlocking: args.qualityGateFailed && (severity === "critical" || category === "bug"),
-        file: asString(rec.component) ?? asString(rec.file),
-        line: toIssueLine(rec.line),
-        rule: asString(rec.rule),
-        message: asString(rec.message) ?? "Sonar issue detected on new code",
-        suggestion: "Refactor to reduce complexity and resolve reliability/maintainability findings.",
-        introducedOnNewCode: true,
-      });
+      const normalizedIssue = normalizeSonarIssue(issue, args.qualityGateFailed);
+      if (normalizedIssue) {
+        rawIssues.push(normalizedIssue);
+      }
     }
   }
 
   const { issues, truncated } = capIssues(rawIssues, budget);
 
-  const processFailure = args.processFailureReason;
-  const blocking = processFailure
-    ? {
-        isBlocking: false,
-        reasonCode: "process_failure",
-        reasonText: processFailure,
-        threshold: "quality_gate=OK",
-        comparedToBaseline: true,
-      }
-    : args.qualityGateFailed
-      ? {
-          isBlocking: true,
-          reasonCode: "quality_gate_failed",
-          reasonText: args.summaryLine,
-          threshold: "quality_gate=OK",
-          comparedToBaseline: true,
-        }
-      : {
-          isBlocking: false,
-          reasonCode: "quality_gate_passed",
-          reasonText: args.summaryLine,
-          threshold: "quality_gate=OK",
-          comparedToBaseline: true,
-        };
+  const blocking = buildSonarBlocking(args);
 
   return {
     tool: "sonarqube",

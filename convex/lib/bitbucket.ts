@@ -12,8 +12,8 @@ import type {
 
 export class BitbucketProvider implements RepoProvider {
   constructor(
-    private username: string,
-    private appPassword: string
+    private readonly username: string,
+    private readonly appPassword: string
   ) {}
 
   parseUrl(url: string): ParsedRepoUrl {
@@ -97,42 +97,12 @@ export class BitbucketProvider implements RepoProvider {
 
     while (dirQueue.length > 0) {
       const dirPath = dirQueue.shift()!;
-      const encodedDir = dirPath
-        ? dirPath.split("/").map(encodeURIComponent).join("/") + "/"
-        : "";
-      let url: string | null =
-        `https://api.bitbucket.org/2.0/repositories/${owner}/${repo}/src/${encodeURIComponent(commitId)}/${encodedDir}?pagelen=100`;
+      let url: string | null = this.buildTreePageUrl(owner, repo, commitId, dirPath);
 
       while (url) {
-        const res = await fetch(url, { headers: this.headers() });
-
-        if (!res.ok) {
-          throw new Error(
-            `Failed to fetch Bitbucket tree: ${res.status} ${res.statusText}`
-          );
-        }
-
-        const data = await res.json();
-
-        for (const item of data.values ?? []) {
-          if (item.type === "commit_file") {
-            entries.push({
-              path: item.path,
-              type: "blob",
-              id: item.path,
-              size: item.size,
-            });
-          } else if (item.type === "commit_directory") {
-            entries.push({
-              path: item.path,
-              type: "tree",
-              id: item.path,
-            });
-            dirQueue.push(item.path);
-          }
-        }
-
-        url = data.next ?? null;
+        const data = await this.fetchTreePage(url);
+        this.appendTreeEntries(data.values ?? [], entries, dirQueue);
+        url = typeof data.next === "string" ? data.next : null;
         totalPages++;
         if (totalPages > 500) {
           truncated = true;
@@ -144,6 +114,45 @@ export class BitbucketProvider implements RepoProvider {
     }
 
     return { commitId, entries, truncated };
+  }
+
+  private buildTreePageUrl(owner: string, repo: string, commitId: string, dirPath: string): string {
+    const encodedDir = dirPath
+      ? dirPath.split("/").map(encodeURIComponent).join("/") + "/"
+      : "";
+    return `https://api.bitbucket.org/2.0/repositories/${owner}/${repo}/src/${encodeURIComponent(commitId)}/${encodedDir}?pagelen=100`;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async fetchTreePage(url: string): Promise<Record<string, any>> {
+    const res = await fetch(url, { headers: this.headers() });
+    if (!res.ok) {
+      throw new Error(`Failed to fetch Bitbucket tree: ${res.status} ${res.statusText}`);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (await res.json()) as Record<string, any>;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private appendTreeEntries(values: any[], entries: NormalizedTreeEntry[], dirQueue: string[]): void {
+    for (const item of values) {
+      if (item.type === "commit_file") {
+        entries.push({
+          path: item.path,
+          type: "blob",
+          id: item.path,
+          size: item.size,
+        });
+        continue;
+      }
+      if (item.type !== "commit_directory") continue;
+      entries.push({
+        path: item.path,
+        type: "tree",
+        id: item.path,
+      });
+      dirQueue.push(item.path);
+    }
   }
 
   async fetchFileContents(

@@ -170,11 +170,15 @@ describe("Dev Workspaces", () => {
         });
         await seedWorkspace(ctx, claimId, bountyId, agentId, {
           status: "ready",
+          workspaceId: "ws_cleanup_released",
         });
       });
 
-      // cleanupOrphaned schedules destroyWorkspace (async) so we just verify it doesn't throw
       await t.mutation(internal.devWorkspaces.cleanupOrphaned, {});
+      const ws = await t.query(internal.devWorkspaces.getByWorkspaceId, {
+        workspaceId: "ws_cleanup_released",
+      });
+      expect(ws?.status).toBe("ready");
     });
 
     it("P1-3: cleans up workspaces stuck in provisioning >10min", async () => {
@@ -186,12 +190,16 @@ describe("Dev Workspaces", () => {
         const claimId = await seedClaim(ctx, bountyId, agentId);
         await seedWorkspace(ctx, claimId, bountyId, agentId, {
           status: "provisioning",
+          workspaceId: "ws_cleanup_stuck_provisioning",
           createdAt: Date.now() - 15 * 60 * 1000, // 15 min ago
         });
       });
 
       await t.mutation(internal.devWorkspaces.cleanupOrphaned, {});
-      // Verifies no throw; actual destruction is via scheduler
+      const ws = await t.query(internal.devWorkspaces.getByWorkspaceId, {
+        workspaceId: "ws_cleanup_stuck_provisioning",
+      });
+      expect(ws?.status).toBe("provisioning");
     });
 
     it("P1-3: cleans up workspaces in error state >5min", async () => {
@@ -203,11 +211,16 @@ describe("Dev Workspaces", () => {
         const claimId = await seedClaim(ctx, bountyId, agentId);
         await seedWorkspace(ctx, claimId, bountyId, agentId, {
           status: "error",
+          workspaceId: "ws_cleanup_error",
           createdAt: Date.now() - 10 * 60 * 1000, // 10 min ago
         });
       });
 
       await t.mutation(internal.devWorkspaces.cleanupOrphaned, {});
+      const ws = await t.query(internal.devWorkspaces.getByWorkspaceId, {
+        workspaceId: "ws_cleanup_error",
+      });
+      expect(ws?.status).toBe("error");
     });
 
     it("P1-3: does NOT clean up recent provisioning workspace", async () => {
@@ -242,11 +255,16 @@ describe("Dev Workspaces", () => {
         const claimId = await seedClaim(ctx, bountyId, agentId);
         await seedWorkspace(ctx, claimId, bountyId, agentId, {
           status: "ready",
+          workspaceId: "ws_cleanup_expired",
           expiresAt: Date.now() - 1000, // expired
         });
       });
 
       await t.mutation(internal.devWorkspaces.cleanupOrphaned, {});
+      const ws = await t.query(internal.devWorkspaces.getByWorkspaceId, {
+        workspaceId: "ws_cleanup_expired",
+      });
+      expect(ws?.status).toBe("ready");
     });
   });
 });

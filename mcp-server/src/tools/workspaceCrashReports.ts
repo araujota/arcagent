@@ -15,6 +15,36 @@ interface CrashReport {
   gate?: string;
 }
 
+function formatReportCountLabel(count: number): string {
+  return `**${count} crash report${count > 1 ? "s" : ""} found:**\n`;
+}
+
+function formatReportStderr(stderr: string): string {
+  if (stderr.length <= 2000) return stderr;
+  return `${stderr.slice(-2000)}\n... [truncated]`;
+}
+
+function formatCrashReport(report: CrashReport): string {
+  const timestamp = new Date(report.timestamp).toISOString();
+  const lines: string[] = [`### Crash at ${timestamp}`];
+
+  if (report.command) {
+    lines.push(`- **Command:** \`${report.command}\``);
+  }
+  if (report.gate) {
+    lines.push(`- **Gate:** ${report.gate}`);
+  }
+  lines.push(`- **Exit code:** ${report.exitCode}`);
+  if (report.signal) {
+    lines.push(`- **Signal:** ${report.signal}`);
+  }
+  if (report.stderr) {
+    lines.push(`- **stderr:**\n\`\`\`\n${formatReportStderr(report.stderr)}\n\`\`\``);
+  }
+
+  return lines.join("\n");
+}
+
 export function registerWorkspaceCrashReports(server: McpServer): void {
   registerTool(
     server,
@@ -39,7 +69,8 @@ export function registerWorkspaceCrashReports(server: McpServer): void {
           userId: user.userId,
         });
 
-        if (!result.reports || result.reports.length === 0) {
+        const reports = result.reports ?? [];
+        if (reports.length === 0) {
           return {
             content: [
               {
@@ -50,41 +81,14 @@ export function registerWorkspaceCrashReports(server: McpServer): void {
           };
         }
 
-        const parts: string[] = [];
-        parts.push(`**${result.reports.length} crash report${result.reports.length > 1 ? "s" : ""} found:**\n`);
-
-        for (const report of result.reports) {
-          const timestamp = new Date(report.timestamp).toISOString();
-          const lines: string[] = [];
-          lines.push(`### Crash at ${timestamp}`);
-
-          if (report.command) {
-            lines.push(`- **Command:** \`${report.command}\``);
-          }
-          if (report.gate) {
-            lines.push(`- **Gate:** ${report.gate}`);
-          }
-          lines.push(`- **Exit code:** ${report.exitCode}`);
-          if (report.signal) {
-            lines.push(`- **Signal:** ${report.signal}`);
-          }
-          if (report.stderr) {
-            // Cap stderr to avoid massive output
-            const stderr =
-              report.stderr.length > 2000
-                ? report.stderr.slice(-2000) + "\n... [truncated]"
-                : report.stderr;
-            lines.push(`- **stderr:**\n\`\`\`\n${stderr}\n\`\`\``);
-          }
-
-          parts.push(lines.join("\n"));
-        }
+        const body = reports.map(formatCrashReport).join("\n\n---\n\n");
+        const text = `${formatReportCountLabel(reports.length)}\n${body}`;
 
         return {
           content: [
             {
               type: "text" as const,
-              text: parts.join("\n\n---\n\n"),
+              text,
             },
           ],
         };

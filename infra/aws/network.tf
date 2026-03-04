@@ -169,7 +169,7 @@ resource "aws_vpc_peering_connection_options" "mcp_accepter" {
 }
 
 resource "aws_route" "worker_to_mcp" {
-  for_each = local.enable_mcp_peering ? toset(local.worker_to_mcp_route_table_ids) : toset([])
+  for_each = local.enable_mcp_peering ? { for idx, routeTableId in local.worker_to_mcp_route_table_ids : tostring(idx) => routeTableId } : {}
 
   route_table_id            = each.value
   destination_cidr_block    = var.mcp_vpc_cidr

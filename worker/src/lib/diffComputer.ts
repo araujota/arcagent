@@ -103,29 +103,29 @@ function parseDiffHunks(diffOutput: string): Map<string, [number, number][]> {
   let currentFile: string | null = null;
 
   for (const line of diffOutput.split("\n")) {
-    // Match diff file header: +++ b/path/to/file
     if (line.startsWith("+++ b/")) {
-      currentFile = line.slice(6); // strip "+++ b/"
-      if (!ranges.has(currentFile)) {
-        ranges.set(currentFile, []);
-      }
+      currentFile = line.slice(6);
+      if (!ranges.has(currentFile)) ranges.set(currentFile, []);
       continue;
     }
 
-    // Match hunk header: @@ -a,b +c,d @@
-    if (currentFile && line.startsWith("@@")) {
-      const match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
-      if (match) {
-        const startLine = parseInt(match[1]!, 10);
-        const lineCount = match[2] !== undefined ? parseInt(match[2], 10) : 1;
-
-        if (lineCount > 0) {
-          const endLine = startLine + lineCount - 1;
-          ranges.get(currentFile)!.push([startLine, endLine]);
-        }
-        // lineCount === 0 means pure deletion (no new lines) — skip
-      }
+    if (!currentFile || !line.startsWith("@@")) {
+      continue;
     }
+
+    const match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (!match) {
+      continue;
+    }
+
+    const startLine = Number.parseInt(match[1], 10);
+    const lineCount = match[2] === undefined ? 1 : Number.parseInt(match[2], 10);
+    if (lineCount <= 0) {
+      continue;
+    }
+
+    const endLine = startLine + lineCount - 1;
+    ranges.get(currentFile)!.push([startLine, endLine]);
   }
 
   return ranges;

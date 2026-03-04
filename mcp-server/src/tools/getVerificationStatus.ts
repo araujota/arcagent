@@ -5,6 +5,295 @@ import { ConvexAgentVerification } from "../lib/types";
 import { registerTool } from "../lib/toolHelper";
 import { requireScope } from "../lib/context";
 
+const MAX_GATE_ISSUES = 50;
+const MAX_NORMALIZED_ISSUES = 20;
+const MAX_HIDDEN_MECHANISMS = 10;
+
+interface ParsedFeedback {
+  attemptNumber?: number;
+  attemptsRemaining?: number;
+  hiddenFailureMechanisms?: unknown[];
+  actionItems?: unknown[];
+}
+
+interface StructuredFeedbackRender {
+  text: string;
+  renderedHiddenMechanisms: boolean;
+}
+
+function formatTimestamp(value?: number): string | null {
+  if (!value) return null;
+  return new Date(value).toISOString();
+}
+
+function buildHeaderSection(v: ConvexAgentVerification): string {
+  const lines: string[] = [
+    "# Verification Status",
+    "",
+    `**ID:** ${v._id}`,
+    `**Overall Status:** ${v.status}`,
+  ];
+  const started = formatTimestamp(v.startedAt);
+  const completed = formatTimestamp(v.completedAt);
+  if (started) lines.push(`**Started:** ${started}`);
+  if (completed) lines.push(`**Completed:** ${completed}`);
+  return lines.join("\n");
+}
+
+function buildWorkerSection(v: ConvexAgentVerification): string {
+  if (!v.job) return "";
+  const lines: string[] = ["", "## Worker Job", `**Job Status:** ${v.job.status}`];
+  if (v.job.currentGate) lines.push(`**Current Gate:** ${v.job.currentGate}`);
+  return lines.join("\n");
+}
+
+function formatGateStatusLabel(status: string): string {
+  if (status === "passed") return "PASS";
+  if (status === "failed") return "FAIL";
+  return "WARN";
+}
+
+function buildGateIssuesSection(gateType: string, issues?: string[]): string {
+  if (!issues || issues.length === 0) return "";
+  const lines = [
+    "",
+    `**${gateType} issues:**`,
+    ...issues.slice(0, MAX_GATE_ISSUES).map((issue) => `- ${issue}`),
+  ];
+  if (issues.length > MAX_GATE_ISSUES) {
+    lines.push(`- ... and ${issues.length - MAX_GATE_ISSUES} more`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+function buildGateDetailsSection(gateType: string, details: unknown): string {
+  const detailsText = JSON.stringify(details, null, 2);
+  return [
+    `**${gateType} details:**`,
+    `\`\`\`json`,
+    detailsText.slice(0, 4000),
+    `\`\`\``,
+    "",
+  ].join("\n");
+}
+
+function buildGateSection(v: ConvexAgentVerification): string {
+  if (v.gates.length === 0) return "";
+  const lines: string[] = ["", "## Gate Results", "", "| Gate | Status | Tool |", "|------|--------|------|"];
+  for (const gate of v.gates) {
+    lines.push(`| ${gate.gateType} | ${formatGateStatusLabel(gate.status)} | ${gate.tool} |`);
+    const issuesBlock = buildGateIssuesSection(gate.gateType, gate.issues);
+    if (issuesBlock) lines.push(issuesBlock);
+    if (gate.details) lines.push(buildGateDetailsSection(gate.gateType, gate.details));
+  }
+  return lines.join("\n");
+}
+
+function buildNormalizedIssuesSection(receipt: NonNullable<ConvexAgentVerification["validationReceipts"]>[number]): string {
+  if (!receipt.normalized || receipt.normalized.issues.length === 0) return "";
+  const lines: string[] = ["", "**Top Normalized Issues:**"];
+  for (const issue of receipt.normalized.issues.slice(0, MAX_NORMALIZED_ISSUES)) {
+    const location = issue.file ? `${issue.file}${issue.line ? `:${issue.line}` : ""}` : "(no file)";
+    lines.push(`- [${issue.severity.toUpperCase()}${issue.isBlocking ? ", BLOCKING" : ""}] ${location} — ${issue.message}`);
+  }
+  if (receipt.normalized.truncated) {
+    lines.push("- ... additional normalized issues omitted");
+  }
+  return lines.join("\n");
+}
+
+function buildSingleReceiptSection(receipt: NonNullable<ConvexAgentVerification["validationReceipts"]>[number]): string {
+  const lines: string[] = [
+    `### [${receipt.orderIndex}] ${receipt.legKey} — ${receipt.status.toUpperCase()}`,
+    `- Blocking: ${receipt.blocking ? "yes" : "no"}`,
+    `- Duration: ${receipt.durationMs}ms`,
+  ];
+  if (receipt.unreachedByLegKey) lines.push(`- Unreached by: ${receipt.unreachedByLegKey}`);
+  if (receipt.status === "pass") {
+    lines.push("- PASS", "");
+    return lines.join("\n");
+  }
+
+  lines.push(`- Summary: ${receipt.summaryLine}`);
+  if (receipt.rawBody) {
+    lines.push("", "```", receipt.rawBody.slice(0, 8000), "```");
+  }
+  if (receipt.policy) {
+    lines.push("", "**Policy:**", "```json", JSON.stringify(receipt.policy, null, 2).slice(0, 4000), "```");
+  }
+  if (receipt.normalized) {
+    lines.push(
+      "",
+      "**Normalized Blocking:**",
+      `- Tool: ${receipt.normalized.tool}`,
+      `- Blocking: ${receipt.normalized.blocking.isBlocking ? "yes" : "no"}`,
+      `- Reason: ${receipt.normalized.blocking.reasonCode} — ${receipt.normalized.blocking.reasonText}`,
+      `- Threshold: ${receipt.normalized.blocking.threshold}`,
+      `- Compared to Baseline: ${receipt.normalized.blocking.comparedToBaseline ? "yes" : "no"}`,
+      `- Introduced: ${receipt.normalized.counts.introducedTotal} (critical=${receipt.normalized.counts.critical}, high=${receipt.normalized.counts.high}, medium=${receipt.normalized.counts.medium}, low=${receipt.normalized.counts.low})`,
+    );
+    if (receipt.normalized.tool === "sonarqube") {
+      lines.push(`- Sonar Metrics: bugs=${receipt.normalized.counts.bugs}, codeSmells=${receipt.normalized.counts.codeSmells}, complexityDelta=${receipt.normalized.counts.complexityDelta}`);
+    }
+    const normalizedIssues = buildNormalizedIssuesSection(receipt);
+    if (normalizedIssues) lines.push(normalizedIssues);
+  }
+  if (receipt.sarif) {
+    lines.push("", "**SARIF:**", "```json", JSON.stringify(receipt.sarif, null, 2).slice(0, 4000), "```");
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+function buildValidationReceiptsSection(v: ConvexAgentVerification): string {
+  if (!Array.isArray(v.validationReceipts) || v.validationReceipts.length === 0) return "";
+  const lines: string[] = ["", "## Validation Receipts", ""];
+  const ordered = [...v.validationReceipts].sort((a, b) => a.orderIndex - b.orderIndex);
+  for (const receipt of ordered) {
+    lines.push(buildSingleReceiptSection(receipt));
+  }
+  return lines.join("\n");
+}
+
+function buildFailedScenarioSection(steps: ConvexAgentVerification["steps"]): string {
+  const failures = steps.filter((step) => step.status === "fail" || step.status === "error");
+  if (failures.length === 0) return "";
+  const lines: string[] = ["### Failed Scenarios", ""];
+  for (const step of failures) {
+    lines.push(`- **${step.featureName} > ${step.scenarioName}** [${step.visibility}] - ${step.status.toUpperCase()}`);
+    if (step.output) lines.push(`  \`\`\`\n${step.output}\n  \`\`\``);
+  }
+  return lines.join("\n");
+}
+
+function buildTestResultsSection(v: ConvexAgentVerification): string {
+  const steps = v.steps ?? [];
+  if (steps.length === 0) return "";
+  const passed = steps.filter((step) => step.status === "pass").length;
+  const failed = steps.filter((step) => step.status === "fail").length;
+  const lines = [
+    "",
+    `## Test Results (${steps.length} scenarios)`,
+    `**Passed:** ${passed} | **Failed:** ${failed}`,
+    "",
+  ];
+  const failures = buildFailedScenarioSection(steps);
+  if (failures) lines.push(failures);
+  return lines.join("\n");
+}
+
+function buildHiddenSummarySection(v: ConvexAgentVerification): string {
+  if (!v.hiddenSummary) return "";
+  return [
+    "",
+    "## Hidden Test Summary",
+    `**Total:** ${v.hiddenSummary.total} | **Passed:** ${v.hiddenSummary.passed} | **Failed:** ${v.hiddenSummary.failed} | **Skipped:** ${v.hiddenSummary.skipped}`,
+  ].join("\n");
+}
+
+function parseFeedbackJson(feedbackJson?: string): ParsedFeedback | null {
+  if (!feedbackJson) return null;
+  try {
+    return JSON.parse(feedbackJson) as ParsedFeedback;
+  } catch {
+    return null;
+  }
+}
+
+function toHiddenMechanismLines(hiddenMechanisms: unknown[]): string[] {
+  return hiddenMechanisms.slice(0, MAX_HIDDEN_MECHANISMS).map((mechanism) => {
+    const label = typeof (mechanism as { label?: unknown }).label === "string"
+      ? String((mechanism as { label: string }).label)
+      : "Unknown edge case";
+    const count = typeof (mechanism as { count?: unknown }).count === "number"
+      ? String((mechanism as { count: number }).count)
+      : "?";
+    const guidance = typeof (mechanism as { guidance?: unknown }).guidance === "string"
+      ? String((mechanism as { guidance: string }).guidance)
+      : "Harden boundary conditions and error handling.";
+    return `- **${label}** (${count}): ${guidance}`;
+  });
+}
+
+function buildHiddenMechanismsSection(hiddenMechanisms: unknown[]): string {
+  if (hiddenMechanisms.length === 0) return "";
+  return [
+    "### Hidden Failure Mechanisms (safe summary)",
+    "",
+    ...toHiddenMechanismLines(hiddenMechanisms),
+    "",
+  ].join("\n");
+}
+
+function buildActionItemsSection(actionItems: unknown[]): string {
+  if (actionItems.length === 0) return "";
+  const lines: string[] = ["### Action Items (prioritized)", ""];
+  for (const [index, item] of actionItems.entries()) {
+    lines.push(`${index + 1}. ${String(item)}`);
+  }
+  return lines.join("\n");
+}
+
+function buildStructuredFeedbackSection(v: ConvexAgentVerification): StructuredFeedbackRender {
+  const parsed = parseFeedbackJson(v.feedbackJson);
+  if (!parsed) return { text: "", renderedHiddenMechanisms: false };
+
+  const lines: string[] = [
+    "",
+    "## Structured Feedback",
+    "",
+    `**Attempt:** ${parsed.attemptNumber ?? "?"} | **Remaining:** ${parsed.attemptsRemaining ?? "?"}`,
+    "",
+  ];
+
+  let renderedHiddenMechanisms = false;
+  if (Array.isArray(parsed.hiddenFailureMechanisms) && parsed.hiddenFailureMechanisms.length > 0) {
+    lines.push(buildHiddenMechanismsSection(parsed.hiddenFailureMechanisms));
+    renderedHiddenMechanisms = true;
+  }
+  if (Array.isArray(parsed.actionItems) && parsed.actionItems.length > 0) {
+    lines.push(buildActionItemsSection(parsed.actionItems));
+  }
+  return { text: lines.join("\n"), renderedHiddenMechanisms };
+}
+
+function buildFallbackHiddenMechanismsSection(v: ConvexAgentVerification, alreadyRendered: boolean): string {
+  if (alreadyRendered) return "";
+  if (!Array.isArray(v.hiddenFailureMechanisms) || v.hiddenFailureMechanisms.length === 0) return "";
+  return ["", "## Hidden Failure Mechanisms (safe summary)", "", ...toHiddenMechanismLines(v.hiddenFailureMechanisms)].join("\n");
+}
+
+function buildResultAndErrorSection(v: ConvexAgentVerification): string {
+  const lines: string[] = [];
+  if (v.result) lines.push("", "## Result", v.result);
+  if (v.errorLog) lines.push("", "## Error Log", "```", v.errorLog.slice(0, 2000), "```");
+  return lines.join("\n");
+}
+
+function buildPollingGuidance(status: string): string {
+  const isTerminal = ["passed", "failed", "error", "timed_out"].includes(status);
+  if (isTerminal) return "";
+  return "\n---\n_Verification typically takes 2-5 minutes. Check again in ~15 seconds._\n";
+}
+
+function buildVerificationStatusText(v: ConvexAgentVerification): string {
+  const sections = [
+    buildHeaderSection(v),
+    buildWorkerSection(v),
+    buildGateSection(v),
+    buildValidationReceiptsSection(v),
+    buildTestResultsSection(v),
+    buildHiddenSummarySection(v),
+  ];
+  const structuredFeedback = buildStructuredFeedbackSection(v);
+  sections.push(structuredFeedback.text);
+  sections.push(buildFallbackHiddenMechanismsSection(v, structuredFeedback.renderedHiddenMechanisms));
+  sections.push(buildResultAndErrorSection(v));
+  sections.push(buildPollingGuidance(v.status));
+  return sections.filter(Boolean).join("\n");
+}
+
 export function registerGetVerificationStatus(server: McpServer): void {
   registerTool(
     server,
@@ -30,180 +319,7 @@ export function registerGetVerificationStatus(server: McpServer): void {
           { verificationId: args.verificationId, submissionId: args.submissionId },
         );
 
-        const v = result.verification;
-
-        let text = `# Verification Status\n\n`;
-        text += `**ID:** ${v._id}\n`;
-        text += `**Overall Status:** ${v.status}\n`;
-        if (v.startedAt) text += `**Started:** ${new Date(v.startedAt).toISOString()}\n`;
-        if (v.completedAt) text += `**Completed:** ${new Date(v.completedAt).toISOString()}\n`;
-
-        if (v.job) {
-          text += `\n## Worker Job\n`;
-          text += `**Job Status:** ${v.job.status}\n`;
-          if (v.job.currentGate) text += `**Current Gate:** ${v.job.currentGate}\n`;
-        }
-
-        if (v.gates.length > 0) {
-          text += `\n## Gate Results\n\n`;
-          text += `| Gate | Status | Tool |\n|------|--------|------|\n`;
-          for (const g of v.gates) {
-            const statusLabel = g.status === "passed" ? "PASS" : g.status === "failed" ? "FAIL" : "WARN";
-            text += `| ${g.gateType} | ${statusLabel} | ${g.tool} |\n`;
-            // Show full gate issues (lint violations, type errors, security findings)
-            if (g.issues && g.issues.length > 0) {
-              text += `\n**${g.gateType} issues:**\n`;
-              for (const issue of g.issues.slice(0, 50)) {
-                text += `- ${issue}\n`;
-              }
-              if (g.issues.length > 50) {
-                text += `- ... and ${g.issues.length - 50} more\n`;
-              }
-              text += `\n`;
-            }
-            if (g.details) {
-              const detailsText = JSON.stringify(g.details, null, 2);
-              text += `**${g.gateType} details:**\n`;
-              text += `\`\`\`json\n${detailsText.slice(0, 4000)}\n\`\`\`\n\n`;
-            }
-          }
-        }
-
-        if (Array.isArray(v.validationReceipts) && v.validationReceipts.length > 0) {
-          text += `\n## Validation Receipts\n\n`;
-          const ordered = [...v.validationReceipts].sort((a, b) => a.orderIndex - b.orderIndex);
-          for (const receipt of ordered) {
-            const status = receipt.status.toUpperCase();
-            text += `### [${receipt.orderIndex}] ${receipt.legKey} — ${status}\n`;
-            text += `- Blocking: ${receipt.blocking ? "yes" : "no"}\n`;
-            text += `- Duration: ${receipt.durationMs}ms\n`;
-            if (receipt.unreachedByLegKey) {
-              text += `- Unreached by: ${receipt.unreachedByLegKey}\n`;
-            }
-
-            if (receipt.status === "pass") {
-              text += `- PASS\n\n`;
-              continue;
-            }
-
-            text += `- Summary: ${receipt.summaryLine}\n`;
-
-            if (receipt.rawBody) {
-              text += `\n\`\`\`\n${receipt.rawBody.slice(0, 8000)}\n\`\`\`\n`;
-            }
-
-            if (receipt.policy) {
-              text += `\n**Policy:**\n\`\`\`json\n${JSON.stringify(receipt.policy, null, 2).slice(0, 4000)}\n\`\`\`\n`;
-            }
-            if (receipt.normalized) {
-              text += `\n**Normalized Blocking:**\n`;
-              text += `- Tool: ${receipt.normalized.tool}\n`;
-              text += `- Blocking: ${receipt.normalized.blocking.isBlocking ? "yes" : "no"}\n`;
-              text += `- Reason: ${receipt.normalized.blocking.reasonCode} — ${receipt.normalized.blocking.reasonText}\n`;
-              text += `- Threshold: ${receipt.normalized.blocking.threshold}\n`;
-              text += `- Compared to Baseline: ${receipt.normalized.blocking.comparedToBaseline ? "yes" : "no"}\n`;
-              text += `- Introduced: ${receipt.normalized.counts.introducedTotal} (critical=${receipt.normalized.counts.critical}, high=${receipt.normalized.counts.high}, medium=${receipt.normalized.counts.medium}, low=${receipt.normalized.counts.low})\n`;
-              if (receipt.normalized.tool === "sonarqube") {
-                text += `- Sonar Metrics: bugs=${receipt.normalized.counts.bugs}, codeSmells=${receipt.normalized.counts.codeSmells}, complexityDelta=${receipt.normalized.counts.complexityDelta}\n`;
-              }
-              if (receipt.normalized.issues.length > 0) {
-                text += `\n**Top Normalized Issues:**\n`;
-                for (const issue of receipt.normalized.issues.slice(0, 20)) {
-                  const location = issue.file
-                    ? `${issue.file}${issue.line ? `:${issue.line}` : ""}`
-                    : "(no file)";
-                  text += `- [${issue.severity.toUpperCase()}${issue.isBlocking ? ", BLOCKING" : ""}] ${location} — ${issue.message}\n`;
-                }
-                if (receipt.normalized.truncated) {
-                  text += "- ... additional normalized issues omitted\n";
-                }
-              }
-            }
-            if (receipt.sarif) {
-              text += `\n**SARIF:**\n\`\`\`json\n${JSON.stringify(receipt.sarif, null, 2).slice(0, 4000)}\n\`\`\`\n`;
-            }
-            text += `\n`;
-          }
-        }
-
-        // Test results with verbose output for both public and hidden scenarios.
-        const steps = v.steps ?? [];
-        if (steps.length > 0) {
-          const passed = steps.filter((s: { status: string }) => s.status === "pass").length;
-          const failed = steps.filter((s: { status: string }) => s.status === "fail").length;
-          text += `\n## Test Results (${steps.length} scenarios)\n`;
-          text += `**Passed:** ${passed} | **Failed:** ${failed}\n\n`;
-
-          const failures = steps.filter((s: { status: string }) => s.status === "fail" || s.status === "error");
-          if (failures.length > 0) {
-            text += `### Failed Scenarios\n\n`;
-            for (const s of failures) {
-              text += `- **${s.featureName} > ${s.scenarioName}** [${s.visibility}] - ${s.status.toUpperCase()}\n`;
-              if (s.output) text += `  \`\`\`\n${s.output}\n  \`\`\`\n`;
-            }
-          }
-        }
-
-        if (v.hiddenSummary) {
-          text += `\n## Hidden Test Summary\n`;
-          text += `**Total:** ${v.hiddenSummary.total} | `;
-          text += `**Passed:** ${v.hiddenSummary.passed} | `;
-          text += `**Failed:** ${v.hiddenSummary.failed} | `;
-          text += `**Skipped:** ${v.hiddenSummary.skipped}\n`;
-        }
-
-        // Structured feedback with prioritized action items
-        let renderedHiddenMechanisms = false;
-        if (v.feedbackJson) {
-          try {
-            const feedback = JSON.parse(v.feedbackJson);
-            text += `\n## Structured Feedback\n\n`;
-            text += `**Attempt:** ${feedback.attemptNumber ?? "?"} | **Remaining:** ${feedback.attemptsRemaining ?? "?"}\n\n`;
-            if (Array.isArray(feedback.hiddenFailureMechanisms) && feedback.hiddenFailureMechanisms.length > 0) {
-              text += "### Hidden Failure Mechanisms (safe summary)\n\n";
-              for (const mechanism of feedback.hiddenFailureMechanisms.slice(0, 10)) {
-                const label = typeof mechanism?.label === "string" ? mechanism.label : "Unknown edge case";
-                const count = typeof mechanism?.count === "number" ? mechanism.count : "?";
-                const guidance = typeof mechanism?.guidance === "string"
-                  ? mechanism.guidance
-                  : "Harden boundary conditions and error handling.";
-                text += `- **${label}** (${count}): ${guidance}\n`;
-              }
-              text += "\n";
-              renderedHiddenMechanisms = true;
-            }
-            if (feedback.actionItems && feedback.actionItems.length > 0) {
-              text += `### Action Items (prioritized)\n\n`;
-              for (let i = 0; i < feedback.actionItems.length; i++) {
-                text += `${i + 1}. ${feedback.actionItems[i]}\n`;
-              }
-            }
-          } catch {
-            // feedbackJson parse failed — skip
-          }
-        }
-        if (!renderedHiddenMechanisms && Array.isArray(v.hiddenFailureMechanisms) && v.hiddenFailureMechanisms.length > 0) {
-          text += "\n## Hidden Failure Mechanisms (safe summary)\n\n";
-          for (const mechanism of v.hiddenFailureMechanisms.slice(0, 10)) {
-            const label = typeof mechanism?.label === "string" ? mechanism.label : "Unknown edge case";
-            const count = typeof mechanism?.count === "number" ? mechanism.count : "?";
-            const guidance = typeof mechanism?.guidance === "string"
-              ? mechanism.guidance
-              : "Harden boundary conditions and error handling.";
-            text += `- **${label}** (${count}): ${guidance}\n`;
-          }
-        }
-
-        if (v.result) text += `\n## Result\n${v.result}\n`;
-        if (v.errorLog) text += `\n## Error Log\n\`\`\`\n${v.errorLog.slice(0, 2000)}\n\`\`\`\n`;
-
-        // Polling guidance
-        const isTerminal = ["passed", "failed", "error", "timed_out"].includes(v.status);
-        if (!isTerminal) {
-          text += `\n---\n_Verification typically takes 2-5 minutes. Check again in ~15 seconds._\n`;
-        }
-
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text: buildVerificationStatusText(result.verification) }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to get verification status";
         return {

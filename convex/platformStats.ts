@@ -1,5 +1,107 @@
 import { query, internalMutation } from "./_generated/server";
 
+type ClaimRecord = {
+  bountyId: unknown;
+  agentId: unknown;
+  claimedAt?: number;
+};
+
+type PassedVerificationRecord = {
+  bountyId: unknown;
+  submissionId: unknown;
+  completedAt?: number;
+};
+
+type BountyRecord = {
+  _id: unknown;
+  _creationTime: number;
+  status: string;
+  repositoryUrl?: string;
+  isTestBounty?: boolean;
+};
+
+type SubmissionRecord = {
+  _id: unknown;
+  agentId: unknown;
+};
+
+type UserRecord = {
+  _id: unknown;
+};
+
+type RepoRecord = {
+  repositoryUrl: string;
+};
+
+function computeLatestClaimByBountyAgent(
+  claims: ClaimRecord[],
+  nonTestBountyIds: Set<string>,
+): Map<string, number> {
+  const latestClaimByBountyAgent = new Map<string, number>();
+  for (const claim of claims) {
+    if (!nonTestBountyIds.has(String(claim.bountyId))) continue;
+    const key = `${String(claim.bountyId)}:${String(claim.agentId)}`;
+    const existing = latestClaimByBountyAgent.get(key) ?? 0;
+    const claimedAt = claim.claimedAt ?? 0;
+    if (claimedAt > existing) {
+      latestClaimByBountyAgent.set(key, claimedAt);
+    }
+  }
+  return latestClaimByBountyAgent;
+}
+
+function computeAvgTimeToClaimMs(
+  claims: ClaimRecord[],
+  nonTestBountyIds: Set<string>,
+  bountyById: Map<string, BountyRecord>,
+): number {
+  let totalClaimDelta = 0;
+  let claimCount = 0;
+  for (const claim of claims) {
+    if (!claim.claimedAt || !nonTestBountyIds.has(String(claim.bountyId))) continue;
+    const bounty = bountyById.get(String(claim.bountyId));
+    if (!bounty) continue;
+    totalClaimDelta += claim.claimedAt - bounty._creationTime;
+    claimCount++;
+  }
+  return claimCount > 0 ? totalClaimDelta / claimCount : 0;
+}
+
+function computeAvgTimeToSolveMs(
+  passedVerifications: PassedVerificationRecord[],
+  nonTestBountyIds: Set<string>,
+  submissionById: Map<string, SubmissionRecord>,
+  latestClaimByBountyAgent: Map<string, number>,
+): number {
+  let totalSolveDelta = 0;
+  let solveCount = 0;
+  for (const verification of passedVerifications) {
+    if (!verification.completedAt || !nonTestBountyIds.has(String(verification.bountyId))) continue;
+    const submission = submissionById.get(String(verification.submissionId));
+    if (!submission) continue;
+    const claimKey = `${String(verification.bountyId)}:${String(submission.agentId)}`;
+    const latestClaimedAt = latestClaimByBountyAgent.get(claimKey);
+    if (!latestClaimedAt) continue;
+    totalSolveDelta += verification.completedAt - latestClaimedAt;
+    solveCount++;
+  }
+  return solveCount > 0 ? totalSolveDelta / solveCount : 0;
+}
+
+function computeTotalRepos(
+  savedRepos: RepoRecord[],
+  repoConnections: RepoRecord[],
+  bounties: BountyRecord[],
+): number {
+  const repoUrls = new Set<string>();
+  for (const repo of savedRepos) repoUrls.add(repo.repositoryUrl);
+  for (const repoConnection of repoConnections) repoUrls.add(repoConnection.repositoryUrl);
+  for (const bounty of bounties) {
+    if (bounty.repositoryUrl) repoUrls.add(bounty.repositoryUrl);
+  }
+  return repoUrls.size;
+}
+
 export const recompute = internalMutation({
   args: {},
   handler: async (ctx) => {
@@ -17,55 +119,27 @@ export const recompute = internalMutation({
         ctx.db.query("repoConnections").collect(),
       ]);
 
-    const nonTestBounties = allBounties.filter((b) => !b.isTestBounty);
+    const nonTestBounties = allBounties.filter((b) => !b.isTestBounty) as BountyRecord[];
     const nonTestBountyIds = new Set(nonTestBounties.map((b) => String(b._id)));
-    const bountyById = new Map(nonTestBounties.map((b) => [String(b._id), b]));
-    const submissionById = new Map(allSubmissions.map((s) => [String(s._id), s]));
-
-    const latestClaimByBountyAgent = new Map<string, number>();
-    for (const claim of allClaims) {
-      if (!nonTestBountyIds.has(String(claim.bountyId))) continue;
-      const key = `${String(claim.bountyId)}:${String(claim.agentId)}`;
-      const existing = latestClaimByBountyAgent.get(key) ?? 0;
-      const claimedAt = claim.claimedAt ?? 0;
-      if (claimedAt > existing) {
-        latestClaimByBountyAgent.set(key, claimedAt);
-      }
-    }
-
-    // --- Avg time to claim ---
-    let totalClaimDelta = 0;
-    let claimCount = 0;
-    for (const claim of allClaims) {
-      if (!nonTestBountyIds.has(String(claim.bountyId))) continue;
-      if (claim.claimedAt) {
-        const bounty = bountyById.get(String(claim.bountyId));
-        if (bounty) {
-          totalClaimDelta += claim.claimedAt - bounty._creationTime;
-          claimCount++;
-        }
-      }
-    }
-    const avgTimeToClaimMs = claimCount > 0 ? totalClaimDelta / claimCount : 0;
-
-    // --- Avg time to solve ---
-    let totalSolveDelta = 0;
-    let solveCount = 0;
-    for (const v of passedVerifications) {
-      if (!nonTestBountyIds.has(String(v.bountyId))) continue;
-      if (v.completedAt) {
-        const submission = submissionById.get(String(v.submissionId));
-        if (!submission) continue;
-        const claimKey = `${String(v.bountyId)}:${String(submission.agentId)}`;
-        const latestClaimedAt = latestClaimByBountyAgent.get(claimKey);
-        if (latestClaimedAt) {
-          totalSolveDelta += v.completedAt - latestClaimedAt;
-          solveCount++;
-        }
-      }
-    }
-    const avgTimeToSolveMs =
-      solveCount > 0 ? totalSolveDelta / solveCount : 0;
+    const bountyById = new Map(nonTestBounties.map((b) => [String(b._id), b] as const));
+    const submissionById = new Map(
+      (allSubmissions as SubmissionRecord[]).map((submission) => [String(submission._id), submission] as const),
+    );
+    const latestClaimByBountyAgent = computeLatestClaimByBountyAgent(
+      allClaims as ClaimRecord[],
+      nonTestBountyIds,
+    );
+    const avgTimeToClaimMs = computeAvgTimeToClaimMs(
+      allClaims as ClaimRecord[],
+      nonTestBountyIds,
+      bountyById,
+    );
+    const avgTimeToSolveMs = computeAvgTimeToSolveMs(
+      passedVerifications as PassedVerificationRecord[],
+      nonTestBountyIds,
+      submissionById,
+      latestClaimByBountyAgent,
+    );
 
     // --- Total bounties processed (completed) ---
     const totalBountiesProcessed = nonTestBounties.filter(
@@ -73,22 +147,12 @@ export const recompute = internalMutation({
     ).length;
 
     // --- Total users (deduped by stable user ID, independent of bounty type) ---
-    const totalUsers = new Set(allUsers.map((u) => String(u._id))).size;
-
-    // --- Total repos onboarded (distinct repositoryUrl from saved/connected/used repos) ---
-    const repoUrls = new Set<string>();
-    for (const repo of allSavedRepos) {
-      repoUrls.add(repo.repositoryUrl);
-    }
-    for (const repoConnection of allRepoConnections) {
-      repoUrls.add(repoConnection.repositoryUrl);
-    }
-    for (const b of allBounties) {
-      if (b.repositoryUrl) {
-        repoUrls.add(b.repositoryUrl);
-      }
-    }
-    const totalRepos = repoUrls.size;
+    const totalUsers = new Set((allUsers as UserRecord[]).map((u) => String(u._id))).size;
+    const totalRepos = computeTotalRepos(
+      allSavedRepos as RepoRecord[],
+      allRepoConnections as RepoRecord[],
+      allBounties as BountyRecord[],
+    );
 
     // --- Upsert singleton ---
     const existing = await ctx.db.query("platformStats").first();

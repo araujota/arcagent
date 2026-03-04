@@ -22,6 +22,67 @@ import { reportCrash } from "./crashReporter";
 import { sessionStore, SessionRecord } from "./sessionStore";
 import { logger } from "../index";
 
+interface RecoveryStats {
+  scanned: number;
+  adopted: number;
+  destroyed: number;
+  skipped: number;
+}
+
+function groupSessionsByWorker(sessions: SessionRecord[]): Map<string, SessionRecord[]> {
+  const sessionsByWorker = new Map<string, SessionRecord[]>();
+  for (const session of sessions) {
+    const workerId = session.workerInstanceId;
+    let list = sessionsByWorker.get(workerId);
+    if (!list) {
+      list = [];
+      sessionsByWorker.set(workerId, list);
+    }
+    list.push(session);
+  }
+  return sessionsByWorker;
+}
+
+async function processWorkerSessions(args: {
+  workerId: string;
+  sessions: SessionRecord[];
+  instanceId: string;
+  stats: RecoveryStats;
+}): Promise<void> {
+  if (args.workerId === args.instanceId) {
+    args.stats.skipped += args.sessions.length;
+    return;
+  }
+
+  const heartbeat = await sessionStore.getWorkerHeartbeat(args.workerId);
+  if (heartbeat !== null) {
+    logger.debug("Worker still alive, skipping its sessions", {
+      workerId: args.workerId,
+      sessionCount: args.sessions.length,
+    });
+    args.stats.skipped += args.sessions.length;
+    return;
+  }
+
+  logger.warn("Worker heartbeat expired — recovering orphaned sessions", {
+    workerId: args.workerId,
+    sessionCount: args.sessions.length,
+  });
+
+  for (const session of args.sessions) {
+    try {
+      await recoverSession(session, args.instanceId);
+      args.stats.adopted++;
+    } catch (err) {
+      logger.error("Failed to recover session", {
+        workspaceId: session.workspaceId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      args.stats.destroyed++;
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -49,12 +110,7 @@ export function generateWorkerInstanceId(): string {
  */
 export async function recoverOrphanedSessions(
   instanceId: string,
-): Promise<{
-  scanned: number;
-  adopted: number;
-  destroyed: number;
-  skipped: number;
-}> {
+): Promise<RecoveryStats> {
   const stats = { scanned: 0, adopted: 0, destroyed: 0, skipped: 0 };
 
   logger.info("Starting orphaned session recovery scan", { instanceId });
@@ -76,56 +132,15 @@ export async function recoverOrphanedSessions(
     return stats;
   }
 
-  // Group sessions by owning worker
-  const sessionsByWorker = new Map<string, SessionRecord[]>();
-  for (const session of allSessions) {
-    const workerId = session.workerInstanceId;
-    let list = sessionsByWorker.get(workerId);
-    if (!list) {
-      list = [];
-      sessionsByWorker.set(workerId, list);
-    }
-    list.push(session);
-  }
+  const sessionsByWorker = groupSessionsByWorker(allSessions);
 
-  // Check each worker's heartbeat
   for (const [workerId, sessions] of sessionsByWorker) {
-    // Skip our own sessions (shouldn't exist yet, but be safe)
-    if (workerId === instanceId) {
-      stats.skipped += sessions.length;
-      continue;
-    }
-
-    // Check if the owner worker is still alive
-    const heartbeat = await sessionStore.getWorkerHeartbeat(workerId);
-    if (heartbeat !== null) {
-      // Worker is still alive — skip its sessions
-      logger.debug("Worker still alive, skipping its sessions", {
-        workerId,
-        sessionCount: sessions.length,
-      });
-      stats.skipped += sessions.length;
-      continue;
-    }
-
-    // Worker heartbeat expired — sessions are orphaned
-    logger.warn("Worker heartbeat expired — recovering orphaned sessions", {
+    await processWorkerSessions({
       workerId,
-      sessionCount: sessions.length,
+      sessions,
+      instanceId,
+      stats,
     });
-
-    for (const session of sessions) {
-      try {
-        await recoverSession(session, instanceId);
-        stats.adopted++;
-      } catch (err) {
-        logger.error("Failed to recover session", {
-          workspaceId: session.workspaceId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        stats.destroyed++;
-      }
-    }
   }
 
   logger.info("Orphaned session recovery complete", stats);
@@ -241,7 +256,7 @@ async function recoverSession(
       // Build a minimal VMHandle for the destroy function
       const handle: VMHandle = {
         vmId,
-        jobId: workspaceId,
+        jobId: `recovery-${vmId}`,
         // Use real guest IP so releaseGuestIp returns it to the pool
         guestIp: session.guestIp ?? "0.0.0.0",
         exec: async () => ({ stdout: "", stderr: "", exitCode: 1 }),

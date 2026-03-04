@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { v4 as uuidv4 } from "uuid";
+import { basename, resolve } from "node:path";
 import { logger } from "../index";
 import { vsockExec, vsockExecWithStdin, vsockWriteFile, waitForVsock, sendVsockRequestPooled, VsockRequest, VsockResponse, vsockPool } from "./vsockChannel";
 import { createEncryptedOverlay, destroyEncryptedOverlay, EncryptedOverlayHandle } from "./encryptedOverlay";
@@ -98,9 +99,46 @@ const MIN_VSOCK_AGENT_BYTES = parseInt(process.env.FC_MIN_VSOCK_AGENT_BYTES ?? "
 const SSH_KEY_PATH = process.env.FC_SSH_KEY_PATH ?? "/root/.ssh/id_ed25519";
 /** SSH port on guest (when vsock is disabled). */
 const GUEST_SSH_PORT = parseInt(process.env.FC_GUEST_SSH_PORT ?? "22", 10);
+const RUNTIME_TMP_DIR = resolve(process.env.FC_TMP_DIR ?? "/tmp");
+const OVERLAY_FILE_RE = /^fc-overlay-vm-[a-f0-9]{8}\.ext4$/;
+const CONFIG_FILE_RE = /^fc-config-vm-[a-f0-9]{8}\.json$/;
+const SSH_KEY_FILE_RE = /^fc-ssh-vm-[a-f0-9]{8}$/;
+const SSH_PUB_KEY_FILE_RE = /^fc-ssh-vm-[a-f0-9]{8}\.pub$/;
+const VSOCK_SOCKET_FILE_RE = /^fc-vsock-vm-[a-f0-9]{8}\.sock$/;
 // ---------------------------------------------------------------------------
 // VM lifecycle
 // ---------------------------------------------------------------------------
+
+function resolveManagedTmpFile(candidatePath: string, allowedNamePattern: RegExp): string | null {
+  const normalizedPath = resolve(candidatePath);
+  const tmpPrefix = `${RUNTIME_TMP_DIR}/`;
+  if (normalizedPath !== RUNTIME_TMP_DIR && !normalizedPath.startsWith(tmpPrefix)) {
+    return null;
+  }
+  const fileName = basename(normalizedPath);
+  if (!allowedNamePattern.test(fileName)) {
+    return null;
+  }
+  return resolve(RUNTIME_TMP_DIR, fileName);
+}
+
+async function unlinkManagedTmpFile(
+  unlinkFn: (path: string) => Promise<void>,
+  candidatePath: string | undefined,
+  allowedNamePattern: RegExp,
+  vmId: string,
+): Promise<void> {
+  if (!candidatePath) return;
+  const safePath = resolveManagedTmpFile(candidatePath, allowedNamePattern);
+  if (!safePath) {
+    logger.warn("Skipping unsafe VM temp-file delete path", {
+      vmId,
+      path: candidatePath,
+    });
+    return;
+  }
+  await unlinkFn(safePath).catch(() => {});
+}
 
 /**
  * Create and boot a Firecracker microVM.
@@ -480,16 +518,12 @@ export async function createFirecrackerVM(
     const { unlink } = await import("node:fs/promises");
     if (encryptedOverlay) {
       await destroyEncryptedOverlay(encryptedOverlay).catch(() => {});
-    } else if (overlayPath) {
-      await unlink(overlayPath).catch(() => {});
+    } else {
+      await unlinkManagedTmpFile(unlink, overlayPath, OVERLAY_FILE_RE, vmId);
     }
-    if (configPath) {
-      await unlink(configPath).catch(() => {});
-    }
-    if (vmSshKeyPath) {
-      await unlink(vmSshKeyPath).catch(() => {});
-      await unlink(`${vmSshKeyPath}.pub`).catch(() => {});
-    }
+    await unlinkManagedTmpFile(unlink, configPath, CONFIG_FILE_RE, vmId);
+    await unlinkManagedTmpFile(unlink, vmSshKeyPath, SSH_KEY_FILE_RE, vmId);
+    await unlinkManagedTmpFile(unlink, vmSshKeyPath ? `${vmSshKeyPath}.pub` : undefined, SSH_PUB_KEY_FILE_RE, vmId);
 
     releaseGuestIp(guestIp);
     throw err;
@@ -598,25 +632,31 @@ export async function destroyFirecrackerVM(handle: VMHandle): Promise<void> {
         error: String(err),
       });
     });
-  } else if (int.__overlayPath) {
-    await unlink(int.__overlayPath).catch(() => {});
+  } else {
+    await unlinkManagedTmpFile(unlink, int.__overlayPath, OVERLAY_FILE_RE, handle.vmId);
   }
 
-  if (int.__configPath) {
-    await unlink(int.__configPath).catch(() => {});
-  }
+  await unlinkManagedTmpFile(unlink, int.__configPath, CONFIG_FILE_RE, handle.vmId);
 
   // Clean up vsock pool connections and socket file
   if (int.__vsockSocketPath) {
     vsockPool.destroy(int.__vsockSocketPath);
-    await unlink(int.__vsockSocketPath).catch(() => {});
+    await unlinkManagedTmpFile(
+      unlink,
+      int.__vsockSocketPath,
+      VSOCK_SOCKET_FILE_RE,
+      handle.vmId,
+    );
   }
 
   // SECURITY (P2-3): Delete per-VM SSH keypair (only if SSH was used)
-  if (int.__sshKeyPath) {
-    await unlink(int.__sshKeyPath).catch(() => {});
-    await unlink(`${int.__sshKeyPath}.pub`).catch(() => {});
-  }
+  await unlinkManagedTmpFile(unlink, int.__sshKeyPath, SSH_KEY_FILE_RE, handle.vmId);
+  await unlinkManagedTmpFile(
+    unlink,
+    int.__sshKeyPath ? `${int.__sshKeyPath}.pub` : undefined,
+    SSH_PUB_KEY_FILE_RE,
+    handle.vmId,
+  );
 
   // 5. Verify TAP device is actually removed
   if (int.__tapDevice) {

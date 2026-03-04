@@ -50,6 +50,7 @@ describe("runTestGate", () => {
     const vm = mockVM();
     const result = await runTestGate(vm, "brainfuck", 60_000, null);
     expectGateSkipped(result);
+    expect(result.status).toBe("skipped");
   });
 
   it("BDD path: writes feature files and runs them", async () => {

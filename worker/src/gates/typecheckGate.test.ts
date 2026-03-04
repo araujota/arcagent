@@ -87,5 +87,6 @@ describe("runTypecheckGate", () => {
     const vm = mockVM();
     const result = await runTypecheckGate(vm, "java", 60_000, null);
     expectGateSkipped(result);
+    expect(result.status).toBe("skipped");
   });
 });

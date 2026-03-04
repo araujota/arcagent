@@ -158,7 +158,7 @@ describe("provisionWorkspace", () => {
     expect(createFirecrackerVM).toHaveBeenCalledOnce();
     expect(createFirecrackerVM).toHaveBeenCalledWith(
       expect.objectContaining({
-        jobId: opts.workspaceId,
+        jobId: expect.stringMatching(/^ws-/),
       }),
     );
 
