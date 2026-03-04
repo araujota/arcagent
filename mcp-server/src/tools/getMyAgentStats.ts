@@ -7,15 +7,26 @@ interface AgentStats {
   stats: {
     tier: string;
     compositeScore: number;
+    finalScore?: number;
+    weightedScore?: number;
+    penaltyScore?: number;
+    scoreVersion?: string;
     totalBountiesCompleted: number;
     totalBountiesClaimed: number;
     totalBountiesExpired: number;
+    paidBountiesCompleted?: number;
+    paidPayoutVolumeUsd?: number;
     totalSubmissions: number;
     firstAttemptPassRate: number;
     completionRate: number;
     avgCreatorRating: number;
     totalRatings: number;
     uniqueRaters: number;
+    trustedUniqueRaters?: number;
+    repeatCreatorHireRate?: number;
+    highValueCompletionRate?: number;
+    hiddenPassRate?: number;
+    gamingRiskScore?: number;
     avgTimeToResolutionMs: number;
     gateQualityScore: number;
     sonarRiskBurden: number;
@@ -24,6 +35,14 @@ interface AgentStats {
     sonarRiskDisciplineScore: number;
     snykMinorDisciplineScore: number;
     advisoryReliabilityScore: number;
+    scoreBreakdown?: {
+      executionQuality?: number;
+      marketSuccess?: number;
+      riskDiscipline?: number;
+      deliveryEfficiency?: number;
+      reliability?: number;
+    } | null;
+    riskFlags?: string[];
     lastComputedAt: number;
   } | null;
 }
@@ -75,15 +94,45 @@ export function registerGetMyAgentStats(server: McpServer): void {
 
       let text = `# Your Agent Stats\n\n`;
       text += `**Tier:** ${s.tier}\n`;
-      text += `**Composite Score:** ${s.compositeScore.toFixed(1)} / 100\n\n`;
+      text += `**Composite Score:** ${s.compositeScore.toFixed(1)} / 100\n`;
+      if (typeof s.finalScore === "number") {
+        text += `**Final Score:** ${s.finalScore.toFixed(1)} / 100\n`;
+      }
+      if (s.scoreVersion) {
+        text += `**Score Version:** ${s.scoreVersion}\n`;
+      }
+      text += `\n`;
       text += `## Performance\n`;
       text += `- Bounties Completed: ${s.totalBountiesCompleted}\n`;
       text += `- Bounties Claimed: ${s.totalBountiesClaimed}\n`;
+      text += `- Paid Bounties Completed: ${s.paidBountiesCompleted ?? 0}\n`;
+      text += `- Paid Payout Volume (USD): $${(s.paidPayoutVolumeUsd ?? 0).toFixed(2)}\n`;
       text += `- Completion Rate: ${(s.completionRate * 100).toFixed(1)}%\n`;
       text += `- First-Attempt Pass Rate: ${(s.firstAttemptPassRate * 100).toFixed(1)}%\n`;
       text += `- Avg Time to Resolution: ${avgTimeHours} hours\n`;
       text += `- Gate Quality Score: ${(s.gateQualityScore * 100).toFixed(1)}%\n`;
       text += `- Total Submissions: ${s.totalSubmissions}\n\n`;
+      text += `## Market Signals\n`;
+      text += `- Repeat Creator Hire Rate: ${((s.repeatCreatorHireRate ?? 0) * 100).toFixed(1)}%\n`;
+      text += `- High-Value Completion Rate: ${((s.highValueCompletionRate ?? 0) * 100).toFixed(1)}%\n`;
+      text += `- Hidden-Step Pass Rate: ${((s.hiddenPassRate ?? 0) * 100).toFixed(1)}%\n\n`;
+      text += `## Score Factors\n`;
+      text += `- Execution Quality: ${(s.scoreBreakdown?.executionQuality ?? 0).toFixed(1)}\n`;
+      text += `- Market Success: ${(s.scoreBreakdown?.marketSuccess ?? 0).toFixed(1)}\n`;
+      text += `- Risk Discipline: ${(s.scoreBreakdown?.riskDiscipline ?? 0).toFixed(1)}\n`;
+      text += `- Delivery Efficiency: ${(s.scoreBreakdown?.deliveryEfficiency ?? 0).toFixed(1)}\n`;
+      text += `- Reliability: ${(s.scoreBreakdown?.reliability ?? 0).toFixed(1)}\n`;
+      text += `- Gaming Risk Score: ${(s.gamingRiskScore ?? 0).toFixed(1)}\n`;
+      if (typeof s.weightedScore === "number" || typeof s.penaltyScore === "number") {
+        text += `- Weighted Score: ${(s.weightedScore ?? 0).toFixed(1)}\n`;
+        text += `- Anti-Gaming Penalty: ${(s.penaltyScore ?? 0).toFixed(1)}\n`;
+      }
+      if (s.riskFlags && s.riskFlags.length > 0) {
+        text += `- Risk Flags: ${s.riskFlags.join(", ")}\n`;
+      } else {
+        text += `- Risk Flags: none\n`;
+      }
+      text += `\n`;
       text += `## Risk Discipline\n`;
       text += `- Sonar Risk Burden: ${(s.sonarRiskBurden ?? 0).toFixed(2)}\n`;
       text += `- Snyk Minor Burden: ${(s.snykMinorBurden ?? 0).toFixed(2)}\n`;
@@ -95,6 +144,7 @@ export function registerGetMyAgentStats(server: McpServer): void {
       text += `- Avg Creator Rating: ${s.avgCreatorRating.toFixed(1)} / 5.0\n`;
       text += `- Total Ratings: ${s.totalRatings}\n`;
       text += `- Unique Raters: ${s.uniqueRaters}\n`;
+      text += `- Trusted Unique Raters: ${s.trustedUniqueRaters ?? 0}\n`;
 
       if (s.lastComputedAt) {
         text += `\n_Stats last updated: ${new Date(s.lastComputedAt).toISOString()}_\n`;

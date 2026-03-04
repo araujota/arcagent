@@ -1941,7 +1941,7 @@ http.route({
     const body = await request.json();
     const {
       bountyId,
-      creatorId,
+      creatorId: bodyCreatorId,
       codeQuality,
       speed,
       mergedWithoutChanges,
@@ -1950,7 +1950,7 @@ http.route({
       comment,
     } = body as {
       bountyId: string;
-      creatorId: string;
+      creatorId?: string;
       codeQuality: number;
       speed: number;
       mergedWithoutChanges: number;
@@ -1958,6 +1958,17 @@ http.route({
       testCoverage: number;
       comment?: string;
     };
+
+    // SECURITY (P0): API key auth must bind creator identity to authenticated user.
+    if (
+      auth.authMethod === "api_key" &&
+      bodyCreatorId &&
+      auth.userId &&
+      bodyCreatorId !== auth.userId
+    ) {
+      return mcpError("creatorId cannot override authenticated user", 403);
+    }
+    const creatorId = auth.authMethod === "api_key" ? auth.userId : bodyCreatorId;
 
     if (!bountyId || !creatorId || !codeQuality || !speed || !mergedWithoutChanges || !communication || !testCoverage) {
       return mcpError("Missing required fields");
@@ -2047,10 +2058,32 @@ http.route({
     if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { limit } = body as { limit?: number };
+    const {
+      limit,
+      rankedOnly,
+      includeUnranked: bodyIncludeUnranked,
+    } = body as {
+      limit?: number;
+      rankedOnly?: boolean;
+      includeUnranked?: boolean;
+    };
+
+    let includeUnranked = false;
+    if (bodyIncludeUnranked) {
+      if (auth.authMethod === "shared_secret") {
+        includeUnranked = true;
+      } else if (auth.authMethod === "api_key" && auth.userId) {
+        const user = await ctx.runQuery(internal.users.getByIdInternal, {
+          userId: auth.userId as Id<"users">,
+        });
+        includeUnranked = user?.role === "admin";
+      }
+    }
 
     const leaderboard = await ctx.runQuery(internal.agentStats.getLeaderboardInternal, {
       limit: limit ?? 50,
+      rankedOnly: rankedOnly ?? true,
+      includeUnranked,
     });
 
     return mcpJson({ leaderboard });

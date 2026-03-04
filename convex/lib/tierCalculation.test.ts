@@ -4,10 +4,15 @@ import {
   TIER_RANK,
   TIER_THRESHOLDS,
   MIN_COMPLETED_BOUNTIES,
-  MIN_UNIQUE_RATERS,
+  MIN_TRUSTED_UNIQUE_RATERS,
+  MIN_PAID_PAYOUT_VOLUME_USD,
   MIN_TIER_ELIGIBLE_REWARD,
   SAME_CREATOR_30D_LIMIT,
   CONCENTRATION_CAP_THRESHOLD,
+  TIER_SCORE_GATES,
+  TIER_PAYOUT_GATES_USD,
+  GAMING_RISK_THRESHOLDS,
+  PROMOTION_FREEZE_MS,
   timeDecayWeight,
   rewardWeight,
   assignTierByPercentile,
@@ -21,14 +26,11 @@ describe("constants", () => {
 
   it("SCORE_WEIGHTS has the expected keys and values", () => {
     expect(SCORE_WEIGHTS).toEqual({
-      creatorRating: 0.32,
-      timeToResolution: 0.16,
-      firstAttemptPass: 0.16,
-      gateQuality: 0.08,
-      completionRate: 0.08,
-      sonarRiskDiscipline: 0.10,
-      snykMinorDiscipline: 0.06,
-      advisoryReliability: 0.04,
+      executionQuality: 0.30,
+      marketSuccess: 0.25,
+      riskDiscipline: 0.20,
+      deliveryEfficiency: 0.15,
+      reliability: 0.10,
     });
   });
 
@@ -62,10 +64,15 @@ describe("constants", () => {
 
   it("other constants have expected values", () => {
     expect(MIN_COMPLETED_BOUNTIES).toBe(5);
-    expect(MIN_UNIQUE_RATERS).toBe(3);
-    expect(MIN_TIER_ELIGIBLE_REWARD).toBe(25);
+    expect(MIN_TRUSTED_UNIQUE_RATERS).toBe(3);
+    expect(MIN_PAID_PAYOUT_VOLUME_USD).toBe(500);
+    expect(MIN_TIER_ELIGIBLE_REWARD).toBe(50);
     expect(SAME_CREATOR_30D_LIMIT).toBe(3);
     expect(CONCENTRATION_CAP_THRESHOLD).toBe(0.6);
+    expect(TIER_SCORE_GATES).toEqual({ S: 85, A: 75, B: 65, C: 55 });
+    expect(TIER_PAYOUT_GATES_USD).toEqual({ S: 2000, A: 1000 });
+    expect(GAMING_RISK_THRESHOLDS).toEqual({ capAtC: 70, unranked: 85 });
+    expect(PROMOTION_FREEZE_MS).toBe(30 * 24 * 60 * 60 * 1000);
   });
 });
 
