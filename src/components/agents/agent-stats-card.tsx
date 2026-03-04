@@ -28,6 +28,9 @@ interface AgentStatsCardProps {
     avgCreatorRating: number;
     totalRatings: number;
     avgTimeToResolutionMs: number;
+    sonarRiskDisciplineScore: number;
+    snykMinorDisciplineScore: number;
+    advisoryReliabilityScore: number;
   };
 }
 
@@ -83,6 +86,21 @@ export function AgentStatsCard({ stats }: AgentStatsCardProps) {
             icon={<Clock className="h-4 w-4 text-muted-foreground" />}
             label="Avg Time"
             value={`${avgTimeHours}h`}
+          />
+          <Stat
+            icon={<Target className="h-4 w-4 text-emerald-500" />}
+            label="Sonar Discipline"
+            value={`${stats.sonarRiskDisciplineScore.toFixed(0)}`}
+          />
+          <Stat
+            icon={<Zap className="h-4 w-4 text-cyan-500" />}
+            label="Snyk Discipline"
+            value={`${stats.snykMinorDisciplineScore.toFixed(0)}`}
+          />
+          <Stat
+            icon={<CheckCircle2 className="h-4 w-4 text-indigo-500" />}
+            label="Advisory Reliability"
+            value={`${stats.advisoryReliabilityScore.toFixed(0)}`}
           />
         </div>
       </CardContent>

@@ -67,16 +67,6 @@ describe("runSonarQubeGate", () => {
     expect(result.summary).toContain("scanner failed");
   });
 
-  it("skips unsupported languages", async () => {
-    process.env.SONARQUBE_URL = "https://sonar.example.com";
-    process.env.SONARQUBE_TOKEN = "token";
-
-    const vm = makeVmExec([]);
-    const result = await runSonarQubeGate(vm, "python", 60_000, null);
-    expect(result.status).toBe("skipped");
-    expect(result.summary).toContain("not enabled for language");
-  });
-
   it("fails when quality gate is ERROR", async () => {
     process.env.SONARQUBE_URL = "https://sonar.example.com";
     process.env.SONARQUBE_TOKEN = "token";
@@ -101,10 +91,53 @@ describe("runSonarQubeGate", () => {
           },
         }),
       },
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          component: { measures: [{ metric: "new_bugs", value: "2" }] },
+        }),
+      },
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          issues: [
+            {
+              rule: "typescript:S123",
+              severity: "CRITICAL",
+              component: "src/service.ts",
+              line: 10,
+              type: "BUG",
+              message: "Potential bug",
+            },
+          ],
+        }),
+      },
     ]);
 
     const result = await runSonarQubeGate(vm, "typescript", 60_000, null);
     expect(result.status).toBe("fail");
     expect(result.summary).toContain("quality gate failed");
+  });
+
+  it("returns error when quality gate polling times out", async () => {
+    process.env.SONARQUBE_URL = "https://sonar.example.com";
+    process.env.SONARQUBE_TOKEN = "token";
+
+    const timeoutMs = 6_000;
+    const vm = makeVmExec([
+      { exitCode: 0 },
+      { exitCode: 0, stdout: "scanner ok" },
+      ...Array.from({ length: Math.min(Math.floor(timeoutMs / 5_000), 24) }, () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({ projectStatus: { status: "IN_PROGRESS", conditions: [] } }),
+      })),
+      { exitCode: 0, stdout: JSON.stringify({ component: { measures: [] } }) },
+      { exitCode: 0, stdout: JSON.stringify({ issues: [] }) },
+    ]);
+
+    const result = await runSonarQubeGate(vm, "typescript", timeoutMs, null);
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain("polling timed out");
+    expect((result.details as any)?.reasonCode).toBe("quality_gate_timeout");
   });
 });

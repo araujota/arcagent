@@ -38,7 +38,8 @@ locals {
     local.request_certificate ? aws_acm_certificate.mcp[0].arn : ""
   )
 
-  mcp_public_base_url = "https://${var.mcp_public_domain}"
+  mcp_public_base_url      = "https://${var.mcp_public_domain}"
+  worker_proxy_path_prefix = trim(var.worker_proxy_path_prefix, "/") != "" ? "/${trim(var.worker_proxy_path_prefix, "/")}" : "/worker-proxy"
   secret_arns = compact([
     var.worker_shared_secret_secret_arn,
     var.mcp_audit_log_token_secret_arn,
@@ -61,6 +62,9 @@ locals {
     { name = "MCP_REGISTER_HONEYPOT_FIELD", value = var.register_honeypot_field },
     { name = "MCP_REGISTER_CAPTCHA_HEADER", value = var.register_captcha_header },
     { name = "MCP_ENABLE_CONVEX_AUDIT_LOGS", value = var.enable_convex_audit_logs ? "true" : "false" },
+    { name = "MCP_INTERNAL_WORKER_BASE_URL", value = var.worker_internal_url },
+    { name = "MCP_WORKER_PROXY_PATH_PREFIX", value = local.worker_proxy_path_prefix },
+    { name = "WORKER_API_URL", value = "${local.mcp_public_base_url}${local.worker_proxy_path_prefix}" },
   ]
 
   task_secrets = concat(
@@ -130,6 +134,10 @@ resource "aws_route_table" "public" {
     gateway_id = aws_internet_gateway.mcp.id
   }
 
+  lifecycle {
+    ignore_changes = [route]
+  }
+
   tags = {
     Name = "${local.name}-public-rt"
   }
@@ -174,6 +182,10 @@ resource "aws_route_table" "private" {
     }
   }
 
+  lifecycle {
+    ignore_changes = [route]
+  }
+
   tags = {
     Name = "${local.name}-private-rt"
   }
@@ -195,21 +207,21 @@ resource "aws_security_group" "alb" {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.alb_ingress_allowed_cidrs
   }
 
   ingress {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.alb_ingress_allowed_cidrs
   }
 
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port   = var.container_port
+    to_port     = var.container_port
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
   }
 
   tags = {
@@ -230,10 +242,41 @@ resource "aws_security_group" "ecs" {
   }
 
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 6379
+    to_port     = 6379
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  egress {
+    from_port   = 53
+    to_port     = 53
+    protocol    = "udp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  egress {
+    from_port   = 53
+    to_port     = 53
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  dynamic "egress" {
+    for_each = trimspace(var.worker_vpc_cidr) != "" ? [var.worker_vpc_cidr] : []
+    content {
+      from_port   = 3001
+      to_port     = 3001
+      protocol    = "tcp"
+      cidr_blocks = [egress.value]
+    }
   }
 
   tags = {
@@ -257,7 +300,7 @@ resource "aws_security_group" "redis" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.vpc_cidr]
   }
 
   tags = {

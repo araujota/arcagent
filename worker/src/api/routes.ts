@@ -48,11 +48,6 @@ interface VerifyRequestBody {
     gherkinContent: string;
     visibility: "public" | "hidden";
   }>;
-  /** Creator's gate settings — gates can be individually disabled. */
-  gateSettings?: {
-    snykEnabled?: boolean;
-    sonarqubeEnabled?: boolean;
-  };
   /** Diff patch to apply instead of checking out a specific commit (workspace flow). */
   diffPatch?: string;
   /** Source workspace ID (for tracking). */
@@ -259,8 +254,6 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
 
       // SECURITY (C4): Always use server-configured Convex HTTP-actions URL — never trust
       // client-provided convexUrl/convexHttpActionsUrl, which could point to an attacker.
-      // SECURITY (M5): Only accept gateSettings from internal Convex data,
-      // not from the request body.
       const configuredConvexHttpActionsUrl = resolveConfiguredConvexHttpActionsUrl();
       const jobData: VerificationJobData = {
         verificationId: body.verificationId,
@@ -277,7 +270,6 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
         convexHttpActionsUrl: configuredConvexHttpActionsUrl,
         convexUrl: configuredConvexHttpActionsUrl,
         testSuites: body.testSuites,
-        gateSettings: body.gateSettings,
         diffPatch: body.diffPatch,
         sourceWorkspaceId: body.sourceWorkspaceId,
         ztacoMode: body.ztacoMode,

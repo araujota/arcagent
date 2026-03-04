@@ -940,6 +940,24 @@ http.route({
         githubUsername,
       });
 
+      const existingKeys = await ctx.runQuery(internal.apiKeys.listByUser, {
+        userId,
+      });
+      const now = Date.now();
+      const activeKey = existingKeys.find((key) =>
+        key.status === "active" && (!key.expiresAt || key.expiresAt > now));
+      if (activeKey) {
+        return mcpJson(
+          {
+            error:
+              "Account already has an active API key. Reuse your existing key instead of registering again.",
+            userId,
+            keyPrefix: activeKey.keyPrefix,
+          },
+          409,
+        );
+      }
+
       // Generate and hash API key in Convex so issuance is centrally indexed.
       const randomPart = Array.from(crypto.getRandomValues(new Uint8Array(16)))
         .map((b) => b.toString(16).padStart(2, "0"))
@@ -1903,6 +1921,7 @@ http.route({
       verificationStatus: latestVerification.status,
       attemptNumber: allVerifications.length,
       hiddenFailureMechanisms,
+      validationReceipts: latestAgentStatus?.validationReceipts ?? [],
     });
   }),
 });
@@ -2893,13 +2912,17 @@ const GATE_STATUS_MAP: Record<string, string> = {
   warn: "warning",
 };
 
-const RECEIPT_STATUS_MAP: Record<string, "pass" | "fail" | "error" | "warning" | "unreached" | "skipped_policy"> = {
+const RECEIPT_STATUS_MAP: Record<
+  string,
+  "pass" | "fail" | "error" | "warning" | "unreached" | "skipped_policy" | "skipped_policy_due_process"
+> = {
   pass: "pass",
   fail: "fail",
   error: "error",
   warning: "warning",
   unreached: "unreached",
   skipped_policy: "skipped_policy",
+  skipped_policy_due_process: "skipped_policy_due_process",
 };
 
 function stringifyLogDetails(value: unknown): string | undefined {
@@ -2956,6 +2979,7 @@ http.route({
         sarifJson?: string;
         policyJson?: string;
         metadataJson?: string;
+        normalizedJson?: string;
       }>;
       steps?: Array<{
         scenarioName: string;
@@ -3134,6 +3158,7 @@ http.route({
             sarifJson: receipt.sarifJson,
             policyJson: receipt.policyJson,
             metadataJson: receipt.metadataJson,
+            normalizedJson: receipt.normalizedJson,
             createdAt: Date.now(),
           });
         }
@@ -3340,6 +3365,7 @@ http.route({
       sarifJson?: string;
       policyJson?: string;
       metadataJson?: string;
+      normalizedJson?: string;
       jobHmac?: string;
       callbackTimestampMs?: number;
       callbackNonce?: string;
@@ -3462,6 +3488,7 @@ http.route({
         sarifJson: body.sarifJson,
         policyJson: body.policyJson,
         metadataJson: body.metadataJson,
+        normalizedJson: body.normalizedJson,
         createdAt: Date.now(),
       });
 

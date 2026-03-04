@@ -83,4 +83,13 @@ describe("config startup modes", () => {
     });
     expect(() => assertConfig(cfg)).toThrow("requires MCP_AUDIT_LOG_TOKEN");
   });
+
+  it("normalizes worker proxy settings", () => {
+    const cfg = loadServerConfig({
+      MCP_INTERNAL_WORKER_BASE_URL: "http://internal-worker.local:3001/",
+      MCP_WORKER_PROXY_PATH_PREFIX: "worker-gateway/",
+    });
+    expect(cfg.internalWorkerBaseUrl).toBe("http://internal-worker.local:3001");
+    expect(cfg.workerProxyPathPrefix).toBe("/worker-gateway");
+  });
 });

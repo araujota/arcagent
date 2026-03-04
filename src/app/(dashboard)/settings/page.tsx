@@ -47,8 +47,6 @@ export default function SettingsPage() {
   const [name, setName] = useState("");
   const [walletAddress, setWalletAddress] = useState("");
   const [isTechnical, setIsTechnical] = useState(false);
-  const [snykEnabled, setSnykEnabled] = useState(true);
-  const [sonarqubeEnabled, setSonarqubeEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
   const [generatedKey, setGeneratedKey] = useState<string | null>(null);
@@ -80,8 +78,6 @@ export default function SettingsPage() {
       setName(user.name);
       setWalletAddress(user.walletAddress ?? "");
       setIsTechnical(user.isTechnical ?? false);
-      setSnykEnabled(user.gateSettings?.snykEnabled ?? true);
-      setSonarqubeEnabled(user.gateSettings?.sonarqubeEnabled ?? true);
     }
   }, [user]);
 
@@ -92,9 +88,6 @@ export default function SettingsPage() {
         name: name || undefined,
         walletAddress: walletAddress || undefined,
         isTechnical,
-        gateSettings: isTechnical
-          ? { snykEnabled, sonarqubeEnabled }
-          : undefined,
       });
       toast.success("Profile updated");
     } catch (error) {
@@ -423,44 +416,14 @@ export default function SettingsPage() {
           </div>
 
           {isTechnical && (
-            <div className="space-y-3 rounded-lg border p-4">
-              <div>
-                <Label className="text-sm font-medium">
-                  Verification Gate Settings
-                </Label>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Control which security gates run on submissions to your
-                  bounties.
-                </p>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <Label htmlFor="snyk-gate">Snyk (SCA + SAST)</Label>
-                  <p className="text-xs text-muted-foreground">
-                    Software composition analysis and static analysis via Snyk.
-                  </p>
-                </div>
-                <Switch
-                  id="snyk-gate"
-                  checked={snykEnabled}
-                  onCheckedChange={setSnykEnabled}
-                />
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <Label htmlFor="sonarqube-gate">SonarQube</Label>
-                  <p className="text-xs text-muted-foreground">
-                    Code quality and security scanning via SonarQube.
-                  </p>
-                </div>
-                <Switch
-                  id="sonarqube-gate"
-                  checked={sonarqubeEnabled}
-                  onCheckedChange={setSonarqubeEnabled}
-                />
-              </div>
+            <div className="space-y-2 rounded-lg border p-4">
+              <Label className="text-sm font-medium">Verification Scanners</Label>
+              <p className="text-xs text-muted-foreground">
+                Snyk and SonarQube run automatically on every verification attempt.
+                Blocking behavior is policy-based: Snyk high/critical introductions
+                and Sonar quality-gate failures block; minor and advisory process
+                issues are non-blocking and affect risk discipline scoring.
+              </p>
             </div>
           )}
 

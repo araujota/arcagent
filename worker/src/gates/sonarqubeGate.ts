@@ -20,7 +20,6 @@ export async function runSonarQubeGate(
   diff: DiffContext | null,
 ): Promise<GateResult> {
   const start = Date.now();
-  const normalizedLanguage = language.toLowerCase();
 
   const sonarUrl = process.env.SONARQUBE_URL;
   const sonarToken = process.env.SONARQUBE_TOKEN;
@@ -31,16 +30,9 @@ export async function runSonarQubeGate(
       status: "skipped",
       durationMs: Date.now() - start,
       summary: "SonarQube not configured (SONARQUBE_URL / SONARQUBE_TOKEN missing)",
-    };
-  }
-
-  const supportedLanguages = new Set(["typescript", "javascript"]);
-  if (!supportedLanguages.has(normalizedLanguage)) {
-    return {
-      gate: "sonarqube",
-      status: "skipped",
-      durationMs: Date.now() - start,
-      summary: `SonarQube gate is not enabled for language "${language}" in this execution image set`,
+      details: {
+        reasonCode: "missing_config",
+      },
     };
   }
 
@@ -52,6 +44,9 @@ export async function runSonarQubeGate(
       status: "error",
       durationMs: Date.now() - start,
       summary: "SonarQube URL must use https:// when hardened egress is enabled",
+      details: {
+        reasonCode: "invalid_url_scheme",
+      },
     };
   }
 
@@ -62,6 +57,9 @@ export async function runSonarQubeGate(
       status: "error",
       durationMs: Date.now() - start,
       summary: `sonar-scanner not available in execution environment for language "${language}"`,
+      details: {
+        reasonCode: "missing_cli",
+      },
     };
   }
 
@@ -101,6 +99,7 @@ export async function runSonarQubeGate(
       durationMs: Date.now() - start,
       summary: `SonarQube scanner failed with exit code ${scanResult.exitCode}`,
       details: {
+        reasonCode: "scanner_failed",
         exitCode: scanResult.exitCode,
         output: truncate(scanResult.stdout + scanResult.stderr, 3_000),
       },
@@ -116,19 +115,41 @@ export async function runSonarQubeGate(
     timeoutMs,
   );
 
+  // 3. Fetch new-code metrics + issue list for normalized receipts.
+  const detailResult = await fetchNewCodeDetails(
+    vm,
+    sonarUrl,
+    sonarToken,
+    projectKey,
+  );
+
   const durationMs = Date.now() - start;
+  const qualityGateTimedOut = qualityGateResult.status === "TIMEOUT";
+  const gateStatus: GateResult["status"] = qualityGateTimedOut
+    ? "error"
+    : qualityGateResult.passed
+      ? "pass"
+      : "fail";
+  const summary = qualityGateTimedOut
+    ? "SonarQube quality gate polling timed out"
+    : qualityGateResult.passed
+      ? "SonarQube quality gate passed"
+      : `SonarQube quality gate failed: ${qualityGateResult.reason}`;
 
   return {
     gate: "sonarqube",
-    status: qualityGateResult.passed ? "pass" : "fail",
+    status: gateStatus,
     durationMs,
-    summary: qualityGateResult.passed
-      ? "SonarQube quality gate passed"
-      : `SonarQube quality gate failed: ${qualityGateResult.reason}`,
+    summary,
     details: {
+      ...(qualityGateTimedOut ? { reasonCode: "quality_gate_timeout" } : {}),
       projectKey,
       qualityGate: qualityGateResult,
       prAnalysisMode: diff !== null,
+      metrics: detailResult.metrics,
+      issues: detailResult.issues,
+      fetchErrors: detailResult.fetchErrors,
+      language: language.toLowerCase(),
     },
   };
 }
@@ -310,6 +331,58 @@ async function pollQualityGate(
   };
 }
 
+async function fetchNewCodeDetails(
+  vm: VMHandle,
+  sonarUrl: string,
+  sonarToken: string,
+  projectKey: string,
+): Promise<{
+  metrics: Record<string, number>;
+  issues: Array<Record<string, unknown>>;
+  fetchErrors: string[];
+}> {
+  const metrics: Record<string, number> = {};
+  let issues: Array<Record<string, unknown>> = [];
+  const fetchErrors: string[] = [];
+
+  const safeToken = sonarToken.replace(/'/g, "'\\''");
+
+  const metricsResult = await vm.exec(
+    `printf '%s:' '${safeToken}' > /tmp/.sonar_auth && chmod 600 /tmp/.sonar_auth && ` +
+    `curl -s -u "$(cat /tmp/.sonar_auth)" "${sonarUrl}/api/measures/component?component=${projectKey}&metricKeys=new_bugs,new_code_smells,new_maintainability_issues,new_cognitive_complexity,new_complexity"; ` +
+    `rm -f /tmp/.sonar_auth`,
+    15_000,
+  );
+
+  if (metricsResult.exitCode === 0) {
+    const parsed = parseJsonSafe<SonarMeasuresResponse>(metricsResult.stdout);
+    for (const measure of parsed?.component?.measures ?? []) {
+      const value = Number(measure.value ?? measure.period?.value ?? "0");
+      if (Number.isFinite(value)) {
+        metrics[measure.metric] = value;
+      }
+    }
+  } else {
+    fetchErrors.push("Failed to fetch Sonar new-code metrics");
+  }
+
+  const issuesResult = await vm.exec(
+    `printf '%s:' '${safeToken}' > /tmp/.sonar_auth && chmod 600 /tmp/.sonar_auth && ` +
+    `curl -s -u "$(cat /tmp/.sonar_auth)" "${sonarUrl}/api/issues/search?componentKeys=${projectKey}&inNewCodePeriod=true&p=1&ps=500"; ` +
+    `rm -f /tmp/.sonar_auth`,
+    15_000,
+  );
+
+  if (issuesResult.exitCode === 0) {
+    const parsed = parseJsonSafe<SonarIssuesResponse>(issuesResult.stdout);
+    issues = (parsed?.issues ?? []) as Array<Record<string, unknown>>;
+  } else {
+    fetchErrors.push("Failed to fetch Sonar new-code issues");
+  }
+
+  return { metrics, issues: issues.slice(0, 500), fetchErrors };
+}
+
 interface SonarQualityGateResponse {
   projectStatus?: {
     status: string;
@@ -323,6 +396,28 @@ interface QualityCondition {
   comparator: string;
   errorThreshold: string;
   actualValue: string;
+}
+
+interface SonarMeasuresResponse {
+  component?: {
+    measures?: Array<{
+      metric: string;
+      value?: string;
+      period?: { value?: string };
+    }>;
+  };
+}
+
+interface SonarIssuesResponse {
+  issues?: Array<{
+    key?: string;
+    rule?: string;
+    severity?: string;
+    component?: string;
+    line?: number;
+    type?: string;
+    message?: string;
+  }>;
 }
 
 function truncate(text: string, maxLen: number): string {

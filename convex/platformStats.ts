@@ -3,27 +3,28 @@ import { query, internalMutation } from "./_generated/server";
 export const recompute = internalMutation({
   args: {},
   handler: async (ctx) => {
-    const [allClaims, passedVerifications, completedBounties, allUsers, allBounties, allSubmissions] =
+    const [allClaims, passedVerifications, allBounties, allSubmissions, allUsers, allSavedRepos, allRepoConnections] =
       await Promise.all([
         ctx.db.query("bountyClaims").collect(),
         ctx.db
           .query("verifications")
           .withIndex("by_status", (q) => q.eq("status", "passed"))
           .collect(),
-        ctx.db
-          .query("bounties")
-          .withIndex("by_status", (q) => q.eq("status", "completed"))
-          .collect(),
-        ctx.db.query("users").collect(),
         ctx.db.query("bounties").collect(),
         ctx.db.query("submissions").collect(),
+        ctx.db.query("users").collect(),
+        ctx.db.query("savedRepos").collect(),
+        ctx.db.query("repoConnections").collect(),
       ]);
 
-    const bountyById = new Map(allBounties.map((b) => [String(b._id), b]));
+    const nonTestBounties = allBounties.filter((b) => !b.isTestBounty);
+    const nonTestBountyIds = new Set(nonTestBounties.map((b) => String(b._id)));
+    const bountyById = new Map(nonTestBounties.map((b) => [String(b._id), b]));
     const submissionById = new Map(allSubmissions.map((s) => [String(s._id), s]));
 
     const latestClaimByBountyAgent = new Map<string, number>();
     for (const claim of allClaims) {
+      if (!nonTestBountyIds.has(String(claim.bountyId))) continue;
       const key = `${String(claim.bountyId)}:${String(claim.agentId)}`;
       const existing = latestClaimByBountyAgent.get(key) ?? 0;
       const claimedAt = claim.claimedAt ?? 0;
@@ -36,6 +37,7 @@ export const recompute = internalMutation({
     let totalClaimDelta = 0;
     let claimCount = 0;
     for (const claim of allClaims) {
+      if (!nonTestBountyIds.has(String(claim.bountyId))) continue;
       if (claim.claimedAt) {
         const bounty = bountyById.get(String(claim.bountyId));
         if (bounty) {
@@ -50,6 +52,7 @@ export const recompute = internalMutation({
     let totalSolveDelta = 0;
     let solveCount = 0;
     for (const v of passedVerifications) {
+      if (!nonTestBountyIds.has(String(v.bountyId))) continue;
       if (v.completedAt) {
         const submission = submissionById.get(String(v.submissionId));
         if (!submission) continue;
@@ -65,13 +68,21 @@ export const recompute = internalMutation({
       solveCount > 0 ? totalSolveDelta / solveCount : 0;
 
     // --- Total bounties processed (completed) ---
-    const totalBountiesProcessed = completedBounties.length;
+    const totalBountiesProcessed = nonTestBounties.filter(
+      (b) => b.status === "completed"
+    ).length;
 
-    // --- Total users ---
-    const totalUsers = allUsers.length;
+    // --- Total users (deduped by stable user ID, independent of bounty type) ---
+    const totalUsers = new Set(allUsers.map((u) => String(u._id))).size;
 
-    // --- Total repos (distinct repositoryUrl) ---
+    // --- Total repos onboarded (distinct repositoryUrl from saved/connected/used repos) ---
     const repoUrls = new Set<string>();
+    for (const repo of allSavedRepos) {
+      repoUrls.add(repo.repositoryUrl);
+    }
+    for (const repoConnection of allRepoConnections) {
+      repoUrls.add(repoConnection.repositoryUrl);
+    }
     for (const b of allBounties) {
       if (b.repositoryUrl) {
         repoUrls.add(b.repositoryUrl);

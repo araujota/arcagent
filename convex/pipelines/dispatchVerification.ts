@@ -77,11 +77,6 @@ export const dispatchVerification = internalAction({
       const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
         bountyId: args.bountyId,
       });
-      const creator = bounty
-        ? await ctx.runQuery(internal.users.getByIdInternal, {
-            userId: bounty.creatorId,
-          })
-        : null;
 
       // Fetch generated step definitions (for injection into VM at test time)
       const generatedTests = await ctx.runQuery(
@@ -173,10 +168,6 @@ export const dispatchVerification = internalAction({
           convexHttpActionsUrl,
           convexUrl: convexHttpActionsUrl,
           jobHmac,
-          gateSettings: {
-            snykEnabled: creator?.gateSettings?.snykEnabled ?? true,
-            sonarqubeEnabled: creator?.gateSettings?.sonarqubeEnabled ?? true,
-          },
           // Step definitions for VM-only injection (agents never see these)
           stepDefinitionsPublic: stepDefinitionsPublic ?? undefined,
           stepDefinitionsHidden: stepDefinitionsHidden ?? undefined,
@@ -290,11 +281,6 @@ export const dispatchVerificationFromDiff = internalAction({
       const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
         bountyId: args.bountyId,
       });
-      const creator = bounty
-        ? await ctx.runQuery(internal.users.getByIdInternal, {
-            userId: bounty.creatorId,
-          })
-        : null;
 
       // Fetch generated step definitions
       const generatedTests = await ctx.runQuery(
@@ -386,10 +372,6 @@ export const dispatchVerificationFromDiff = internalAction({
           convexHttpActionsUrl,
           convexUrl: convexHttpActionsUrl,
           jobHmac,
-          gateSettings: {
-            snykEnabled: creator?.gateSettings?.snykEnabled ?? true,
-            sonarqubeEnabled: creator?.gateSettings?.sonarqubeEnabled ?? true,
-          },
           stepDefinitionsPublic: stepDefinitionsPublic ?? undefined,
           stepDefinitionsHidden: stepDefinitionsHidden ?? undefined,
           ztacoMode: bounty?.ztacoMode ?? false,

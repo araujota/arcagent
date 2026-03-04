@@ -50,6 +50,7 @@ interface ConvexResultPayload {
     sarifJson?: string;
     policyJson?: string;
     metadataJson?: string;
+    normalizedJson?: string;
   }>;
   steps?: Array<{
     scenarioName: string;
@@ -87,6 +88,7 @@ interface ConvexReceiptPayload {
   sarifJson?: string;
   policyJson?: string;
   metadataJson?: string;
+  normalizedJson?: string;
   jobHmac?: string;
   callbackTimestampMs?: number;
   callbackNonce?: string;
@@ -288,6 +290,7 @@ export async function postVerificationReceipt(
     sarifJson: receipt.sarifJson,
     policyJson: receipt.policyJson,
     metadataJson: receipt.metadataJson,
+    normalizedJson: receipt.normalizedJson,
     jobHmac,
   };
 

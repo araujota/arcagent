@@ -4,14 +4,14 @@
 
 locals {
   create_worker_dns_record = trimspace(var.route53_zone_name) != "" && trimspace(var.worker_dns_name) != "" && (
-    var.enable_autoscaling ? var.asg_desired_capacity > 0 : var.worker_count > 0
+    var.enable_autoscaling ? var.asg_desired_capacity > 0 : length(local.worker_public_ips) > 0
   )
 }
 
 data "aws_route53_zone" "worker" {
   count        = local.create_worker_dns_record ? 1 : 0
   name         = "${trimspace(var.route53_zone_name)}."
-  private_zone = false
+  private_zone = var.route53_private_zone
 }
 
 resource "aws_route53_record" "worker_asg_alias" {

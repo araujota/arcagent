@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 
 locals {
-  worker_public_ips = var.enable_autoscaling ? [] : (var.allocate_eip ? aws_eip.worker[*].public_ip : aws_instance.worker[*].public_ip)
+  worker_public_ips = compact(var.enable_autoscaling ? [] : (var.allocate_eip ? aws_eip.worker[*].public_ip : aws_instance.worker[*].public_ip))
 }
 
 output "worker_public_ips" {
@@ -22,13 +22,13 @@ output "worker_autoscaling_group_name" {
 }
 
 output "worker_alb_dns_name" {
-  description = "Worker ALB DNS name (empty when autoscaling is disabled)"
+  description = "Worker internal ALB DNS name (empty when autoscaling is disabled)"
   value       = var.enable_autoscaling ? aws_lb.worker[0].dns_name : ""
 }
 
 output "worker_host_urls" {
-  description = "Worker URL(s) — set WORKER_API_URL in Convex (autoscaling uses worker_public_url when set, otherwise ALB DNS)"
-  value       = var.enable_autoscaling ? [local.worker_public_url_effective] : [for ip in local.worker_public_ips : "http://${ip}:3001"]
+  description = "Worker URL(s) advertised to callers (set worker_public_url to MCP proxy URL for private workers)"
+  value       = var.enable_autoscaling ? [local.worker_public_url_effective] : (trimspace(var.worker_public_url) != "" ? [trimspace(var.worker_public_url)] : [for ip in local.worker_public_ips : "http://${ip}:3001"])
 }
 
 output "worker_dns_url" {
@@ -42,8 +42,13 @@ output "vpc_id" {
 }
 
 output "worker_subnet_ids" {
-  description = "Public subnet IDs in the worker VPC"
+  description = "Private subnet IDs in the worker VPC"
   value       = aws_subnet.worker[*].id
+}
+
+output "worker_public_subnet_ids" {
+  description = "Public ingress/NAT subnet IDs in the worker VPC"
+  value       = aws_subnet.public[*].id
 }
 
 output "security_group_id" {
@@ -52,11 +57,21 @@ output "security_group_id" {
 }
 
 output "ssh_command" {
-  description = "SSH command template (only populated when autoscaling is disabled)"
-  value       = (!var.enable_autoscaling && length(local.worker_public_ips) > 0) ? "ssh -i <key.pem> ubuntu@${local.worker_public_ips[0]}" : "Autoscaling enabled: resolve an instance IP from the ASG first"
+  description = "SSH command template (only available when workers have public IPs)"
+  value       = (!var.enable_autoscaling && length(local.worker_public_ips) > 0) ? "ssh -i <key.pem> ubuntu@${local.worker_public_ips[0]}" : "Workers are private by default; use SSM Session Manager or private network access"
 }
 
 output "rootfs_bucket" {
   description = "S3 bucket for worker bootstrap scripts and artifacts (legacy output name)"
   value       = aws_s3_bucket.rootfs.id
+}
+
+output "worker_internal_url" {
+  description = "Private worker base URL (for MCP private routing/proxy target)"
+  value       = var.enable_autoscaling ? "http://${aws_lb.worker[0].dns_name}:3001" : ""
+}
+
+output "mcp_vpc_peering_connection_id" {
+  description = "VPC peering connection ID to MCP VPC (empty when peering is disabled)"
+  value       = length(aws_vpc_peering_connection.mcp) > 0 ? aws_vpc_peering_connection.mcp[0].id : ""
 }

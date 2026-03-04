@@ -27,14 +27,29 @@ WORKDIR /app
 
 # System dependencies for Firecracker jailer and networking
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
     iproute2 \
     iptables \
     cryptsetup-bin \
     dmsetup \
     kmod \
+    openjdk-17-jre-headless \
     procps \
+    unzip \
     wget \
     && rm -rf /var/lib/apt/lists/*
+
+# Scanner tooling for process-backend verification loops.
+ARG SNYK_VERSION=latest
+ARG SONAR_SCANNER_VERSION=5.0.1.3006
+RUN curl -fsSL "https://static.snyk.io/cli/${SNYK_VERSION}/snyk-linux" -o /usr/local/bin/snyk && \
+    chmod 755 /usr/local/bin/snyk && \
+    curl -fsSL "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux.zip" -o /tmp/sonar-scanner.zip && \
+    unzip -q /tmp/sonar-scanner.zip -d /opt && \
+    ln -sf "/opt/sonar-scanner-${SONAR_SCANNER_VERSION}-linux/bin/sonar-scanner" /usr/local/bin/sonar-scanner && \
+    rm -f /tmp/sonar-scanner.zip
 
 # Ensure process-backend commands can always drop to a non-root execution user.
 RUN if ! id -u agent >/dev/null 2>&1; then \

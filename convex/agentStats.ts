@@ -11,6 +11,49 @@ import {
   assignTierByPercentile,
 } from "./lib/tierCalculation";
 
+const ADVISORY_LEGS = new Set([
+  "lint_no_new_errors",
+  "typecheck_no_new_errors",
+  "security_no_new_high_critical",
+  "memory",
+  "snyk_no_new_high_critical",
+  "sonarqube_new_code",
+]);
+
+type NormalizedReceipt = {
+  tool?: "sonarqube" | "snyk";
+  counts?: {
+    critical?: number;
+    high?: number;
+    medium?: number;
+    low?: number;
+    bugs?: number;
+    codeSmells?: number;
+    complexityDelta?: number;
+    introducedTotal?: number;
+  };
+};
+
+function parseNormalizedReceipt(normalizedJson?: string): NormalizedReceipt | null {
+  if (!normalizedJson) return null;
+  try {
+    const parsed = JSON.parse(normalizedJson) as NormalizedReceipt;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function asFinite(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function burdenToScore(burden: number, slope: number): number {
+  const safeBurden = Math.max(0, burden);
+  const penalty = Math.log10(1 + safeBurden) * slope;
+  return Math.max(0, 100 - penalty);
+}
+
 /**
  * Recompute all metrics for a single agent.
  * Called after bounty completion or rating submission.
@@ -44,6 +87,14 @@ export const recomputeForAgent = internalMutation({
     let totalFirstAttemptPasses = 0;
     let totalGatePasses = 0;
     let totalGateWarnings = 0;
+    let advisoryLegAttempts = 0;
+    let advisoryProcessFailures = 0;
+    let weightedSonarRiskBurdenSum = 0;
+    let weightedSonarRiskWeightSum = 0;
+    let weightedSnykMinorBurdenSum = 0;
+    let weightedSnykMinorWeightSum = 0;
+    let observedSonarReceipts = 0;
+    let observedSnykReceipts = 0;
 
     // For weighted averages
     let weightedTimeSum = 0;
@@ -60,10 +111,26 @@ export const recomputeForAgent = internalMutation({
       const decay = timeDecayWeight(ageMs);
 
       // Time to resolution
-      const allVerifications = await ctx.db
-        .query("verifications")
+      // Submissions for this bounty
+      const bountySubmissions = await ctx.db
+        .query("submissions")
         .withIndex("by_bountyId", (q) => q.eq("bountyId", claim.bountyId))
+        .filter((q) => q.eq(q.field("agentId"), args.agentId))
         .collect();
+
+      totalSubmissions += bountySubmissions.length;
+      submissionsPerBountySum += bountySubmissions.length;
+
+      const submissionVerifications = await Promise.all(
+        bountySubmissions.map(async (submission) => ({
+          submissionId: submission._id,
+          verifications: await ctx.db
+            .query("verifications")
+            .withIndex("by_submissionId", (q) => q.eq("submissionId", submission._id))
+            .collect(),
+        })),
+      );
+      const allVerifications = submissionVerifications.flatMap((entry) => entry.verifications);
 
       const passedVerification = allVerifications.find((v) => v.status === "passed");
       if (passedVerification?.completedAt) {
@@ -78,25 +145,18 @@ export const recomputeForAgent = internalMutation({
         weightedSpeedWeightSum += decay;
       }
 
-      // Submissions for this bounty
-      const bountySubmissions = await ctx.db
-        .query("submissions")
-        .withIndex("by_bountyId", (q) => q.eq("bountyId", claim.bountyId))
-        .filter((q) => q.eq(q.field("agentId"), args.agentId))
-        .collect();
-
-      totalSubmissions += bountySubmissions.length;
-      submissionsPerBountySum += bountySubmissions.length;
-
       // First attempt pass check
       if (bountySubmissions.length > 0) {
         // Sort by creation time to find first submission
         const sorted = bountySubmissions.sort((a, b) => a._creationTime - b._creationTime);
         const firstSub = sorted[0];
-        const firstVerification = await ctx.db
+        const firstSubVerifications = await ctx.db
           .query("verifications")
           .withIndex("by_submissionId", (q) => q.eq("submissionId", firstSub._id))
-          .first();
+          .collect();
+        const firstVerification = firstSubVerifications.sort(
+          (a, b) => a._creationTime - b._creationTime
+        )[0];
         if (firstVerification?.status === "passed") {
           totalFirstAttemptPasses++;
         }
@@ -113,6 +173,52 @@ export const recomputeForAgent = internalMutation({
           if (gate.status === "warning") totalGateWarnings++;
         }
       }
+
+      for (const verification of allVerifications) {
+        const receipts = await ctx.db
+          .query("verificationReceipts")
+          .withIndex("by_verificationId_and_orderIndex", (q) =>
+            q.eq("verificationId", verification._id)
+          )
+          .collect();
+
+        for (const receipt of receipts) {
+          if (ADVISORY_LEGS.has(receipt.legKey) && receipt.status !== "unreached") {
+            advisoryLegAttempts++;
+            if (
+              receipt.status === "error" ||
+              receipt.status === "skipped_policy_due_process"
+            ) {
+              advisoryProcessFailures++;
+            }
+          }
+
+          if (receipt.legKey === "sonarqube_new_code") {
+            const normalized = parseNormalizedReceipt(receipt.normalizedJson);
+            if (normalized?.tool === "sonarqube") {
+              const counts = normalized.counts ?? {};
+              const sonarBurden =
+                asFinite(counts.bugs) +
+                asFinite(counts.codeSmells) +
+                asFinite(counts.complexityDelta);
+              weightedSonarRiskBurdenSum += sonarBurden * decay;
+              weightedSonarRiskWeightSum += decay;
+              observedSonarReceipts++;
+            }
+          }
+
+          if (receipt.legKey === "snyk_no_new_high_critical") {
+            const normalized = parseNormalizedReceipt(receipt.normalizedJson);
+            if (normalized?.tool === "snyk") {
+              const counts = normalized.counts ?? {};
+              const minorBurden = asFinite(counts.medium) + asFinite(counts.low);
+              weightedSnykMinorBurdenSum += minorBurden * decay;
+              weightedSnykMinorWeightSum += decay;
+              observedSnykReceipts++;
+            }
+          }
+        }
+      }
     }
 
     // Aggregate metrics
@@ -125,6 +231,13 @@ export const recomputeForAgent = internalMutation({
 
     const totalGates = totalGatePasses + totalGateWarnings;
     const gateQualityScore = totalGates > 0 ? totalGatePasses / totalGates : 0;
+    const advisoryProcessFailureRate =
+      advisoryLegAttempts > 0 ? advisoryProcessFailures / advisoryLegAttempts : 0;
+
+    const sonarRiskBurden =
+      weightedSonarRiskWeightSum > 0 ? weightedSonarRiskBurdenSum / weightedSonarRiskWeightSum : 0;
+    const snykMinorBurden =
+      weightedSnykMinorWeightSum > 0 ? weightedSnykMinorBurdenSum / weightedSnykMinorWeightSum : 0;
 
     // 3. Rating aggregates (tier-eligible only)
     const allRatings = await ctx.db
@@ -183,13 +296,22 @@ export const recomputeForAgent = internalMutation({
     const firstAttemptPassScore = firstAttemptPassRate * 100;
     const gateQualityScoreNormalized = gateQualityScore * 100;
     const completionRateScore = completionRate * 100;
+    const sonarRiskDisciplineScore =
+      observedSonarReceipts > 0 ? burdenToScore(sonarRiskBurden, 45) : 50;
+    const snykMinorDisciplineScore =
+      observedSnykReceipts > 0 ? burdenToScore(snykMinorBurden, 60) : 50;
+    const advisoryReliabilityScore =
+      advisoryLegAttempts > 0 ? Math.max(0, (1 - advisoryProcessFailureRate) * 100) : 50;
 
     const compositeScore =
       creatorRatingScore * SCORE_WEIGHTS.creatorRating +
       timeToResolutionScore * SCORE_WEIGHTS.timeToResolution +
       firstAttemptPassScore * SCORE_WEIGHTS.firstAttemptPass +
       gateQualityScoreNormalized * SCORE_WEIGHTS.gateQuality +
-      completionRateScore * SCORE_WEIGHTS.completionRate;
+      completionRateScore * SCORE_WEIGHTS.completionRate +
+      sonarRiskDisciplineScore * SCORE_WEIGHTS.sonarRiskDiscipline +
+      snykMinorDisciplineScore * SCORE_WEIGHTS.snykMinorDiscipline +
+      advisoryReliabilityScore * SCORE_WEIGHTS.advisoryReliability;
 
     // 5. Upsert agentStats
     const existing = await ctx.db
@@ -211,6 +333,12 @@ export const recomputeForAgent = internalMutation({
       firstAttemptPassRate,
       completionRate,
       gateQualityScore,
+      sonarRiskBurden,
+      snykMinorBurden,
+      advisoryProcessFailureRate,
+      sonarRiskDisciplineScore,
+      snykMinorDisciplineScore,
+      advisoryReliabilityScore,
       avgCreatorRating,
       totalRatings,
       uniqueRaters,

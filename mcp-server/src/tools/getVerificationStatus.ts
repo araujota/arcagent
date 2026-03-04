@@ -95,6 +95,30 @@ export function registerGetVerificationStatus(server: McpServer): void {
             if (receipt.policy) {
               text += `\n**Policy:**\n\`\`\`json\n${JSON.stringify(receipt.policy, null, 2).slice(0, 4000)}\n\`\`\`\n`;
             }
+            if (receipt.normalized) {
+              text += `\n**Normalized Blocking:**\n`;
+              text += `- Tool: ${receipt.normalized.tool}\n`;
+              text += `- Blocking: ${receipt.normalized.blocking.isBlocking ? "yes" : "no"}\n`;
+              text += `- Reason: ${receipt.normalized.blocking.reasonCode} — ${receipt.normalized.blocking.reasonText}\n`;
+              text += `- Threshold: ${receipt.normalized.blocking.threshold}\n`;
+              text += `- Compared to Baseline: ${receipt.normalized.blocking.comparedToBaseline ? "yes" : "no"}\n`;
+              text += `- Introduced: ${receipt.normalized.counts.introducedTotal} (critical=${receipt.normalized.counts.critical}, high=${receipt.normalized.counts.high}, medium=${receipt.normalized.counts.medium}, low=${receipt.normalized.counts.low})\n`;
+              if (receipt.normalized.tool === "sonarqube") {
+                text += `- Sonar Metrics: bugs=${receipt.normalized.counts.bugs}, codeSmells=${receipt.normalized.counts.codeSmells}, complexityDelta=${receipt.normalized.counts.complexityDelta}\n`;
+              }
+              if (receipt.normalized.issues.length > 0) {
+                text += `\n**Top Normalized Issues:**\n`;
+                for (const issue of receipt.normalized.issues.slice(0, 20)) {
+                  const location = issue.file
+                    ? `${issue.file}${issue.line ? `:${issue.line}` : ""}`
+                    : "(no file)";
+                  text += `- [${issue.severity.toUpperCase()}${issue.isBlocking ? ", BLOCKING" : ""}] ${location} — ${issue.message}\n`;
+                }
+                if (receipt.normalized.truncated) {
+                  text += "- ... additional normalized issues omitted\n";
+                }
+              }
+            }
             if (receipt.sarif) {
               text += `\n**SARIF:**\n\`\`\`json\n${JSON.stringify(receipt.sarif, null, 2).slice(0, 4000)}\n\`\`\`\n`;
             }

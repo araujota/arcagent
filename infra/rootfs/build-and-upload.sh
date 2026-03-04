@@ -18,7 +18,7 @@ VERSION="${2:-v1}"
 shift 2 || shift $#
 
 # All available images
-ALL_IMAGES=(base node-20 python-312 rust-stable go-122 java-21)
+ALL_IMAGES=(base node-20 python-312 rust-stable go-122 java-21 ruby-33 php-84 dotnet-9 cpp-gcc14 swift-6 kotlin-jvm21)
 
 # If specific images were requested, use those; otherwise build all
 if [ $# -gt 0 ]; then
@@ -77,6 +77,10 @@ for img in "${IMAGES[@]}"; do
 
   echo ">>> [$img] Building Docker image..."
   docker build --platform linux/amd64 -t "arcagent-rootfs-$img" -f "$DOCKERFILE" "$SCRIPT_DIR"
+
+  echo ">>> [$img] Verifying scanner tooling (snyk + sonar-scanner)..."
+  docker run --rm --platform linux/amd64 "arcagent-rootfs-$img" bash -lc \
+    "command -v snyk >/dev/null 2>&1 && command -v sonar-scanner >/dev/null 2>&1"
 
   echo ">>> [$img] Exporting filesystem..."
   CID=$(docker create --platform linux/amd64 "arcagent-rootfs-$img")

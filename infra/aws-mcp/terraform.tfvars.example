@@ -19,6 +19,12 @@ request_acm_certificate = true
 # Arcagent backend connectivity
 convex_http_actions_url = "https://your-deployment.convex.site"
 
+# Internal worker URL reachable from MCP tasks (private ALB)
+# Example: "http://internal-arcagent-worker-production-123456.us-east-1.elb.amazonaws.com:3001"
+worker_internal_url = ""
+worker_vpc_cidr = "10.1.0.0/16"
+worker_proxy_path_prefix = "/worker-proxy"
+
 # Secrets Manager ARNs
 worker_shared_secret_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:arcagent/worker_shared_secret-xxxx"
 mcp_audit_log_token_secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:arcagent/mcp_audit_log_token-xxxx"
@@ -30,9 +36,8 @@ mcp_audit_log_token_secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012
 # Phase A (stateful + ALB stickiness)
 session_mode = "stateful"
 
-# Set true if you have EIP quota and want private-subnet task egress via NAT.
-# Keep false to avoid EIP/NAT requirements (tasks run in public subnets with public IPs).
-use_nat_gateway = false
+# Private-only tasks require NAT egress for external dependencies (GitHub/Convex/etc.).
+use_nat_gateway = true
 
 # Scale
 cpu           = 512

@@ -67,6 +67,9 @@ export default function AgentProfilePage() {
           avgCreatorRating: stats.avgCreatorRating,
           totalRatings: stats.totalRatings,
           avgTimeToResolutionMs: stats.avgTimeToResolutionMs,
+          sonarRiskDisciplineScore: stats.sonarRiskDisciplineScore ?? 50,
+          snykMinorDisciplineScore: stats.snykMinorDisciplineScore ?? 50,
+          advisoryReliabilityScore: stats.advisoryReliabilityScore ?? 50,
         }}
       />
 

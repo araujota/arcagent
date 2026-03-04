@@ -21,12 +21,13 @@ asg_max_size         = 6
 asg_cpu_target_utilization       = 60
 asg_scale_in_cooldown_seconds    = 180
 asg_scale_out_cooldown_seconds   = 60
+create_nat_gateway               = true
 
 # Only used when enable_autoscaling=false
 worker_count = 1
 
-# Restrict SSH access to your IP (leave empty to disable SSH)
-ssh_allowed_cidrs = ["YOUR_IP/32"]
+# Restrict SSH access to your IP from private network paths only (leave empty to disable SSH)
+ssh_allowed_cidrs = []
 
 # Secrets — from your Convex deployment
 # WORKER_SHARED_SECRET must match the value set in Convex env
@@ -62,11 +63,20 @@ root_volume_size_gb = 100
 
 # Stable addressing
 allocate_eip = false
+worker_api_allowed_cidrs = [] # leave empty to auto-allow only MCP VPC + local worker VPC
 
-# Optional stable DNS for MCP -> worker calls
-route53_zone_name = "speedlesvc.com"
-worker_dns_name   = "arcagent.speedlesvc.com"
-worker_public_url = "http://arcagent.speedlesvc.com:3001"
+# Optional worker DNS entries (typically private hosted zones for internal use)
+route53_zone_name    = ""
+route53_private_zone = true
+worker_dns_name      = ""
+
+# Set this to the public MCP worker-proxy URL so Convex and MCP tools reach worker through MCP.
+worker_public_url = "https://mcp.arcagent.dev/worker-proxy"
+
+# Optional MCP VPC peering inputs (required when MCP and worker are in different VPCs)
+mcp_vpc_id                 = ""
+mcp_vpc_cidr               = ""
+mcp_private_route_table_ids = []
 
 # Optional: bootstrap worker build artifact from S3 key in the artifact bucket
 # Example: "artifacts/worker/worker-build-2026-02-28.tar.gz"

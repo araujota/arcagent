@@ -21,11 +21,14 @@ describe("constants", () => {
 
   it("SCORE_WEIGHTS has the expected keys and values", () => {
     expect(SCORE_WEIGHTS).toEqual({
-      creatorRating: 0.40,
-      timeToResolution: 0.20,
-      firstAttemptPass: 0.20,
-      gateQuality: 0.10,
-      completionRate: 0.10,
+      creatorRating: 0.32,
+      timeToResolution: 0.16,
+      firstAttemptPass: 0.16,
+      gateQuality: 0.08,
+      completionRate: 0.08,
+      sonarRiskDiscipline: 0.10,
+      snykMinorDiscipline: 0.06,
+      advisoryReliability: 0.04,
     });
   });
 

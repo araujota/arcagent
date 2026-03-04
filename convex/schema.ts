@@ -199,6 +199,7 @@ export default defineSchema({
       v.literal("warning"),
       v.literal("unreached"),
       v.literal("skipped_policy"),
+      v.literal("skipped_policy_due_process"),
     ),
     blocking: v.boolean(),
     unreachedByLegKey: v.optional(v.string()),
@@ -210,6 +211,7 @@ export default defineSchema({
     sarifJson: v.optional(v.string()),
     policyJson: v.optional(v.string()),
     metadataJson: v.optional(v.string()),
+    normalizedJson: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_verificationId_and_orderIndex", ["verificationId", "orderIndex"])
@@ -693,6 +695,12 @@ export default defineSchema({
     firstAttemptPassRate: v.number(),
     completionRate: v.number(),
     gateQualityScore: v.number(),
+    sonarRiskBurden: v.optional(v.number()),
+    snykMinorBurden: v.optional(v.number()),
+    advisoryProcessFailureRate: v.optional(v.number()),
+    sonarRiskDisciplineScore: v.optional(v.number()),
+    snykMinorDisciplineScore: v.optional(v.number()),
+    advisoryReliabilityScore: v.optional(v.number()),
     avgCreatorRating: v.number(),
     totalRatings: v.number(),
     uniqueRaters: v.number(),

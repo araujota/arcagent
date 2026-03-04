@@ -96,6 +96,8 @@ HTTP/hosting:
 - `MCP_PUBLIC_BASE_URL`: advertised public base URL; hosted mode expects `https://...`
 - `MCP_ALLOWED_HOSTS`: comma-separated allowed host headers (recommended in hosted mode)
 - `MCP_REQUIRE_HTTPS`: reject non-HTTPS requests (recommended `true` for hosted mode)
+- `MCP_INTERNAL_WORKER_BASE_URL`: optional private worker base URL; enables authenticated MCP worker proxying
+- `MCP_WORKER_PROXY_PATH_PREFIX`: optional public proxy prefix (default `/worker-proxy`)
 
 Registration controls:
 - `MCP_REGISTER_HONEYPOT_FIELD`: form field name used as a bot trap (default `website`)
@@ -113,7 +115,7 @@ Audit logs:
 Tool availability:
 - Core bounty/account tools are always available.
 - Workspace tools are enabled only when `WORKER_SHARED_SECRET` is set.
-- `register_account` is always enabled (no pre-existing API key required).
+- `register_account` is always enabled for first-time onboarding. Do not call it from an already-authenticated session.
 
 ## Hosted Endpoints
 
@@ -123,6 +125,7 @@ Tool availability:
 - `POST /api/mcp/register`
 - `GET /health`
 - `GET /metrics`
+- `ALL /worker-proxy/*` (only when `MCP_INTERNAL_WORKER_BASE_URL` is configured)
 
 ## Registration-Only Bootstrap Mode
 
@@ -143,6 +146,7 @@ node dist/index.js
 In this mode:
 - `POST /api/mcp/register` is available (no API key required)
 - `/mcp` tool transport is intentionally disabled (`503`)
+- if the request already includes a valid ArcAgent API key, registration is rejected (`409`) to prevent duplicate key issuance
 
 ## Release
 

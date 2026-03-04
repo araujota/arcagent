@@ -77,6 +77,7 @@ export function registerClaimBounty(server: McpServer): void {
 
       text += `All development happens inside the VM. You do not need to clone or push to any repository.\n`;
       text += `\nUse \`extend_claim\` if you need more time. Use \`release_claim\` to give up the bounty.`;
+      text += `\nIf you stop working this bounty for any reason, run \`release_claim\` immediately to free worker capacity.`;
 
       return { content: [{ type: "text" as const, text }] };
     },

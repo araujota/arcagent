@@ -3,18 +3,20 @@
 This stack deploys the Arcagent MCP server for operator-hosted access at `https://mcp.arcagent.dev` while keeping `arcagent.dev` DNS ownership on Vercel.
 
 For remote MCP client configuration, use `https://mcp.arcagent.dev` as the MCP server URL.
+If the worker cluster is private-only, set Convex `WORKER_API_URL` to the `worker_proxy_public_url` output from this stack.
 
 ## What it deploys
 
-- VPC with public + private subnets
-- Internet Gateway + NAT Gateway
+- VPC with public ingress subnets + private application subnets
+- Internet Gateway + NAT Gateway (private-task egress)
 - Public ALB with:
   - `80 -> 443` redirect
   - HTTPS listener (ACM cert)
-- ECS Fargate service (default desired count: 1)
+- ECS Fargate service in private subnets only (default desired count: 1)
 - ElastiCache Redis (for distributed MCP rate limiting)
 - CloudWatch log group
 - Optional WAF association (existing Web ACL)
+- Optional authenticated worker proxy (`/worker-proxy`) to reach a private worker cluster
 - ECS autoscaling target tracking:
   - CPU utilization target
   - ALB requests-per-target target
@@ -67,6 +69,8 @@ Then set Vercel DNS record:
 - `MCP_SESSION_MODE=stateful` (phase A)
 - `RATE_LIMIT_STORE=redis`
 - `RATE_LIMIT_REDIS_URL=redis://...`
+- `MCP_INTERNAL_WORKER_BASE_URL` (optional, enables worker proxy)
+- `MCP_WORKER_PROXY_PATH_PREFIX=/worker-proxy`
 
 ## Phase migration
 
@@ -88,5 +92,6 @@ This keeps the service at the minimum baseline when idle and scales out as load 
 - `vercel_cname_record`
 - `acm_dns_validation_records`
 - `mcp_public_url`
+- `worker_proxy_public_url`
 - `redis_primary_endpoint`
 - `ecs_cluster_name`, `ecs_service_name`

@@ -3,6 +3,10 @@
 # ---------------------------------------------------------------------------
 
 locals {
+  # Without NAT, place workers in public subnets so they retain outbound
+  # internet access for Git/package installs while keeping API ingress private.
+  worker_runtime_subnet_ids = var.create_nat_gateway ? aws_subnet.worker[*].id : aws_subnet.public[*].id
+
   worker_public_url_effective = trimspace(var.worker_public_url) != "" ? trimspace(var.worker_public_url) : (
     var.enable_autoscaling ? "http://${aws_lb.worker[0].dns_name}:3001" : ""
   )
@@ -37,13 +41,14 @@ resource "aws_instance" "worker" {
 
   depends_on = [aws_s3_object.bootstrap_scripts]
 
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = var.instance_type
-  key_name               = var.ssh_key_name
-  iam_instance_profile   = aws_iam_instance_profile.worker.name
-  subnet_id              = aws_subnet.worker[count.index % length(aws_subnet.worker)].id
-  vpc_security_group_ids = [aws_security_group.worker.id]
-  user_data              = local.worker_user_data
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.instance_type
+  key_name                    = var.ssh_key_name
+  iam_instance_profile        = aws_iam_instance_profile.worker.name
+  subnet_id                   = local.worker_runtime_subnet_ids[count.index % length(local.worker_runtime_subnet_ids)]
+  vpc_security_group_ids      = [aws_security_group.worker.id]
+  associate_public_ip_address = var.create_nat_gateway ? false : true
+  user_data                   = local.worker_user_data
 
   root_block_device {
     volume_size           = var.root_volume_size_gb
@@ -125,7 +130,7 @@ resource "aws_autoscaling_group" "worker" {
   desired_capacity    = var.asg_desired_capacity
   min_size            = var.asg_min_size
   max_size            = var.asg_max_size
-  vpc_zone_identifier = aws_subnet.worker[*].id
+  vpc_zone_identifier = local.worker_runtime_subnet_ids
   target_group_arns   = [aws_lb_target_group.worker[0].arn]
 
   launch_template {
@@ -170,10 +175,10 @@ resource "aws_autoscaling_policy" "worker_cpu" {
 resource "aws_lb" "worker" {
   count = var.enable_autoscaling ? 1 : 0
 
-  name               = "arcagent-worker-${var.environment}"
-  internal           = false
+  name               = "arcagent-worker-int-${var.environment}"
+  internal           = true
   load_balancer_type = "application"
-  security_groups    = [aws_security_group.worker.id]
+  security_groups    = [aws_security_group.worker_alb.id]
   subnets            = aws_subnet.worker[*].id
 }
 
@@ -214,7 +219,7 @@ resource "aws_lb_listener" "worker_http" {
 
 # Elastic IPs for stable addressing (non-autoscaling mode only)
 resource "aws_eip" "worker" {
-  count = (!var.enable_autoscaling && var.allocate_eip) ? var.worker_count : 0
+  count = (!var.enable_autoscaling && var.allocate_eip && !var.create_nat_gateway) ? var.worker_count : 0
 
   instance = aws_instance.worker[count.index].id
   domain   = "vpc"

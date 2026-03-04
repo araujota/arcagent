@@ -32,6 +32,12 @@ variable "enable_autoscaling" {
   default     = true
 }
 
+variable "create_nat_gateway" {
+  description = "Create NAT gateway + EIP for private-subnet egress (required for GitHub/package-manager access from worker/workspaces)."
+  type        = bool
+  default     = true
+}
+
 variable "asg_min_size" {
   description = "Minimum worker instance count when autoscaling is enabled"
   type        = number
@@ -80,9 +86,9 @@ variable "worker_role" {
 }
 
 variable "allocate_eip" {
-  description = "Allocate and attach Elastic IPs to workers. Only used when autoscaling is disabled."
+  description = "Allocate and attach Elastic IPs to workers. Only supported when create_nat_gateway=false."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "ssh_key_name" {
@@ -92,6 +98,12 @@ variable "ssh_key_name" {
 
 variable "ssh_allowed_cidrs" {
   description = "CIDR blocks allowed to SSH into worker instances"
+  type        = list(string)
+  default     = []
+}
+
+variable "worker_api_allowed_cidrs" {
+  description = "CIDR ranges allowed to reach the worker ALB listener."
   type        = list(string)
   default     = []
 }
@@ -212,9 +224,15 @@ variable "snyk_token" {
 }
 
 variable "route53_zone_name" {
-  description = "Public Route53 hosted zone name for worker DNS (for example speedlesvc.com)."
+  description = "Route53 hosted zone name for worker DNS."
   type        = string
   default     = ""
+}
+
+variable "route53_private_zone" {
+  description = "Set true when route53_zone_name refers to a private hosted zone."
+  type        = bool
+  default     = false
 }
 
 variable "worker_dns_name" {
@@ -227,4 +245,22 @@ variable "worker_public_url" {
   description = "Optional fixed public worker base URL (for example http://arcagent.speedlesvc.com:3001). When set, host auto-detection is disabled."
   type        = string
   default     = ""
+}
+
+variable "mcp_vpc_id" {
+  description = "Optional MCP VPC ID for private peering to the worker VPC."
+  type        = string
+  default     = ""
+}
+
+variable "mcp_vpc_cidr" {
+  description = "Optional MCP VPC CIDR block for worker<->MCP private routing."
+  type        = string
+  default     = ""
+}
+
+variable "mcp_private_route_table_ids" {
+  description = "Optional list of MCP private route table IDs to update with worker VPC peering routes."
+  type        = list(string)
+  default     = []
 }
