@@ -178,6 +178,11 @@ export function createWorkspaceRoutes(): Router {
         commitSha?: string;
         language?: string;
         expiresAt?: number;
+        repoContextFiles?: Array<{
+          name: string;
+          content: string;
+          sourceFileId: string;
+        }>;
       };
       const rawWorkspaceId = body.workspaceId;
       const workspaceId = typeof rawWorkspaceId === "string" ? rawWorkspaceId.trim() : "";
@@ -191,6 +196,7 @@ export function createWorkspaceRoutes(): Router {
         commitSha,
         language,
         expiresAt,
+        repoContextFiles,
       } = body;
 
       if (
@@ -217,6 +223,7 @@ export function createWorkspaceRoutes(): Router {
         commitSha,
         language: language ?? "typescript",
         expiresAt: expiresAt ?? Date.now() + 4 * 60 * 60 * 1000,
+        repoContextFiles,
       });
 
       res.json({

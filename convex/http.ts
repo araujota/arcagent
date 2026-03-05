@@ -1474,6 +1474,13 @@ http.route({
 
       // Look up repo connection for branch creation info
       let repoInfo: { owner: string; repo: string; baseBranch: string; repositoryUrl: string } | null = null;
+      let repoContextManifest:
+        | {
+            workspacePath: string;
+            fileCount: number;
+            files: Array<{ name: string; bytes: number; uploadedAt: number }>;
+          }
+        | undefined;
       const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
         bountyId: bountyId as Id<"bounties">,
       });
@@ -1491,7 +1498,25 @@ http.route({
         }
       }
 
-      return mcpJson({ claimId, repoInfo });
+      if (bounty?.repositoryUrl && process.env.ENABLE_REPO_CONTEXT_FILES === "true") {
+        const readyContextFiles = await ctx.runQuery(
+          internal.repoContextFiles.listReadyForRepositoryUrlInternal,
+          { repositoryUrl: bounty.repositoryUrl },
+        );
+        if (readyContextFiles.length > 0) {
+          repoContextManifest = {
+            workspacePath: "/workspace/ARCAGENT_CONTEXT",
+            fileCount: readyContextFiles.length,
+            files: readyContextFiles.map((row) => ({
+              name: row.filenameOriginal,
+              bytes: row.bytes,
+              uploadedAt: row.uploadedAt,
+            })),
+          };
+        }
+      }
+
+      return mcpJson({ claimId, repoInfo, repoContextManifest });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create claim";
       return mcpError(message);

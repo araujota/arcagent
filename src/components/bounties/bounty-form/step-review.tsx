@@ -6,6 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { GherkinDisplay } from "@/components/shared/gherkin-editor";
 import { BountyTosModal } from "@/components/legal/bounty-tos-modal";
 import { SCOPE_CERTIFICATION_TEXT } from "@/lib/legal/bounty-creation-tos";
+import { RepoContextFilesSummary } from "@/components/repos/repo-context-files-summary";
 import type { BasicsData } from "./step-basics";
 import type { TestsData } from "./step-tests";
 import type { ConfigData } from "./step-config";
@@ -79,6 +80,10 @@ export function StepReview({ basics, tests, config, isCertified, onCertification
           </h3>
           <p className="text-sm font-mono">{config.repositoryUrl}</p>
         </div>
+      )}
+
+      {config.repositoryUrl && (
+        <RepoContextFilesSummary repositoryUrl={config.repositoryUrl} />
       )}
 
       {tags.length > 0 && (

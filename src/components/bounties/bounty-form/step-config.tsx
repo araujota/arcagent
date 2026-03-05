@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CheckCircle, AlertCircle, GitBranch } from "lucide-react";
+import { RepoContextFilesManager } from "@/components/repos/repo-context-files-manager";
 
 export interface ConfigData {
   deadline: string | undefined;
@@ -114,6 +115,13 @@ export function StepConfig({ data, onChange, reward }: StepConfigProps) {
           </p>
         )}
       </div>
+
+      {hasRepoUrl && repoUrlValid && (
+        <RepoContextFilesManager
+          repositoryUrl={data.repositoryUrl}
+          title="Repository Context Files (Shared)"
+        />
+      )}
 
       <div className="space-y-2">
         <Label>Payment Method</Label>
