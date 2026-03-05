@@ -249,6 +249,40 @@ describe("provisionWorkspace", () => {
     // Python deps are run as "agent" user
     expect(pipCall![2]).toBe("agent");
   });
+
+  it("writes repo context files into workspace during provisioning", async () => {
+    const mockVM = createMockVMHandle();
+    vi.mocked(createFirecrackerVM).mockResolvedValue(mockVM);
+
+    const opts = makeProvisionOpts({
+      repoContextFiles: [
+        {
+          name: "CONTRIBUTING.md",
+          content: "# Contribution rules\n",
+          sourceFileId: "ctx_file_1",
+        },
+        {
+          name: "requirements.pdf",
+          content: "Extracted PDF text",
+          sourceFileId: "ctx_file_2",
+        },
+      ],
+    });
+
+    await provisionWorkspace(opts);
+
+    expect(mockVM.writeFile).toHaveBeenCalled();
+    const writeCalls = vi.mocked(mockVM.writeFile!).mock.calls;
+    const readmeWrite = writeCalls.find(([path]) =>
+      typeof path === "string" && path.endsWith("/workspace/ARCAGENT_CONTEXT/README.md"),
+    );
+    expect(readmeWrite).toBeDefined();
+
+    const contextFileWrite = writeCalls.find(([path]) =>
+      typeof path === "string" && path.includes("/workspace/ARCAGENT_CONTEXT/contributing.md"),
+    );
+    expect(contextFileWrite).toBeDefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

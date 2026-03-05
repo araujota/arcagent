@@ -286,6 +286,12 @@ export const provisionWorkspace = internalAction({
         bounty,
       });
 
+      const repoContextFiles = process.env.ENABLE_REPO_CONTEXT_FILES === "true"
+        ? await ctx.runQuery(internal.repoContextFiles.listReadyForRepositoryUrlInternal, {
+            repositoryUrl: args.repositoryUrl,
+          })
+        : [];
+
       if (requiresCloneAuthToken(args.repositoryUrl) && !repoAuthToken) {
         throw new Error(
           "GitHub installation token is required for workspace provisioning. Install/repair the GitHub App for this repository.",
@@ -309,6 +315,11 @@ export const provisionWorkspace = internalAction({
           commitSha: args.commitSha,
           language: args.language,
           expiresAt: args.expiresAt,
+          repoContextFiles: repoContextFiles.map((row) => ({
+            name: row.filenameSafe,
+            content: row.extractedText,
+            sourceFileId: row._id,
+          })),
         }),
       });
 

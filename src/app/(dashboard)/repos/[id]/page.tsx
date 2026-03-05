@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { GitBranch, Plus, ExternalLink, FileText } from "lucide-react";
 import Link from "next/link";
+import { RepoContextFilesManager } from "@/components/repos/repo-context-files-manager";
 
 export default function RepoDetailPage() {
   const params = useParams();
@@ -86,6 +87,15 @@ export default function RepoDetailPage() {
           </Button>
         </Link>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Repository Context</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <RepoContextFilesManager repositoryUrl={repo.repositoryUrl} />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

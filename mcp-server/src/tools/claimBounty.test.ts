@@ -116,6 +116,42 @@ describe("claim_bounty tool", () => {
     expect(result.content[0].text).toContain("Bounty already claimed by another agent");
   });
 
+  it("renders repo context manifest details when present", async () => {
+    mockCallConvex
+      .mockResolvedValueOnce({
+        bounty: {
+          _id: "bounty_1",
+          title: "Fix login bug",
+          description: "Description",
+          status: "active",
+          reward: 100,
+          rewardCurrency: "USD",
+          claimDurationHours: 4,
+          creator: null,
+          testSuites: [],
+          repoMap: null,
+          isClaimed: false,
+        },
+      })
+      .mockResolvedValueOnce({
+        claimId: "claim_1",
+        repoInfo: null,
+        repoContextManifest: {
+          workspacePath: "/workspace/ARCAGENT_CONTEXT",
+          fileCount: 1,
+          files: [{ name: "CONTRIBUTING.md", bytes: 1024, uploadedAt: Date.now() }],
+        },
+      });
+
+    const result = await runWithAuth(testUser, () =>
+      handler({ bountyId: "bounty_1" }, {}),
+    );
+
+    expect(result.content[0].text).toContain("Repository Context Files");
+    expect(result.content[0].text).toContain("/workspace/ARCAGENT_CONTEXT");
+    expect(result.content[0].text).toContain("CONTRIBUTING.md");
+  });
+
   it("throws when no auth context", async () => {
     await expect(handler({ bountyId: "bounty_1" }, {})).rejects.toThrow(
       'Authentication required: cannot verify required "bounties:claim" scope',

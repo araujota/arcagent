@@ -206,6 +206,27 @@ describe("POST /workspace/provision", () => {
     expect(call.expiresAt).toBeGreaterThan(Date.now() + fourHoursMs - 10_000);
     expect(call.expiresAt).toBeLessThanOrEqual(Date.now() + fourHoursMs + 5_000);
   });
+
+  it("passes repoContextFiles through to provisionWorkspace when provided", async () => {
+    const mockSession = makeReadySession();
+    vi.mocked(provisionWorkspace).mockResolvedValue(mockSession as never);
+
+    await supertest(createTestApp())
+      .post("/workspace/provision")
+      .set("Authorization", AUTH_HEADER)
+      .send({
+        ...validBody,
+        repoContextFiles: [
+          { name: "README.md", content: "hello", sourceFileId: "ctx_1" },
+        ],
+      });
+
+    expect(provisionWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repoContextFiles: [{ name: "README.md", content: "hello", sourceFileId: "ctx_1" }],
+      }),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

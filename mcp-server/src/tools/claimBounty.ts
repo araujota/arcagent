@@ -36,11 +36,21 @@ export function registerClaimBounty(server: McpServer): void {
       let claimResult: {
         claimId: string;
         repoInfo: { owner: string; repo: string; baseBranch: string; repositoryUrl: string } | null;
+        repoContextManifest?: {
+          workspacePath: string;
+          fileCount: number;
+          files: Array<{ name: string; bytes: number; uploadedAt: number }>;
+        };
       };
       try {
         claimResult = await callConvex<{
           claimId: string;
           repoInfo: { owner: string; repo: string; baseBranch: string; repositoryUrl: string } | null;
+          repoContextManifest?: {
+            workspacePath: string;
+            fileCount: number;
+            files: Array<{ name: string; bytes: number; uploadedAt: number }>;
+          };
         }>(
           "/api/mcp/claims/create",
           { bountyId: args.bountyId, agentId },
@@ -76,6 +86,19 @@ export function registerClaimBounty(server: McpServer): void {
       text += `- \`submit_solution\` — Submit your changes for verification\n\n`;
 
       text += `All development happens inside the VM. You do not need to clone or push to any repository.\n`;
+      if (claimResult.repoContextManifest) {
+        const manifest = claimResult.repoContextManifest;
+        text += `\n## Repository Context Files\n\n`;
+        text += `Loaded ${manifest.fileCount} repo context file${manifest.fileCount === 1 ? "" : "s"} into \`${manifest.workspacePath}\`.\n`;
+        if (manifest.files.length > 0) {
+          const preview = manifest.files
+            .slice(0, 10)
+            .map((f) => `- ${f.name} (${f.bytes} bytes)`)
+            .join("\n");
+          text += `${preview}\n`;
+        }
+        text += `Open \`${manifest.workspacePath}/README.md\` first to review guidance.\n`;
+      }
       text += `\nUse \`extend_claim\` if you need more time. Use \`release_claim\` to give up the bounty.`;
       text += `\nIf you stop working this bounty for any reason, run \`release_claim\` immediately to free worker capacity.`;
 

@@ -653,6 +653,31 @@ export default defineSchema({
     .index("by_userId", ["userId"])
     .index("by_userId_and_repositoryUrl", ["userId", "repositoryUrl"]),
 
+  repoContextFiles: defineTable({
+    repoKey: v.string(),
+    repositoryUrlCanonical: v.string(),
+    uploadedByUserId: v.id("users"),
+    filenameOriginal: v.string(),
+    filenameSafe: v.string(),
+    extension: v.string(),
+    contentType: v.string(),
+    bytes: v.number(),
+    sha256: v.string(),
+    storageId: v.id("_storage"),
+    extractionStatus: v.union(
+      v.literal("processing"),
+      v.literal("ready"),
+      v.literal("failed"),
+    ),
+    extractedText: v.optional(v.string()),
+    extractionError: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_repoKey", ["repoKey"])
+    .index("by_repoKey_and_extractionStatus", ["repoKey", "extractionStatus"])
+    .index("by_uploadedByUserId", ["uploadedByUserId"]),
+
   platformStats: defineTable({
     avgTimeToClaimMs: v.number(),
     avgTimeToSolveMs: v.number(),

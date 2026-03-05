@@ -62,11 +62,135 @@ export interface ProvisionOptions {
   commitSha: string;
   language: string;
   expiresAt: number;
+  repoContextFiles?: Array<{
+    name: string;
+    content: string;
+    sourceFileId: string;
+  }>;
 }
 
 function redactToken(value: string, token?: string): string {
   if (!token) return value;
   return value.split(token).join("<redacted>");
+}
+
+function sanitizeContextBaseName(name: string): string {
+  const withoutExt = name.replace(/\.[^./\\]+$/u, "");
+  const normalized = withoutExt
+    .normalize("NFKD")
+    .replace(/[^\x20-\x7E]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80);
+  return normalized || "context-file";
+}
+
+function normalizeContextOutputFilename(input: string): string {
+  const lower = input.trim().toLowerCase();
+  const ext = lower.split(".").pop() ?? "txt";
+  const base = sanitizeContextBaseName(lower);
+  if (ext === "md" || ext === "txt") {
+    return `${base}.${ext}`;
+  }
+  return `${base}.txt`;
+}
+
+function dedupeFilename(candidate: string, seen: Set<string>): string {
+  if (!seen.has(candidate)) {
+    seen.add(candidate);
+    return candidate;
+  }
+
+  const idx = candidate.lastIndexOf(".");
+  const base = idx >= 0 ? candidate.slice(0, idx) : candidate;
+  const ext = idx >= 0 ? candidate.slice(idx) : "";
+  let suffix = 2;
+  while (seen.has(`${base}-${suffix}${ext}`)) {
+    suffix += 1;
+  }
+  const finalName = `${base}-${suffix}${ext}`;
+  seen.add(finalName);
+  return finalName;
+}
+
+function trimContextFiles(
+  files: Array<{ name: string; content: string; sourceFileId: string }> | undefined,
+): Array<{ name: string; content: string; sourceFileId: string }> {
+  if (!files || files.length === 0) return [];
+
+  const limitedFiles = files.slice(0, MAX_CONTEXT_FILES);
+  const result: Array<{ name: string; content: string; sourceFileId: string }> = [];
+  let totalChars = 0;
+
+  for (const file of limitedFiles) {
+    if (!file?.content) continue;
+    const content = file.content.slice(0, MAX_CONTEXT_FILE_CHARS);
+    if (!content) continue;
+    if (totalChars + content.length > MAX_CONTEXT_TOTAL_CHARS) {
+      break;
+    }
+    result.push({
+      name: file.name,
+      content,
+      sourceFileId: file.sourceFileId,
+    });
+    totalChars += content.length;
+  }
+
+  return result;
+}
+
+async function writeRepoContextFiles(
+  vm: VMHandle,
+  files: Array<{ name: string; content: string; sourceFileId: string }>,
+): Promise<void> {
+  if (files.length === 0) return;
+  await vm.exec(`mkdir -p ${WORKSPACE_CONTEXT_DIR}`, 15_000, "agent");
+
+  const written: Array<{ path: string; sourceFileId: string; chars: number }> = [];
+  const seen = new Set<string>();
+  for (const file of files) {
+    const normalizedName = normalizeContextOutputFilename(file.name);
+    const uniqueName = dedupeFilename(normalizedName, seen);
+    const path = `${WORKSPACE_CONTEXT_DIR}/${uniqueName}`;
+    const contentBuffer = Buffer.from(file.content, "utf-8");
+    if (vm.writeFile) {
+      await vm.writeFile(path, contentBuffer, "0644", "agent:agent");
+    } else {
+      const encoded = contentBuffer.toString("base64");
+      await vm.exec(`printf '%s' '${encoded}' | base64 -d > '${path}'`, 15_000, "agent");
+    }
+    written.push({
+      path,
+      sourceFileId: file.sourceFileId,
+      chars: file.content.length,
+    });
+  }
+
+  const readmeLines: string[] = [
+    "# Repo Context Files",
+    "",
+    "These files were provided by bounty posters and loaded automatically for this repository.",
+    "Review these before making code changes.",
+    "",
+    "## Loaded Files",
+    ...written.map((entry) => `- ${entry.path} (source: ${entry.sourceFileId}, chars: ${entry.chars})`),
+    "",
+  ];
+
+  const readmeBuffer = Buffer.from(readmeLines.join("\n"), "utf-8");
+  if (vm.writeFile) {
+    await vm.writeFile(`${WORKSPACE_CONTEXT_DIR}/README.md`, readmeBuffer, "0644", "agent:agent");
+  } else {
+    const encoded = readmeBuffer.toString("base64");
+    await vm.exec(
+      `printf '%s' '${encoded}' | base64 -d > '${WORKSPACE_CONTEXT_DIR}/README.md'`,
+      15_000,
+      "agent",
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +207,10 @@ const ERROR_SESSION_CLEANUP_MS = 5 * 60 * 1000; // 5 min
 const PROVISIONING_TIMEOUT_MS = 10 * 60 * 1000; // 10 min — provisioning that takes longer is stuck
 const MAX_DIFF_SIZE = 10 * 1024 * 1024; // 10 MiB
 const MAX_CHANGED_FILES = 500;
+const WORKSPACE_CONTEXT_DIR = "/workspace/ARCAGENT_CONTEXT";
+const MAX_CONTEXT_FILES = 20;
+const MAX_CONTEXT_FILE_CHARS = 150_000;
+const MAX_CONTEXT_TOTAL_CHARS = 600_000;
 const DEFAULT_DIFF_EXCLUDE_GLOBS = [
   // JS/TS package manager caches
   ".npm/_cacache/**",
@@ -407,6 +535,10 @@ export async function provisionWorkspace(
 
     // Install dependencies based on language
     await installDependencies(vm, opts.language);
+
+    // Inject repo-level context files for claimed bounties.
+    const contextFiles = trimContextFiles(opts.repoContextFiles);
+    await writeRepoContextFiles(vm, contextFiles);
 
     // Mark ready
     session.status = "ready";
