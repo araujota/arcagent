@@ -13,6 +13,12 @@ interface ParsedStepDefinition {
   matcher: RegExp;
 }
 
+interface ParsedStepDefinitionAccumulator {
+  parsed: ParsedStepDefinition[];
+  issues: string[];
+  invalidDefinitions: number;
+}
+
 interface GherkinStep {
   source: "public" | "hidden";
   line: number;
@@ -189,58 +195,104 @@ function parseStepDefinitions(
   let invalidDefinitions = 0;
 
   for (const file of files) {
-    const content = normalizeStepDefinitionContent(file.content);
-    STEP_DEF_CALL_REGEX.lastIndex = 0;
-    let stepDefFoundInFile = false;
-    let match: RegExpExecArray | null;
-    while ((match = STEP_DEF_CALL_REGEX.exec(content)) !== null) {
-      stepDefFoundInFile = true;
-      const stringBody = match[3];
-      const regexBody = match[4];
-      const regexFlags = match[5] ?? "";
-
-      if (typeof stringBody === "string") {
-        if (hasInvalidAlternativeSlash(stringBody)) {
-          invalidDefinitions++;
-          issues.push(
-            `Step definition in ${file.path} contains an invalid "/" alternative boundary in expression "${stringBody}"`,
-          );
-          continue;
-        }
-        try {
-          const decoded = decodeJsStringLiteral(stringBody);
-          parsed.push({
-            filePath: file.path,
-            matcher: cucumberExpressionToRegex(decoded),
-          });
-        } catch (error) {
-          invalidDefinitions++;
-          const message = error instanceof Error ? error.message : "unknown error";
-          issues.push(`Invalid Cucumber expression in ${file.path}: ${message}`);
-        }
-        continue;
-      }
-
-      if (typeof regexBody === "string") {
-        try {
-          parsed.push({
-            filePath: file.path,
-            matcher: new RegExp(regexBody, regexFlags),
-          });
-        } catch (error) {
-          invalidDefinitions++;
-          const message = error instanceof Error ? error.message : "unknown error";
-          issues.push(`Invalid regex step definition in ${file.path}: ${message}`);
-        }
-      }
-    }
-
-    if (!stepDefFoundInFile) {
+    const result = parseStepDefinitionFile(file);
+    parsed.push(...result.parsed);
+    issues.push(...result.issues);
+    invalidDefinitions += result.invalidDefinitions;
+    if (!result.stepDefFoundInFile) {
       warnings.push(`No Cucumber step definitions found in ${file.path}`);
     }
   }
 
   return { parsed, issues, warnings, invalidDefinitions };
+}
+
+function parseStepDefinitionFile(file: StepDefinitionFile): {
+  parsed: ParsedStepDefinition[];
+  issues: string[];
+  invalidDefinitions: number;
+  stepDefFoundInFile: boolean;
+} {
+  const content = normalizeStepDefinitionContent(file.content);
+  STEP_DEF_CALL_REGEX.lastIndex = 0;
+  const accumulator: ParsedStepDefinitionAccumulator = {
+    parsed: [],
+    issues: [],
+    invalidDefinitions: 0,
+  };
+
+  let stepDefFoundInFile = false;
+  let match: RegExpExecArray | null;
+  while ((match = STEP_DEF_CALL_REGEX.exec(content)) !== null) {
+    stepDefFoundInFile = true;
+    parseStepDefinitionMatch(file.path, match, accumulator);
+  }
+
+  return {
+    ...accumulator,
+    stepDefFoundInFile,
+  };
+}
+
+function parseStepDefinitionMatch(
+  filePath: string,
+  match: RegExpExecArray,
+  accumulator: ParsedStepDefinitionAccumulator,
+): void {
+  const stringBody = match[3];
+  const regexBody = match[4];
+  const regexFlags = match[5] ?? "";
+
+  if (typeof stringBody === "string") {
+    parseCucumberExpressionDefinition(filePath, stringBody, accumulator);
+    return;
+  }
+  if (typeof regexBody === "string") {
+    parseRegexDefinition(filePath, regexBody, regexFlags, accumulator);
+  }
+}
+
+function parseCucumberExpressionDefinition(
+  filePath: string,
+  expressionBody: string,
+  accumulator: ParsedStepDefinitionAccumulator,
+): void {
+  if (hasInvalidAlternativeSlash(expressionBody)) {
+    accumulator.invalidDefinitions++;
+    accumulator.issues.push(
+      `Step definition in ${filePath} contains an invalid "/" alternative boundary in expression "${expressionBody}"`,
+    );
+    return;
+  }
+  try {
+    const decoded = decodeJsStringLiteral(expressionBody);
+    accumulator.parsed.push({
+      filePath,
+      matcher: cucumberExpressionToRegex(decoded),
+    });
+  } catch (error) {
+    accumulator.invalidDefinitions++;
+    const message = error instanceof Error ? error.message : "unknown error";
+    accumulator.issues.push(`Invalid Cucumber expression in ${filePath}: ${message}`);
+  }
+}
+
+function parseRegexDefinition(
+  filePath: string,
+  regexBody: string,
+  regexFlags: string,
+  accumulator: ParsedStepDefinitionAccumulator,
+): void {
+  try {
+    accumulator.parsed.push({
+      filePath,
+      matcher: new RegExp(regexBody, regexFlags),
+    });
+  } catch (error) {
+    accumulator.invalidDefinitions++;
+    const message = error instanceof Error ? error.message : "unknown error";
+    accumulator.issues.push(`Invalid regex step definition in ${filePath}: ${message}`);
+  }
 }
 
 export function loadStepDefinitionFiles(payloads: StepDefinitionPayload[]): {
@@ -254,46 +306,74 @@ export function loadStepDefinitionFiles(payloads: StepDefinitionPayload[]): {
   for (const payload of payloads) {
     const serialized = payload.serialized?.trim() ?? "";
     if (!serialized) continue;
-
-    let parsedValue: unknown;
-    try {
-      parsedValue = JSON.parse(serialized);
-    } catch {
-      // Backward compatibility: allow raw step-definition source text.
-      const path = `inline-${payload.label}.steps`;
-      const key = `${path}\0${serialized}`;
-      if (!seen.has(key)) {
-        files.push({ path, content: serialized });
-        seen.add(key);
-      }
-      continue;
-    }
-
-    if (!Array.isArray(parsedValue)) {
-      issues.push(`Step definitions payload "${payload.label}" is not a JSON array`);
-      continue;
-    }
-
-    for (const entry of parsedValue) {
-      const path = typeof entry?.path === "string" ? entry.path : "";
-      const hasContent = typeof entry?.content === "string";
-      const content = hasContent ? entry.content : "";
-      if (!path || !hasContent) {
-        issues.push(`Step definitions payload "${payload.label}" has an entry missing path/content`);
-        continue;
-      }
-      if (content.trim().length === 0) {
-        issues.push(`Step definition file ${path} is empty`);
-        continue;
-      }
-      const key = `${path}\0${content}`;
-      if (seen.has(key)) continue;
-      files.push({ path, content });
-      seen.add(key);
-    }
+    addStepDefinitionPayloadEntries({ payload, serialized, files, issues, seen });
   }
 
   return { files, issues };
+}
+
+function addStepDefinitionPayloadEntries(args: {
+  payload: StepDefinitionPayload;
+  serialized: string;
+  files: StepDefinitionFile[];
+  issues: string[];
+  seen: Set<string>;
+}): void {
+  const parsedValue = parseSerializedStepDefinitions(args.payload, args.serialized, args.files, args.seen);
+  if (parsedValue === undefined) return;
+
+  if (!Array.isArray(parsedValue)) {
+    args.issues.push(`Step definitions payload "${args.payload.label}" is not a JSON array`);
+    return;
+  }
+
+  for (const entry of parsedValue) {
+    addStepDefinitionFileEntry(args.payload.label, entry, args.files, args.issues, args.seen);
+  }
+}
+
+function parseSerializedStepDefinitions(
+  payload: StepDefinitionPayload,
+  serialized: string,
+  files: StepDefinitionFile[],
+  seen: Set<string>,
+): unknown[] | undefined {
+  try {
+    return JSON.parse(serialized);
+  } catch {
+    const path = `inline-${payload.label}.steps`;
+    const key = `${path}\0${serialized}`;
+    if (!seen.has(key)) {
+      files.push({ path, content: serialized });
+      seen.add(key);
+    }
+    return undefined;
+  }
+}
+
+function addStepDefinitionFileEntry(
+  payloadLabel: string,
+  entry: unknown,
+  files: StepDefinitionFile[],
+  issues: string[],
+  seen: Set<string>,
+): void {
+  const candidate = entry as { path?: unknown; content?: unknown } | null | undefined;
+  const path = typeof candidate?.path === "string" ? candidate.path : "";
+  const hasContent = typeof candidate?.content === "string";
+  const content = hasContent ? candidate.content : "";
+  if (!path || !hasContent) {
+    issues.push(`Step definitions payload "${payloadLabel}" has an entry missing path/content`);
+    return;
+  }
+  if (content.trim().length === 0) {
+    issues.push(`Step definition file ${path} is empty`);
+    return;
+  }
+  const key = `${path}\0${content}`;
+  if (seen.has(key)) return;
+  files.push({ path, content });
+  seen.add(key);
 }
 
 export function verifyBddStepCoverage(args: {

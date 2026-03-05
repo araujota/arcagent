@@ -320,7 +320,7 @@ function buildWorkerProxyRequestInit(req: Request, headers: Headers): RequestIni
 
 async function parseWorkerProxyJsonPayload(
   res: Response,
-  upstream: Response,
+  upstream: globalThis.Response,
 ): Promise<{ ok: boolean; payload?: unknown }> {
   const upstreamContentType = (upstream.headers.get("content-type") ?? "").toLowerCase();
   if (!upstreamContentType.includes("application/json")) {

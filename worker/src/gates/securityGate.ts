@@ -366,108 +366,135 @@ function getLanguageSastCommand(language: string): string | null {
   }
 }
 
+type LanguageSastParser = (output: string) => ScanSummary;
+
+const LANGUAGE_SAST_PARSERS: Record<string, LanguageSastParser> = {
+  python: parseBanditOutput,
+  go: parseGosecOutput,
+  ruby: parseBrakemanOutput,
+  rust: parseCargoAuditOutput,
+  c: parseFlawfinderOutput,
+  cpp: parseFlawfinderOutput,
+};
+
 function parseLanguageSastOutput(language: string, output: string): ScanSummary {
-  switch (language.toLowerCase()) {
-    case "python": {
-      const parsed = parseJsonSafe<BanditOutput>(output);
-      if (!parsed?.results) return { totalFindings: 0, criticalCount: 0, highCount: 0, findings: [] };
-      const criticalCount = 0;
-      let highCount = 0;
-      const findings: LanguageSastFinding[] = [];
-      for (const r of parsed.results) {
-        const sev = r.issue_severity?.toUpperCase();
-        if (sev === "HIGH") highCount++;
-        findings.push({
-          file: r.filename,
-          line: r.line_number,
-          severity: sev,
-          message: r.issue_text,
-          tool: "bandit",
-        });
-      }
-      return { totalFindings: findings.length, criticalCount, highCount, findings };
-    }
-    case "go": {
-      const parsed = parseJsonSafe<GosecOutput>(output);
-      if (!parsed?.Issues) return { totalFindings: 0, criticalCount: 0, highCount: 0, findings: [] };
-      let criticalCount = 0;
-      let highCount = 0;
-      const findings: LanguageSastFinding[] = [];
-      for (const issue of parsed.Issues) {
-        const sev = issue.severity?.toUpperCase();
-        if (sev === "HIGH") highCount++;
-        if (sev === "CRITICAL") criticalCount++;
-        findings.push({
-          file: issue.file,
-          line: typeof issue.line === "string" ? parseInt(issue.line, 10) : issue.line,
-          severity: sev,
-          message: issue.details,
-          tool: "gosec",
-        });
-      }
-      return { totalFindings: findings.length, criticalCount, highCount, findings };
-    }
-    case "ruby": {
-      const parsed = parseJsonSafe<BrakemanOutput>(output);
-      if (!parsed?.warnings) return { totalFindings: 0, criticalCount: 0, highCount: 0, findings: [] };
-      const criticalCount = 0;
-      let highCount = 0;
-      const findings: LanguageSastFinding[] = [];
-      for (const w of parsed.warnings) {
-        const conf = w.confidence?.toUpperCase();
-        if (conf === "HIGH") highCount++;
-        findings.push({
-          file: w.file,
-          line: w.line,
-          severity: conf === "HIGH" ? "HIGH" : "MEDIUM",
-          message: w.message,
-          tool: "brakeman",
-        });
-      }
-      return { totalFindings: findings.length, criticalCount, highCount, findings };
-    }
-    case "rust": {
-      const parsed = parseJsonSafe<CargoAuditOutput>(output);
-      if (!parsed?.vulnerabilities?.list) return { totalFindings: 0, criticalCount: 0, highCount: 0, findings: [] };
-      const criticalCount = 0;
-      let highCount = 0;
-      const findings: LanguageSastFinding[] = [];
-      for (const v of parsed.vulnerabilities.list) {
-        const advisory = v.advisory;
-        findings.push({
-          file: advisory?.id,
-          severity: "HIGH",
-          message: advisory?.title,
-          tool: "cargo-audit",
-        });
-        highCount++;
-      }
-      return { totalFindings: findings.length, criticalCount, highCount, findings };
-    }
-    case "c":
-    case "cpp": {
-      const parsed = parseJsonSafe<FlawfinderFinding[]>(output);
-      if (!parsed) return { totalFindings: 0, criticalCount: 0, highCount: 0, findings: [] };
-      const criticalCount = 0;
-      let highCount = 0;
-      const findings: LanguageSastFinding[] = [];
-      for (const f of parsed) {
-        const level = f.level ?? 0;
-        const severity = level >= 4 ? "HIGH" : level >= 2 ? "MEDIUM" : "LOW";
-        if (severity === "HIGH") highCount++;
-        findings.push({
-          file: f.filename,
-          line: f.line,
-          severity,
-          message: f.warning,
-          tool: "flawfinder",
-        });
-      }
-      return { totalFindings: findings.length, criticalCount, highCount, findings };
-    }
-    default:
-      return { totalFindings: 0, criticalCount: 0, highCount: 0, findings: [] };
+  const parser = LANGUAGE_SAST_PARSERS[language.toLowerCase()];
+  return parser ? parser(output) : emptyScanSummary();
+}
+
+function emptyScanSummary(): ScanSummary {
+  return { totalFindings: 0, criticalCount: 0, highCount: 0, findings: [] };
+}
+
+function parseBanditOutput(output: string): ScanSummary {
+  const parsed = parseJsonSafe<BanditOutput>(output);
+  if (!parsed?.results) return emptyScanSummary();
+
+  let highCount = 0;
+  const findings: LanguageSastFinding[] = [];
+  for (const result of parsed.results) {
+    const severity = result.issue_severity?.toUpperCase();
+    if (severity === "HIGH") highCount++;
+    findings.push({
+      file: result.filename,
+      line: result.line_number,
+      severity,
+      message: result.issue_text,
+      tool: "bandit",
+    });
   }
+
+  return { totalFindings: findings.length, criticalCount: 0, highCount, findings };
+}
+
+function parseGosecOutput(output: string): ScanSummary {
+  const parsed = parseJsonSafe<GosecOutput>(output);
+  if (!parsed?.Issues) return emptyScanSummary();
+
+  let criticalCount = 0;
+  let highCount = 0;
+  const findings: LanguageSastFinding[] = [];
+  for (const issue of parsed.Issues) {
+    const severity = issue.severity?.toUpperCase();
+    if (severity === "HIGH") highCount++;
+    if (severity === "CRITICAL") criticalCount++;
+    findings.push({
+      file: issue.file,
+      line: typeof issue.line === "string" ? parseInt(issue.line, 10) : issue.line,
+      severity,
+      message: issue.details,
+      tool: "gosec",
+    });
+  }
+
+  return { totalFindings: findings.length, criticalCount, highCount, findings };
+}
+
+function parseBrakemanOutput(output: string): ScanSummary {
+  const parsed = parseJsonSafe<BrakemanOutput>(output);
+  if (!parsed?.warnings) return emptyScanSummary();
+
+  let highCount = 0;
+  const findings: LanguageSastFinding[] = [];
+  for (const warning of parsed.warnings) {
+    const confidence = warning.confidence?.toUpperCase();
+    if (confidence === "HIGH") highCount++;
+    findings.push({
+      file: warning.file,
+      line: warning.line,
+      severity: confidence === "HIGH" ? "HIGH" : "MEDIUM",
+      message: warning.message,
+      tool: "brakeman",
+    });
+  }
+
+  return { totalFindings: findings.length, criticalCount: 0, highCount, findings };
+}
+
+function parseCargoAuditOutput(output: string): ScanSummary {
+  const parsed = parseJsonSafe<CargoAuditOutput>(output);
+  const vulnerabilities = parsed?.vulnerabilities?.list;
+  if (!vulnerabilities) return emptyScanSummary();
+
+  const findings: LanguageSastFinding[] = [];
+  for (const vulnerability of vulnerabilities) {
+    const advisory = vulnerability.advisory;
+    findings.push({
+      file: advisory?.id,
+      severity: "HIGH",
+      message: advisory?.title,
+      tool: "cargo-audit",
+    });
+  }
+
+  return {
+    totalFindings: findings.length,
+    criticalCount: 0,
+    highCount: findings.length,
+    findings,
+  };
+}
+
+function parseFlawfinderOutput(output: string): ScanSummary {
+  const parsed = parseJsonSafe<FlawfinderFinding[]>(output);
+  if (!parsed) return emptyScanSummary();
+
+  let highCount = 0;
+  const findings: LanguageSastFinding[] = [];
+  for (const finding of parsed) {
+    const level = finding.level ?? 0;
+    const severity = level >= 4 ? "HIGH" : level >= 2 ? "MEDIUM" : "LOW";
+    if (severity === "HIGH") highCount++;
+    findings.push({
+      file: finding.filename,
+      line: finding.line,
+      severity,
+      message: finding.warning,
+      tool: "flawfinder",
+    });
+  }
+
+  return { totalFindings: findings.length, criticalCount: 0, highCount, findings };
 }
 
 // ---------------------------------------------------------------------------

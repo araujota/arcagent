@@ -731,6 +731,73 @@ export const recomputeForAgent = internalMutation({
   },
 });
 
+function isTierQualificationEligible(stats: any, now: number): boolean {
+  const freezeActive = !!stats.promotionFreezeUntilMs && stats.promotionFreezeUntilMs > now;
+  const risk = stats.gamingRiskScore ?? 0;
+  return (
+    (stats.paidBountiesCompleted ?? 0) >= MIN_COMPLETED_BOUNTIES &&
+    (stats.trustedUniqueRaters ?? 0) >= MIN_TRUSTED_UNIQUE_RATERS &&
+    (stats.paidPayoutVolumeUsd ?? 0) >= MIN_PAID_PAYOUT_VOLUME_USD &&
+    !freezeActive &&
+    risk <= GAMING_RISK_THRESHOLDS.unranked
+  );
+}
+
+function compareTierCandidates(a: any, b: any): number {
+  const bScore = b.finalScore ?? b.compositeScore;
+  const aScore = a.finalScore ?? a.compositeScore;
+  if (bScore !== aScore) return bScore - aScore;
+  if ((b.paidBountiesCompleted ?? 0) !== (a.paidBountiesCompleted ?? 0)) {
+    return (b.paidBountiesCompleted ?? 0) - (a.paidBountiesCompleted ?? 0);
+  }
+  return b.totalBountiesCompleted - a.totalBountiesCompleted;
+}
+
+function computeBaseTier(score: number, percentile: number, payout: number, risk: number): "S" | "A" | "B" | "C" | "D" {
+  if (
+    score >= TIER_SCORE_GATES.S &&
+    percentile < 0.1 &&
+    payout >= TIER_PAYOUT_GATES_USD.S &&
+    risk <= 10
+  ) {
+    return "S";
+  }
+  if (
+    score >= TIER_SCORE_GATES.A &&
+    percentile < 0.3 &&
+    payout >= TIER_PAYOUT_GATES_USD.A &&
+    risk <= 15
+  ) {
+    return "A";
+  }
+  if (score >= TIER_SCORE_GATES.B && percentile < 0.6) return "B";
+  if (score >= TIER_SCORE_GATES.C && percentile < 0.85) return "C";
+  return "D";
+}
+
+function applyTierCaps(baseTier: "S" | "A" | "B" | "C" | "D", stats: any): "S" | "A" | "B" | "C" | "D" {
+  const risk = stats.gamingRiskScore ?? 0;
+  let tier = baseTier;
+  if (risk > GAMING_RISK_THRESHOLDS.capAtC && TIER_RANK[tier] > TIER_RANK.C) {
+    tier = "C";
+  }
+  if ((stats.singleCreatorConcentration ?? 0) > CONCENTRATION_CAP_THRESHOLD && (tier === "S" || tier === "A")) {
+    tier = "B";
+  }
+  return tier;
+}
+
+function shouldBeUnranked(stats: any, now: number): boolean {
+  const freezeActive = !!stats.promotionFreezeUntilMs && stats.promotionFreezeUntilMs > now;
+  return (
+    (stats.paidBountiesCompleted ?? 0) < MIN_COMPLETED_BOUNTIES ||
+    (stats.trustedUniqueRaters ?? 0) < MIN_TRUSTED_UNIQUE_RATERS ||
+    (stats.paidPayoutVolumeUsd ?? 0) < MIN_PAID_PAYOUT_VOLUME_USD ||
+    freezeActive ||
+    (stats.gamingRiskScore ?? 0) > GAMING_RISK_THRESHOLDS.unranked
+  );
+}
+
 /**
  * Recompute all tiers based on V2 ranking and anti-gaming policy.
  * Called by daily cron.
@@ -740,28 +807,8 @@ export const recomputeAllTiers = internalMutation({
   handler: async (ctx) => {
     const now = Date.now();
     const allStats = await ctx.db.query("agentStats").collect();
-
-    const qualified = allStats.filter((s) => {
-      const freezeActive = !!s.promotionFreezeUntilMs && s.promotionFreezeUntilMs > now;
-      const risk = s.gamingRiskScore ?? 0;
-      return (
-        (s.paidBountiesCompleted ?? 0) >= MIN_COMPLETED_BOUNTIES &&
-        (s.trustedUniqueRaters ?? 0) >= MIN_TRUSTED_UNIQUE_RATERS &&
-        (s.paidPayoutVolumeUsd ?? 0) >= MIN_PAID_PAYOUT_VOLUME_USD &&
-        !freezeActive &&
-        risk <= GAMING_RISK_THRESHOLDS.unranked
-      );
-    });
-
-    qualified.sort((a, b) => {
-      const bScore = b.finalScore ?? b.compositeScore;
-      const aScore = a.finalScore ?? a.compositeScore;
-      if (bScore !== aScore) return bScore - aScore;
-      if ((b.paidBountiesCompleted ?? 0) !== (a.paidBountiesCompleted ?? 0)) {
-        return (b.paidBountiesCompleted ?? 0) - (a.paidBountiesCompleted ?? 0);
-      }
-      return b.totalBountiesCompleted - a.totalBountiesCompleted;
-    });
+    const qualified = allStats.filter((stats) => isTierQualificationEligible(stats, now));
+    qualified.sort(compareTierCandidates);
 
     for (let i = 0; i < qualified.length; i++) {
       const stats = qualified[i];
@@ -769,53 +816,12 @@ export const recomputeAllTiers = internalMutation({
       const score = stats.finalScore ?? stats.compositeScore;
       const risk = stats.gamingRiskScore ?? 0;
       const payout = stats.paidPayoutVolumeUsd ?? 0;
-
-      let tier: "S" | "A" | "B" | "C" | "D" = "D";
-
-      if (
-        score >= TIER_SCORE_GATES.S &&
-        percentile < 0.1 &&
-        payout >= TIER_PAYOUT_GATES_USD.S &&
-        risk <= 10
-      ) {
-        tier = "S";
-      } else if (
-        score >= TIER_SCORE_GATES.A &&
-        percentile < 0.3 &&
-        payout >= TIER_PAYOUT_GATES_USD.A &&
-        risk <= 15
-      ) {
-        tier = "A";
-      } else if (score >= TIER_SCORE_GATES.B && percentile < 0.6) {
-        tier = "B";
-      } else if (score >= TIER_SCORE_GATES.C && percentile < 0.85) {
-        tier = "C";
-      }
-
-      if (risk > GAMING_RISK_THRESHOLDS.capAtC && TIER_RANK[tier] > TIER_RANK.C) {
-        tier = "C";
-      }
-
-      if (
-        (stats.singleCreatorConcentration ?? 0) > CONCENTRATION_CAP_THRESHOLD &&
-        (tier === "S" || tier === "A")
-      ) {
-        tier = "B";
-      }
-
+      const tier = applyTierCaps(computeBaseTier(score, percentile, payout, risk), stats);
       await ctx.db.patch(stats._id, { tier });
     }
 
     for (const stats of allStats) {
-      const freezeActive = !!stats.promotionFreezeUntilMs && stats.promotionFreezeUntilMs > now;
-      const unqualified =
-        (stats.paidBountiesCompleted ?? 0) < MIN_COMPLETED_BOUNTIES ||
-        (stats.trustedUniqueRaters ?? 0) < MIN_TRUSTED_UNIQUE_RATERS ||
-        (stats.paidPayoutVolumeUsd ?? 0) < MIN_PAID_PAYOUT_VOLUME_USD ||
-        freezeActive ||
-        (stats.gamingRiskScore ?? 0) > GAMING_RISK_THRESHOLDS.unranked;
-
-      if (unqualified && stats.tier !== "unranked") {
+      if (shouldBeUnranked(stats, now) && stats.tier !== "unranked") {
         await ctx.db.patch(stats._id, { tier: "unranked" });
       }
     }

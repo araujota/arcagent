@@ -38,6 +38,265 @@ function detectRepoProvider(url: string): RepoProvider {
   return null;
 }
 
+function normalizeTags(rawTags: string | undefined): string[] | undefined {
+  if (!rawTags) return undefined;
+  return [...new Set(rawTags.split(",").map((tag) => tag.trim().toLowerCase()).filter(Boolean))];
+}
+
+function deadlineToMs(deadline: string | undefined): number | undefined {
+  return deadline ? new Date(deadline).getTime() : undefined;
+}
+
+function canProceedToNextStep(
+  currentStep: number,
+  basics: BasicsData,
+  config: ConfigData,
+): boolean {
+  if (currentStep === 0) {
+    return !!(basics.title.trim() && basics.description.trim() && basics.reward >= 50);
+  }
+  if (currentStep === 1) {
+    return !!basics.title.trim();
+  }
+  if (currentStep === 2) {
+    return !(config.requiredTier === "S" && basics.reward < 150);
+  }
+  return false;
+}
+
+function providerDisplayName(provider: "gitlab" | "bitbucket"): string {
+  return provider === "gitlab" ? "GitLab" : "Bitbucket";
+}
+
+async function ensureAiGenerationRepoReadiness(args: {
+  repositoryUrl: string;
+  repoProvider: RepoProvider;
+  oauthRepoProvider: "gitlab" | "bitbucket" | null;
+  providerConnections: Array<{ provider: string; status: string }> | undefined;
+  oauthRepoConnection: { provider: string; status: string } | null;
+  getGitHubPermissionStatus: (args: { repositoryUrl: string }) => Promise<unknown>;
+  setGithubPermissionStatus: (status: GitHubPermissionStatus | null) => void;
+}): Promise<boolean> {
+  if (args.repositoryUrl && args.repoProvider === "github") {
+    const permission = (await args.getGitHubPermissionStatus({
+      repositoryUrl: args.repositoryUrl,
+    })) as GitHubPermissionStatus;
+    args.setGithubPermissionStatus(permission);
+    if (permission.appConfigured && !permission.hasInstallation) {
+      toast.error("Install the Arcagent GitHub App for this repository before indexing.");
+      return false;
+    }
+  }
+
+  if (args.repositoryUrl && args.oauthRepoProvider) {
+    if (args.providerConnections === undefined) {
+      toast.error("Checking repository integration status. Try again in a moment.");
+      return false;
+    }
+    if (!args.oauthRepoConnection) {
+      toast.error(
+        `Connect your ${providerDisplayName(args.oauthRepoProvider)} account before indexing this repository.`,
+      );
+      return false;
+    }
+  }
+  return true;
+}
+
+function buildDraftBountyInput(args: {
+  basics: BasicsData;
+  config: ConfigData;
+}) {
+  return {
+    title: args.basics.title,
+    description: args.basics.description,
+    reward: args.basics.reward,
+    rewardCurrency: args.basics.rewardCurrency,
+    paymentMethod: args.config.paymentMethod,
+    deadline: deadlineToMs(args.config.deadline),
+    repositoryUrl: args.config.repositoryUrl || undefined,
+    tags: normalizeTags(args.config.tags),
+    status: "draft" as const,
+    requiredTier: args.config.requiredTier,
+  };
+}
+
+async function connectRepositoryForAiGeneration(args: {
+  bountyId: Id<"bounties">;
+  repositoryUrl: string;
+  connectRepo: (args: { bountyId: Id<"bounties">; repositoryUrl: string }) => Promise<unknown>;
+  setIsConnectingRepo: (value: boolean) => void;
+}): Promise<void> {
+  if (!args.repositoryUrl) return;
+  args.setIsConnectingRepo(true);
+  try {
+    await args.connectRepo({
+      bountyId: args.bountyId,
+      repositoryUrl: args.repositoryUrl,
+    });
+    toast.success("Repository connected. Indexing started.");
+  } catch (repoErr) {
+    toast.error(
+      repoErr instanceof Error
+        ? `Repository error: ${repoErr.message}`
+        : "Failed to connect repository. You can still generate tests."
+    );
+  } finally {
+    args.setIsConnectingRepo(false);
+  }
+}
+
+function renderStepForm(
+  currentStep: number,
+  args: {
+    basics: BasicsData;
+    tests: TestsData;
+    config: ConfigData;
+    isCertified: boolean;
+    setBasics: (value: BasicsData) => void;
+    setTests: (value: TestsData) => void;
+    setConfig: (value: ConfigData) => void;
+    setIsCertified: (value: boolean) => void;
+  },
+) {
+  switch (currentStep) {
+    case 0:
+      return <StepBasics data={args.basics} onChange={args.setBasics} />;
+    case 1:
+      return <StepTests data={args.tests} onChange={args.setTests} />;
+    case 2:
+      return <StepConfig data={args.config} onChange={args.setConfig} reward={args.basics.reward} />;
+    case 3:
+      return (
+        <StepReview
+          basics={args.basics}
+          tests={args.tests}
+          config={args.config}
+          isCertified={args.isCertified}
+          onCertificationChange={args.setIsCertified}
+        />
+      );
+    default:
+      return null;
+  }
+}
+
+function renderGithubPermissionPanel(args: {
+  currentStep: number;
+  repoProvider: RepoProvider;
+  isCheckingGithubPermission: boolean;
+  githubPermissionStatus: GitHubPermissionStatus | null;
+  onCheck: () => Promise<void>;
+}) {
+  if (args.currentStep !== 2 || args.repoProvider !== "github") return null;
+  return (
+    <div className="mt-4 rounded-md border p-3 space-y-2">
+      <p className="text-sm font-medium">GitHub Permission</p>
+      <p className="text-xs text-muted-foreground">
+        Arcagent uses a GitHub App installation token scoped to this repo for indexing,
+        workspace cloning, and auto-PR publishing.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={args.onCheck}
+          disabled={args.isCheckingGithubPermission}
+        >
+          {args.isCheckingGithubPermission ? (
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          ) : null}
+          Check GitHub Access
+        </Button>
+        {args.githubPermissionStatus?.appConfigured &&
+          !args.githubPermissionStatus.hasInstallation &&
+          args.githubPermissionStatus.installUrl && (
+            <Button asChild size="sm">
+              <a
+                href={args.githubPermissionStatus.installUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Install GitHub App
+              </a>
+            </Button>
+          )}
+      </div>
+      {args.githubPermissionStatus?.appConfigured && args.githubPermissionStatus.hasInstallation && (
+        <p className="text-xs text-green-700">
+          Installation detected. Repo-scoped credentials will be minted automatically.
+        </p>
+      )}
+      {args.githubPermissionStatus?.appConfigured && !args.githubPermissionStatus.hasInstallation && (
+        <p className="text-xs text-amber-700">
+          No GitHub App installation found for this repository yet.
+        </p>
+      )}
+      {args.githubPermissionStatus && !args.githubPermissionStatus.appConfigured && (
+        <p className="text-xs text-muted-foreground">
+          GitHub App is not configured in this environment. Falling back to legacy token settings.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function renderOAuthPanel(args: {
+  currentStep: number;
+  oauthRepoProvider: "gitlab" | "bitbucket" | null;
+  oauthRepoConnection: { provider: string; status: string; accountName?: string; accountId?: string } | null;
+  isStartingProviderOAuth: boolean;
+  onConnect: () => Promise<void>;
+  onManage: () => void;
+}) {
+  if (args.currentStep !== 2 || !args.oauthRepoProvider) return null;
+  return (
+    <div className="mt-4 rounded-md border p-3 space-y-2">
+      <p className="text-sm font-medium">
+        {args.oauthRepoProvider === "gitlab" ? "GitLab OAuth Access" : "Bitbucket OAuth Access"}
+      </p>
+      <p className="text-xs text-muted-foreground">
+        Arcagent uses your connected account token for indexing, workspace cloning, and
+        auto publish of review requests for this repository provider.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        {args.oauthRepoConnection ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={args.onManage}
+          >
+            Manage Connection
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            onClick={args.onConnect}
+            disabled={args.isStartingProviderOAuth}
+          >
+            {args.isStartingProviderOAuth ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : null}
+            Connect {providerDisplayName(args.oauthRepoProvider)}
+          </Button>
+        )}
+      </div>
+      {args.oauthRepoConnection ? (
+        <p className="text-xs text-green-700">
+          Connected as {args.oauthRepoConnection.accountName || args.oauthRepoConnection.accountId || "account"}.
+        </p>
+      ) : (
+        <p className="text-xs text-amber-700">
+          No active {providerDisplayName(args.oauthRepoProvider)} connection found for your user.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
   const router = useRouter();
   const trackEvent = useProductAnalytics();
@@ -132,36 +391,18 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
     createdBountyId ? { bountyId: createdBountyId } : "skip"
   );
 
-  const canGoNext = () => {
-    switch (currentStep) {
-      case 0:
-        return basics.title.trim() && basics.description.trim() && basics.reward >= 50;
-      case 1:
-        return basics.title.trim(); // tests are optional
-      case 2:
-        if (config.requiredTier === "S" && basics.reward < 150) return false;
-        return true;
-      default:
-        return false;
-    }
-  };
-
   const handleSubmit = async (asDraft: boolean) => {
     setIsSubmitting(true);
     try {
-      const tags = config.tags
-        ? [...new Set(config.tags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean))]
-        : undefined;
-
       const bountyId = await createBounty({
         title: basics.title,
         description: basics.description,
         reward: basics.reward,
         rewardCurrency: basics.rewardCurrency,
         paymentMethod: config.paymentMethod,
-        deadline: config.deadline ? new Date(config.deadline).getTime() : undefined,
+        deadline: deadlineToMs(config.deadline),
         repositoryUrl: config.repositoryUrl || undefined,
-        tags,
+        tags: normalizeTags(config.tags),
         status: asDraft ? "draft" : "active",
         requiredTier: config.requiredTier,
         ...(!asDraft && {
@@ -218,69 +459,26 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
   const handleAIGenerate = async () => {
     setIsSubmitting(true);
     try {
-      if (config.repositoryUrl && repoProvider === "github") {
-        const permission = (await getGitHubPermissionStatus({
-          repositoryUrl: config.repositoryUrl,
-        })) as GitHubPermissionStatus;
-        setGithubPermissionStatus(permission);
-        if (permission.appConfigured && !permission.hasInstallation) {
-          toast.error("Install the Arcagent GitHub App for this repository before indexing.");
-          return;
-        }
-      }
-
-      if (config.repositoryUrl && oauthRepoProvider) {
-        if (providerConnections === undefined) {
-          toast.error("Checking repository integration status. Try again in a moment.");
-          return;
-        }
-        if (!oauthRepoConnection) {
-          toast.error(
-            `Connect your ${oauthRepoProvider === "gitlab" ? "GitLab" : "Bitbucket"} account before indexing this repository.`,
-          );
-          return;
-        }
-      }
-
-      const tags = config.tags
-        ? [...new Set(config.tags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean))]
-        : undefined;
-
-      // Create the bounty first (as draft)
-      const bountyId = await createBounty({
-        title: basics.title,
-        description: basics.description,
-        reward: basics.reward,
-        rewardCurrency: basics.rewardCurrency,
-        paymentMethod: config.paymentMethod,
-        deadline: config.deadline ? new Date(config.deadline).getTime() : undefined,
-        repositoryUrl: config.repositoryUrl || undefined,
-        tags,
-        status: "draft",
-        requiredTier: config.requiredTier,
+      const isRepoReady = await ensureAiGenerationRepoReadiness({
+        repositoryUrl: config.repositoryUrl,
+        repoProvider,
+        oauthRepoProvider,
+        providerConnections,
+        oauthRepoConnection,
+        getGitHubPermissionStatus,
+        setGithubPermissionStatus,
       });
+      if (!isRepoReady) return;
+
+      const bountyId = await createBounty(buildDraftBountyInput({ basics, config }));
 
       setCreatedBountyId(bountyId);
-
-      // If a repo URL is provided, connect and start indexing
-      if (config.repositoryUrl) {
-        setIsConnectingRepo(true);
-        try {
-          await connectRepo({
-            bountyId,
-            repositoryUrl: config.repositoryUrl,
-          });
-          toast.success("Repository connected. Indexing started.");
-        } catch (repoErr) {
-          toast.error(
-            repoErr instanceof Error
-              ? `Repository error: ${repoErr.message}`
-              : "Failed to connect repository. You can still generate tests."
-          );
-        } finally {
-          setIsConnectingRepo(false);
-        }
-      }
+      await connectRepositoryForAiGeneration({
+        bountyId,
+        repositoryUrl: config.repositoryUrl,
+        connectRepo,
+        setIsConnectingRepo,
+      });
 
       // Navigate to the AI generation page
       clearWizardState();
@@ -366,119 +564,31 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
           <CardTitle>{STEPS[currentStep]}</CardTitle>
         </CardHeader>
         <CardContent>
-          {currentStep === 0 && (
-            <StepBasics data={basics} onChange={setBasics} />
-          )}
-          {currentStep === 1 && (
-            <StepTests data={tests} onChange={setTests} />
-          )}
-          {currentStep === 2 && (
-            <StepConfig data={config} onChange={setConfig} reward={basics.reward} />
-          )}
-          {currentStep === 2 && repoProvider === "github" && (
-            <div className="mt-4 rounded-md border p-3 space-y-2">
-              <p className="text-sm font-medium">GitHub Permission</p>
-              <p className="text-xs text-muted-foreground">
-                Arcagent uses a GitHub App installation token scoped to this repo for indexing,
-                workspace cloning, and auto-PR publishing.
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleCheckGithubPermission}
-                  disabled={isCheckingGithubPermission}
-                >
-                  {isCheckingGithubPermission ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : null}
-                  Check GitHub Access
-                </Button>
-                {githubPermissionStatus?.appConfigured &&
-                  !githubPermissionStatus.hasInstallation &&
-                  githubPermissionStatus.installUrl && (
-                    <Button asChild size="sm">
-                      <a
-                        href={githubPermissionStatus.installUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Install GitHub App
-                      </a>
-                    </Button>
-                  )}
-              </div>
-              {githubPermissionStatus?.appConfigured && githubPermissionStatus.hasInstallation && (
-                <p className="text-xs text-green-700">
-                  Installation detected. Repo-scoped credentials will be minted automatically.
-                </p>
-              )}
-              {githubPermissionStatus?.appConfigured && !githubPermissionStatus.hasInstallation && (
-                <p className="text-xs text-amber-700">
-                  No GitHub App installation found for this repository yet.
-                </p>
-              )}
-              {githubPermissionStatus && !githubPermissionStatus.appConfigured && (
-                <p className="text-xs text-muted-foreground">
-                  GitHub App is not configured in this environment. Falling back to legacy token settings.
-                </p>
-              )}
-            </div>
-          )}
-          {currentStep === 2 && oauthRepoProvider && (
-            <div className="mt-4 rounded-md border p-3 space-y-2">
-              <p className="text-sm font-medium">
-                {oauthRepoProvider === "gitlab" ? "GitLab OAuth Access" : "Bitbucket OAuth Access"}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Arcagent uses your connected account token for indexing, workspace cloning, and
-                auto publish of review requests for this repository provider.
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                {oauthRepoConnection ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => router.push("/settings")}
-                  >
-                    Manage Connection
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={handleConnectOAuthProvider}
-                    disabled={isStartingProviderOAuth}
-                  >
-                    {isStartingProviderOAuth ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    ) : null}
-                    Connect {oauthRepoProvider === "gitlab" ? "GitLab" : "Bitbucket"}
-                  </Button>
-                )}
-              </div>
-              {oauthRepoConnection ? (
-                <p className="text-xs text-green-700">
-                  Connected as {oauthRepoConnection.accountName || oauthRepoConnection.accountId || "account"}.
-                </p>
-              ) : (
-                <p className="text-xs text-amber-700">
-                  No active {oauthRepoProvider === "gitlab" ? "GitLab" : "Bitbucket"} connection found for your user.
-                </p>
-              )}
-            </div>
-          )}
-          {currentStep === 3 && (
-            <StepReview
-              basics={basics}
-              tests={tests}
-              config={config}
-              isCertified={isCertified}
-              onCertificationChange={setIsCertified}
-            />
-          )}
+          {renderStepForm(currentStep, {
+            basics,
+            tests,
+            config,
+            isCertified,
+            setBasics,
+            setTests,
+            setConfig,
+            setIsCertified,
+          })}
+          {renderGithubPermissionPanel({
+            currentStep,
+            repoProvider,
+            isCheckingGithubPermission,
+            githubPermissionStatus,
+            onCheck: handleCheckGithubPermission,
+          })}
+          {renderOAuthPanel({
+            currentStep,
+            oauthRepoProvider,
+            oauthRepoConnection,
+            isStartingProviderOAuth,
+            onConnect: handleConnectOAuthProvider,
+            onManage: () => router.push("/settings"),
+          })}
 
           {/* Repo connection status */}
           {repoConnection && (
@@ -534,7 +644,7 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
               ) : (
                 <Button
                   onClick={() => setCurrentStep((s) => s + 1)}
-                  disabled={!canGoNext()}
+                  disabled={!canProceedToNextStep(currentStep, basics, config)}
                 >
                   Next
                 </Button>

@@ -54,224 +54,244 @@ type ParseState =
   | "in_examples"
   | "in_doc_string";
 
+type StepType = "given" | "when" | "then" | null;
+
+interface ValidationContext {
+  errors: ValidationError[];
+  warnings: ValidationWarning[];
+  tags: string[];
+  state: ParseState;
+  featureCount: number;
+  scenarioCount: number;
+  stepCount: number;
+  currentFeatureHasScenario: boolean;
+  currentScenarioHasStep: boolean;
+  lastStepType: StepType;
+}
+
+function createValidationContext(): ValidationContext {
+  return {
+    errors: [],
+    warnings: [],
+    tags: [],
+    state: "start",
+    featureCount: 0,
+    scenarioCount: 0,
+    stepCount: 0,
+    currentFeatureHasScenario: false,
+    currentScenarioHasStep: false,
+    lastStepType: null,
+  };
+}
+
+function pushTagWarningsAndTags(ctx: ValidationContext, line: string, lineNum: number): void {
+  const tagMatches = line.match(/@\S+/g);
+  if (!tagMatches) return;
+  for (const tag of tagMatches) {
+    if (!/^@[\w-]+$/.test(tag)) {
+      ctx.warnings.push({
+        line: lineNum,
+        message: `Tag "${tag}" contains unusual characters`,
+      });
+    }
+    ctx.tags.push(tag);
+  }
+}
+
+function handleStructuralLine(ctx: ValidationContext, line: string, lineNum: number): boolean {
+  if (FEATURE_REGEX.test(line)) {
+    if (ctx.featureCount > 0 && !ctx.currentFeatureHasScenario) {
+      ctx.errors.push({
+        line: lineNum,
+        message: "Previous Feature has no Scenarios",
+      });
+    }
+    ctx.featureCount++;
+    ctx.currentFeatureHasScenario = false;
+    ctx.state = "in_feature";
+    return true;
+  }
+
+  if (BACKGROUND_REGEX.test(line)) {
+    if (ctx.state === "start") {
+      ctx.errors.push({
+        line: lineNum,
+        message: "Background must be inside a Feature",
+      });
+    }
+    ctx.state = "in_background";
+    ctx.lastStepType = null;
+    return true;
+  }
+
+  if (SCENARIO_REGEX.test(line) || SCENARIO_OUTLINE_REGEX.test(line)) {
+    if (ctx.state === "start") {
+      ctx.errors.push({
+        line: lineNum,
+        message: "Scenario must be inside a Feature",
+      });
+    }
+    if (ctx.scenarioCount > 0 && !ctx.currentScenarioHasStep) {
+      ctx.errors.push({
+        line: lineNum,
+        message: "Previous Scenario has no steps (Given/When/Then)",
+      });
+    }
+    ctx.scenarioCount++;
+    ctx.currentFeatureHasScenario = true;
+    ctx.currentScenarioHasStep = false;
+    ctx.lastStepType = null;
+    ctx.state = "in_scenario";
+    return true;
+  }
+
+  return false;
+}
+
+function isStepContext(state: ParseState): boolean {
+  return state === "in_scenario" || state === "in_background" || state === "after_step";
+}
+
+function handleStepLine(ctx: ValidationContext, line: string, lineNum: number): boolean {
+  if (GIVEN_REGEX.test(line)) {
+    if (!isStepContext(ctx.state)) {
+      ctx.errors.push({
+        line: lineNum,
+        message: "Given must be inside a Scenario or Background",
+      });
+    }
+    ctx.lastStepType = "given";
+    ctx.currentScenarioHasStep = true;
+    ctx.stepCount++;
+    ctx.state = "after_step";
+    return true;
+  }
+
+  if (WHEN_REGEX.test(line)) {
+    if (ctx.state !== "in_scenario" && ctx.state !== "after_step") {
+      ctx.errors.push({
+        line: lineNum,
+        message: "When must be inside a Scenario",
+      });
+    }
+    ctx.lastStepType = "when";
+    ctx.currentScenarioHasStep = true;
+    ctx.stepCount++;
+    ctx.state = "after_step";
+    return true;
+  }
+
+  if (THEN_REGEX.test(line)) {
+    if (ctx.state !== "in_scenario" && ctx.state !== "after_step") {
+      ctx.errors.push({
+        line: lineNum,
+        message: "Then must be inside a Scenario",
+      });
+    }
+    ctx.lastStepType = "then";
+    ctx.currentScenarioHasStep = true;
+    ctx.stepCount++;
+    ctx.state = "after_step";
+    return true;
+  }
+
+  if (AND_REGEX.test(line) || BUT_REGEX.test(line)) {
+    if (ctx.lastStepType === null) {
+      ctx.errors.push({
+        line: lineNum,
+        message: `"${line.trim().split(" ")[0]}" must follow a Given, When, or Then step`,
+      });
+    }
+    ctx.currentScenarioHasStep = true;
+    ctx.stepCount++;
+    ctx.state = "after_step";
+    return true;
+  }
+
+  return false;
+}
+
+function processValidationLine(ctx: ValidationContext, line: string, lineNum: number): void {
+  const trimmed = line.trim();
+
+  if (trimmed === "" || trimmed.startsWith("#")) {
+    return;
+  }
+
+  if (DOC_STRING_REGEX.test(line)) {
+    ctx.state = ctx.state === "in_doc_string" ? "after_step" : "in_doc_string";
+    return;
+  }
+
+  if (ctx.state === "in_doc_string") {
+    return;
+  }
+
+  if (TAG_REGEX.test(line)) {
+    pushTagWarningsAndTags(ctx, line, lineNum);
+    return;
+  }
+
+  if (TABLE_ROW_REGEX.test(line)) {
+    return;
+  }
+
+  if (EXAMPLES_REGEX.test(line)) {
+    ctx.state = "in_examples";
+    return;
+  }
+
+  if (handleStructuralLine(ctx, line, lineNum)) {
+    return;
+  }
+
+  if (handleStepLine(ctx, line, lineNum)) {
+    return;
+  }
+}
+
 /**
  * Validate a Gherkin feature file string.
  */
 export function validateGherkin(content: string): ValidationResult {
   const lines = content.split("\n");
-  const errors: ValidationError[] = [];
-  const warnings: ValidationWarning[] = [];
-  const tags: string[] = [];
-
-  let state: ParseState = "start";
-  let featureCount = 0;
-  let scenarioCount = 0;
-  let stepCount = 0;
-  let currentFeatureHasScenario = false;
-  let currentScenarioHasStep = false;
-  let lastStepType: "given" | "when" | "then" | null = null;
+  const ctx = createValidationContext();
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const lineNum = i + 1;
-
-    // Skip empty lines and comments
-    if (line.trim() === "" || line.trim().startsWith("#")) {
-      continue;
-    }
-
-    // Handle doc strings
-    if (DOC_STRING_REGEX.test(line)) {
-      if (state === "in_doc_string") {
-        state = "after_step";
-      } else {
-        state = "in_doc_string";
-      }
-      continue;
-    }
-
-    if (state === "in_doc_string") {
-      continue; // Skip content inside doc strings
-    }
-
-    // Handle tags
-    if (TAG_REGEX.test(line)) {
-      const tagMatches = line.match(/@\S+/g);
-      if (tagMatches) {
-        for (const tag of tagMatches) {
-          if (!/^@[\w-]+$/.test(tag)) {
-            warnings.push({
-              line: lineNum,
-              message: `Tag "${tag}" contains unusual characters`,
-            });
-          }
-          tags.push(tag);
-        }
-      }
-      continue;
-    }
-
-    // Handle table rows
-    if (TABLE_ROW_REGEX.test(line)) {
-      continue;
-    }
-
-    // Handle Examples section
-    if (EXAMPLES_REGEX.test(line)) {
-      state = "in_examples";
-      continue;
-    }
-
-    // Feature
-    if (FEATURE_REGEX.test(line)) {
-      if (featureCount > 0 && !currentFeatureHasScenario) {
-        errors.push({
-          line: lineNum,
-          message: "Previous Feature has no Scenarios",
-        });
-      }
-      featureCount++;
-      currentFeatureHasScenario = false;
-      state = "in_feature";
-      continue;
-    }
-
-    // Background
-    if (BACKGROUND_REGEX.test(line)) {
-      if (state === "start") {
-        errors.push({
-          line: lineNum,
-          message: "Background must be inside a Feature",
-        });
-      }
-      state = "in_background";
-      lastStepType = null;
-      continue;
-    }
-
-    // Scenario or Scenario Outline
-    if (SCENARIO_REGEX.test(line) || SCENARIO_OUTLINE_REGEX.test(line)) {
-      if (state === "start") {
-        errors.push({
-          line: lineNum,
-          message: "Scenario must be inside a Feature",
-        });
-      }
-      if (scenarioCount > 0 && !currentScenarioHasStep) {
-        errors.push({
-          line: lineNum,
-          message: "Previous Scenario has no steps (Given/When/Then)",
-        });
-      }
-      scenarioCount++;
-      currentFeatureHasScenario = true;
-      currentScenarioHasStep = false;
-      lastStepType = null;
-      state = "in_scenario";
-      continue;
-    }
-
-    // Given
-    if (GIVEN_REGEX.test(line)) {
-      if (state !== "in_scenario" && state !== "in_background" && state !== "after_step") {
-        errors.push({
-          line: lineNum,
-          message: "Given must be inside a Scenario or Background",
-        });
-      }
-      lastStepType = "given";
-      currentScenarioHasStep = true;
-      stepCount++;
-      state = "after_step";
-      continue;
-    }
-
-    // When
-    if (WHEN_REGEX.test(line)) {
-      if (state !== "in_scenario" && state !== "after_step") {
-        errors.push({
-          line: lineNum,
-          message: "When must be inside a Scenario",
-        });
-      }
-      lastStepType = "when";
-      currentScenarioHasStep = true;
-      stepCount++;
-      state = "after_step";
-      continue;
-    }
-
-    // Then
-    if (THEN_REGEX.test(line)) {
-      if (state !== "in_scenario" && state !== "after_step") {
-        errors.push({
-          line: lineNum,
-          message: "Then must be inside a Scenario",
-        });
-      }
-      lastStepType = "then";
-      currentScenarioHasStep = true;
-      stepCount++;
-      state = "after_step";
-      continue;
-    }
-
-    // And / But
-    if (AND_REGEX.test(line) || BUT_REGEX.test(line)) {
-      if (lastStepType === null) {
-        errors.push({
-          line: lineNum,
-          message: `"${line.trim().split(" ")[0]}" must follow a Given, When, or Then step`,
-        });
-      }
-      currentScenarioHasStep = true;
-      stepCount++;
-      state = "after_step";
-      continue;
-    }
-
-    // Unrecognized line (could be description text)
-    if (
-      state === "in_feature" ||
-      state === "in_scenario" ||
-      state === "in_background"
-    ) {
-      // Description text is allowed after Feature/Scenario/Background
-      continue;
-    }
+    processValidationLine(ctx, lines[i], i + 1);
   }
 
   // Final checks
-  if (featureCount > 0 && !currentFeatureHasScenario) {
-    errors.push({
+  if (ctx.featureCount > 0 && !ctx.currentFeatureHasScenario) {
+    ctx.errors.push({
       line: lines.length,
       message: "Feature has no Scenarios",
     });
   }
 
-  if (scenarioCount > 0 && !currentScenarioHasStep) {
-    errors.push({
+  if (ctx.scenarioCount > 0 && !ctx.currentScenarioHasStep) {
+    ctx.errors.push({
       line: lines.length,
       message: "Last Scenario has no steps",
     });
   }
 
-  if (featureCount === 0) {
-    errors.push({
+  if (ctx.featureCount === 0) {
+    ctx.errors.push({
       line: 1,
       message: "No Feature found in Gherkin content",
     });
   }
 
   return {
-    valid: errors.length === 0,
-    errors,
-    warnings,
+    valid: ctx.errors.length === 0,
+    errors: ctx.errors,
+    warnings: ctx.warnings,
     stats: {
-      features: featureCount,
-      scenarios: scenarioCount,
-      steps: stepCount,
-      tags: [...new Set(tags)],
+      features: ctx.featureCount,
+      scenarios: ctx.scenarioCount,
+      steps: ctx.stepCount,
+      tags: [...new Set(ctx.tags)],
     },
   };
 }

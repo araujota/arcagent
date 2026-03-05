@@ -140,6 +140,341 @@ async function unlinkManagedTmpFile(
   await unlinkFn(safePath).catch(() => {});
 }
 
+type VmNetworkSetupResult = {
+  dnsResolver: DnsResolverHandle | null;
+  egressProxy: EgressProxyHandle | null;
+};
+
+async function setupVmNetworking(args: {
+  vmId: string;
+  tapDevice: string;
+  gatewayIp: string;
+  rootfsImage: string;
+}): Promise<VmNetworkSetupResult> {
+  let dnsResolver: DnsResolverHandle | null = null;
+  let egressProxy: EgressProxyHandle | null = null;
+
+  await execFileAsync("ip", [
+    "tuntap",
+    "add",
+    args.tapDevice,
+    "mode",
+    "tap",
+  ]).catch((err) => {
+    logger.warn("TAP device creation failed (may already exist)", {
+      vmId: args.vmId,
+      error: String(err),
+    });
+  });
+
+  await execFileAsync("ip", ["addr", "add", `${args.gatewayIp}/30`, "dev", args.tapDevice]);
+  await execFileAsync("ip", ["link", "set", args.tapDevice, "up"]);
+  await applyEgressFiltering(args.tapDevice);
+
+  const vmConfig = getVMConfig(args.rootfsImage.replace(/\.ext4$/, "").replace(/-\d+$/, ""));
+  const allowedDomains = buildAllowedDomains(vmConfig.allowedDomains);
+  const hardenEgress = process.env.FC_HARDEN_EGRESS !== "false"
+    && (process.env.FC_HARDEN_EGRESS === "true" || process.env.NODE_ENV === "production");
+  if (!hardenEgress || allowedDomains.length === 0) return { dnsResolver, egressProxy };
+
+  try {
+    dnsResolver = await startDnsResolver(args.vmId, args.gatewayIp, allowedDomains);
+    await applyDnsRedirect(args.tapDevice, args.gatewayIp);
+    egressProxy = await startEgressProxy(args.vmId, allowedDomains);
+    await applyProxyRedirect(args.tapDevice, egressProxy.port);
+    await applyRateLimiting(args.tapDevice);
+    logger.info("Hardened egress applied", { vmId: args.vmId, domains: allowedDomains.length });
+  } catch (err) {
+    logger.warn("Hardened egress setup failed, cleaning partial state and using basic filtering", {
+      vmId: args.vmId,
+      error: String(err),
+    });
+    if (egressProxy) {
+      await removeProxyRedirect(args.tapDevice, egressProxy.port).catch(() => {});
+      await stopEgressProxy(egressProxy).catch(() => {});
+      egressProxy = null;
+    }
+    await removeRateLimiting(args.tapDevice).catch(() => {});
+    if (dnsResolver) {
+      await removeDnsRedirect(args.tapDevice, args.gatewayIp).catch(() => {});
+      await stopDnsResolver(dnsResolver).catch(() => {});
+      dnsResolver = null;
+    }
+  }
+  return { dnsResolver, egressProxy };
+}
+
+type VmOverlaySetupResult = {
+  overlayPath: string;
+  overlayType: "encrypted" | "unencrypted";
+  encryptedOverlay: EncryptedOverlayHandle | null;
+  vmSshKeyPath?: string;
+};
+
+async function setupVmOverlay(args: {
+  vmId: string;
+  rootfsImage: string;
+}): Promise<VmOverlaySetupResult> {
+  const rootfsPath = `${ROOTFS_DIR}/${args.rootfsImage}`;
+  let overlayPath = "";
+  let overlayType: "encrypted" | "unencrypted" = "unencrypted";
+  let encryptedOverlay: EncryptedOverlayHandle | null = null;
+
+  if (USE_VSOCK) {
+    try {
+      encryptedOverlay = await createEncryptedOverlay(args.vmId, rootfsPath, JAILER_UID, JAILER_GID);
+      overlayPath = encryptedOverlay.devicePath;
+      overlayType = "encrypted";
+      logger.info("Using encrypted overlay", { vmId: args.vmId });
+    } catch (err) {
+      logger.warn("Encrypted overlay failed, falling back to unencrypted", {
+        vmId: args.vmId,
+        error: String(err),
+      });
+      overlayPath = `/tmp/fc-overlay-${args.vmId}.ext4`;
+      await execFileAsync("cp", ["--reflink=auto", rootfsPath, overlayPath]);
+    }
+  } else {
+    overlayPath = `/tmp/fc-overlay-${args.vmId}.ext4`;
+    await execFileAsync("cp", ["--reflink=auto", rootfsPath, overlayPath]);
+  }
+
+  let vmSshKeyPath: string | undefined;
+  if (!USE_VSOCK) {
+    vmSshKeyPath = `/tmp/fc-ssh-${args.vmId}`;
+    await execFileAsync("ssh-keygen", [
+      "-t", "ed25519", "-f", vmSshKeyPath, "-N", "", "-q",
+    ]);
+  }
+  return { overlayPath, overlayType, encryptedOverlay, vmSshKeyPath };
+}
+
+type VmLaunchResult = {
+  configPath: string;
+  firecrackerPid: number | undefined;
+  vmProcessRef: Promise<FirecrackerProcessExit>;
+  rootfsReadability: RootfsReadabilityCheck;
+  firecrackerStdoutRef: { value: string };
+  firecrackerStderrRef: { value: string };
+  vsockInitPath?: string;
+};
+
+async function launchVmProcess(args: {
+  vmId: string;
+  overlayPath: string;
+  overlayType: "encrypted" | "unencrypted";
+  tapDevice: string;
+  guestIp: string;
+  gatewayIp: string;
+  vsockSocketPath: string;
+  opts: FirecrackerVMOptions;
+}): Promise<VmLaunchResult> {
+  const vsockInitPath = USE_VSOCK ? await resolveVsockInitPath(`${ROOTFS_DIR}/${args.opts.rootfsImage}`) : undefined;
+  const readabilityUid = USE_JAILER ? JAILER_UID : String(process.getuid?.() ?? 0);
+  const readabilityGid = USE_JAILER ? JAILER_GID : String(process.getgid?.() ?? 0);
+  const rootfsReadability = await checkRootfsReadableByJailer(args.overlayPath, readabilityUid, readabilityGid);
+  logger.info("Rootfs readability check before jailer launch", {
+    vmId: args.vmId,
+    overlayType: args.overlayType,
+    rootfsPath: args.overlayPath,
+    rootfsAccessCheck: rootfsReadability.reason,
+    jailerUid: readabilityUid,
+    jailerGid: readabilityGid,
+    launchMode: USE_JAILER ? "jailer" : "direct",
+    mode: rootfsReadability.mode,
+    ownerUid: rootfsReadability.ownerUid,
+    ownerGid: rootfsReadability.ownerGid,
+    resolvedPath: rootfsReadability.resolvedPath,
+    error: rootfsReadability.error,
+  });
+  if (!rootfsReadability.readable) {
+    throw new Error(
+      `EACCES rootfs (vmBootStage=rootfs_access_check, rootfsAccessCheck=${rootfsReadability.reason}, ` +
+      `path=${rootfsReadability.path}, resolvedPath=${rootfsReadability.resolvedPath}, ` +
+      `jailerUid=${readabilityUid}, jailerGid=${readabilityGid}, mode=${rootfsReadability.mode ?? "unknown"}, ` +
+      `owner=${rootfsReadability.ownerUid ?? "unknown"}:${rootfsReadability.ownerGid ?? "unknown"}, ` +
+      `error=${rootfsReadability.error ?? "none"})`,
+    );
+  }
+
+  const config = buildVMConfig({
+    vmId: args.vmId,
+    kernelImage: KERNEL_IMAGE,
+    rootfsPath: args.overlayPath,
+    vcpuCount: args.opts.vcpuCount,
+    memSizeMib: args.opts.memSizeMib,
+    tapDevice: args.tapDevice,
+    guestIp: args.guestIp,
+    gatewayIp: args.gatewayIp,
+    vsockSocketPath: USE_VSOCK ? args.vsockSocketPath : undefined,
+    vsockInitPath,
+  });
+
+  const configPath = `/tmp/fc-config-${args.vmId}.json`;
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(configPath, JSON.stringify(config, null, 2));
+
+  const launchCmd = USE_JAILER ? JAILER_BIN : FIRECRACKER_BIN;
+  const launchArgs = USE_JAILER
+    ? [
+      "--id",
+      args.vmId,
+      "--exec-file",
+      FIRECRACKER_BIN,
+      "--uid",
+      JAILER_UID,
+      "--gid",
+      JAILER_GID,
+      "--",
+      "--config-file",
+      configPath,
+      "--no-api",
+    ]
+    : [
+      "--config-file",
+      configPath,
+      "--no-api",
+    ];
+  const fcChild = execFile(launchCmd, launchArgs);
+  const firecrackerStdoutRef = { value: "" };
+  const firecrackerStderrRef = { value: "" };
+  const vmProcessRef = new Promise<FirecrackerProcessExit>((resolve) => {
+    fcChild.stdout?.on("data", (d: Buffer) => { firecrackerStdoutRef.value += d.toString(); });
+    fcChild.stderr?.on("data", (d: Buffer) => { firecrackerStderrRef.value += d.toString(); });
+    fcChild.on("close", (code, signal) => resolve({
+      exitCode: code,
+      signal,
+      stdout: firecrackerStdoutRef.value,
+      stderr: firecrackerStderrRef.value,
+    }));
+    fcChild.on("error", (err) => resolve({
+      exitCode: null,
+      signal: null,
+      stdout: firecrackerStdoutRef.value,
+      stderr: firecrackerStderrRef.value,
+      processError: err.message,
+    }));
+  });
+
+  logger.info("Launching Firecracker", {
+    vmId: args.vmId,
+    launchMode: USE_JAILER ? "jailer" : "direct",
+    launchCmd,
+    configPath,
+    overlayType: args.overlayType,
+    rootfsPath: args.overlayPath,
+    rootfsAccessCheck: rootfsReadability.reason,
+    jailerUid: readabilityUid,
+    jailerGid: readabilityGid,
+  });
+
+  return {
+    configPath,
+    firecrackerPid: fcChild.pid,
+    vmProcessRef,
+    rootfsReadability,
+    firecrackerStdoutRef,
+    firecrackerStderrRef,
+    vsockInitPath,
+  };
+}
+
+async function waitForVmCommunication(args: {
+  vmId: string;
+  guestIp: string;
+  vmSshKeyPath?: string;
+  vsockSocketPath: string;
+  vmProcessRef: Promise<FirecrackerProcessExit>;
+  rootfsReadability: RootfsReadabilityCheck;
+  firecrackerStdoutRef: { value: string };
+  firecrackerStderrRef: { value: string };
+}): Promise<void> {
+  const { chmod } = await import("node:fs/promises");
+  if (USE_VSOCK) {
+    try {
+      const bootState = await Promise.race([
+        waitForVsock(args.vsockSocketPath, args.vmId).then(() => ({ state: "ready" as const })),
+        args.vmProcessRef.then((exit) => ({ state: "exited" as const, exit })),
+      ]);
+      if (bootState.state === "exited") {
+        throw buildVmBootError({
+          vmId: args.vmId,
+          vmBootStage: "vsock_wait",
+          rootfsAccessCheck: args.rootfsReadability.reason,
+          processExit: bootState.exit,
+        });
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith("VM boot failed for")) {
+        throw err;
+      }
+      const earlyExit = await waitForProcessExitBriefly(args.vmProcessRef, 200);
+      if (earlyExit) {
+        throw buildVmBootError({
+          vmId: args.vmId,
+          vmBootStage: "vsock_wait",
+          rootfsAccessCheck: args.rootfsReadability.reason,
+          processExit: earlyExit,
+          cause: err,
+        });
+      }
+      throw buildVmBootError({
+        vmId: args.vmId,
+        vmBootStage: "vsock_wait",
+        rootfsAccessCheck: args.rootfsReadability.reason,
+        cause: err,
+        stdoutTail: args.firecrackerStdoutRef.value,
+        stderrTail: args.firecrackerStderrRef.value,
+      });
+    }
+    await chmod(args.vsockSocketPath, 0o600).catch(() => {});
+    return;
+  }
+  await waitForSSH(args.guestIp, args.vmId, args.vmSshKeyPath!);
+}
+
+async function cleanupFailedVmCreation(args: {
+  vmId: string;
+  tapDevice: string;
+  guestIp: string;
+  gatewayIp: string;
+  overlayPath: string;
+  configPath?: string;
+  vmSshKeyPath?: string;
+  firecrackerPid?: number;
+  vmProcessRef?: Promise<FirecrackerProcessExit>;
+  encryptedOverlay: EncryptedOverlayHandle | null;
+  dnsResolver: DnsResolverHandle | null;
+  egressProxy: EgressProxyHandle | null;
+}): Promise<void> {
+  if (args.firecrackerPid) {
+    await terminateFirecrackerProcess(args.firecrackerPid, args.vmProcessRef).catch(() => {});
+  }
+  if (args.egressProxy) {
+    await removeProxyRedirect(args.tapDevice, args.egressProxy.port).catch(() => {});
+    await stopEgressProxy(args.egressProxy).catch(() => {});
+  }
+  await removeRateLimiting(args.tapDevice).catch(() => {});
+  if (args.dnsResolver) {
+    await removeDnsRedirect(args.tapDevice, args.gatewayIp).catch(() => {});
+    await stopDnsResolver(args.dnsResolver).catch(() => {});
+  }
+  await removeEgressFiltering(args.tapDevice).catch(() => {});
+  await execFileAsync("ip", ["tuntap", "del", args.tapDevice, "mode", "tap"]).catch(() => {});
+
+  const { unlink } = await import("node:fs/promises");
+  if (args.encryptedOverlay) {
+    await destroyEncryptedOverlay(args.encryptedOverlay).catch(() => {});
+  } else {
+    await unlinkManagedTmpFile(unlink, args.overlayPath, OVERLAY_FILE_RE, args.vmId);
+  }
+  await unlinkManagedTmpFile(unlink, args.configPath, CONFIG_FILE_RE, args.vmId);
+  await unlinkManagedTmpFile(unlink, args.vmSshKeyPath, SSH_KEY_FILE_RE, args.vmId);
+  await unlinkManagedTmpFile(unlink, args.vmSshKeyPath ? `${args.vmSshKeyPath}.pub` : undefined, SSH_PUB_KEY_FILE_RE, args.vmId);
+
+  releaseGuestIp(args.guestIp);
+}
+
 /**
  * Create and boot a Firecracker microVM.
  *
@@ -185,247 +520,48 @@ export async function createFirecrackerVM(
   let vmProcessRef: Promise<FirecrackerProcessExit> | undefined;
 
   try {
-
-  // 1. Create TAP device (kept solely for outbound internet: git clone, npm install)
-  await execFileAsync("ip", [
-    "tuntap",
-    "add",
-    tapDevice,
-    "mode",
-    "tap",
-  ]).catch((err) => {
-    logger.warn("TAP device creation failed (may already exist)", {
+    const networkSetup = await setupVmNetworking({
       vmId,
-      error: String(err),
+      tapDevice,
+      gatewayIp,
+      rootfsImage: opts.rootfsImage,
     });
-  });
+    dnsResolver = networkSetup.dnsResolver;
+    egressProxy = networkSetup.egressProxy;
 
-  await execFileAsync("ip", ["addr", "add", `${gatewayIp}/30`, "dev", tapDevice]);
-  await execFileAsync("ip", ["link", "set", tapDevice, "up"]);
-
-  // SECURITY (P2-1): Apply iptables egress filtering on the TAP device.
-  await applyEgressFiltering(tapDevice);
-
-  // Hardened egress: DNS resolver + SNI proxy + rate limiting (if enabled)
-  const vmConfig = getVMConfig(opts.rootfsImage.replace(/\.ext4$/, "").replace(/-\d+$/, ""));
-  const allowedDomains = buildAllowedDomains(vmConfig.allowedDomains);
-  const hardenEgress = process.env.FC_HARDEN_EGRESS !== "false"
-    && (process.env.FC_HARDEN_EGRESS === "true" || process.env.NODE_ENV === "production");
-
-  if (hardenEgress && allowedDomains.length > 0) {
-    try {
-      dnsResolver = await startDnsResolver(vmId, gatewayIp, allowedDomains);
-      await applyDnsRedirect(tapDevice, gatewayIp);
-      egressProxy = await startEgressProxy(vmId, allowedDomains);
-      await applyProxyRedirect(tapDevice, egressProxy.port);
-      await applyRateLimiting(tapDevice);
-      logger.info("Hardened egress applied", { vmId, domains: allowedDomains.length });
-    } catch (err) {
-      logger.warn("Hardened egress setup failed, cleaning partial state and using basic filtering", {
-        vmId,
-        error: String(err),
-      });
-      if (egressProxy) {
-        await removeProxyRedirect(tapDevice, egressProxy.port).catch(() => {});
-        await stopEgressProxy(egressProxy).catch(() => {});
-        egressProxy = null;
-      }
-      await removeRateLimiting(tapDevice).catch(() => {});
-      if (dnsResolver) {
-        await removeDnsRedirect(tapDevice, gatewayIp).catch(() => {});
-        await stopDnsResolver(dnsResolver).catch(() => {});
-        dnsResolver = null;
-      }
-    }
-  }
-
-  // 2. Prepare ephemeral overlay of rootfs (with encryption if available)
-  const rootfsPath = `${ROOTFS_DIR}/${opts.rootfsImage}`;
-
-  if (USE_VSOCK) {
-    // Use encrypted overlay — protects repo code from host-level access
-    try {
-      encryptedOverlay = await createEncryptedOverlay(vmId, rootfsPath, JAILER_UID, JAILER_GID);
-      overlayPath = encryptedOverlay.devicePath;
-      overlayType = "encrypted";
-      logger.info("Using encrypted overlay", { vmId });
-    } catch (err) {
-      // Fallback to unencrypted if dm-crypt unavailable (dev environments)
-      logger.warn("Encrypted overlay failed, falling back to unencrypted", {
-        vmId,
-        error: String(err),
-      });
-      overlayPath = `/tmp/fc-overlay-${vmId}.ext4`;
-      await execFileAsync("cp", ["--reflink=auto", rootfsPath, overlayPath]);
-      overlayType = "unencrypted";
-    }
-  } else {
-    overlayPath = `/tmp/fc-overlay-${vmId}.ext4`;
-    await execFileAsync("cp", ["--reflink=auto", rootfsPath, overlayPath]);
-    overlayType = "unencrypted";
-  }
-
-  // 2a. Generate per-VM SSH keypair (only if not using vsock)
-  if (!USE_VSOCK) {
-    vmSshKeyPath = `/tmp/fc-ssh-${vmId}`;
-    await execFileAsync("ssh-keygen", [
-      "-t", "ed25519", "-f", vmSshKeyPath, "-N", "", "-q",
-    ]);
-  }
-
-  // 3. Validate vsock init binary and build Firecracker config
-  const vsockInitPath = USE_VSOCK ? await resolveVsockInitPath(rootfsPath) : undefined;
-  const readabilityUid = USE_JAILER ? JAILER_UID : String(process.getuid?.() ?? 0);
-  const readabilityGid = USE_JAILER ? JAILER_GID : String(process.getgid?.() ?? 0);
-  const rootfsReadability = await checkRootfsReadableByJailer(overlayPath, readabilityUid, readabilityGid);
-  logger.info("Rootfs readability check before jailer launch", {
-    vmId,
-    overlayType,
-    rootfsPath: overlayPath,
-    rootfsAccessCheck: rootfsReadability.reason,
-    jailerUid: readabilityUid,
-    jailerGid: readabilityGid,
-    launchMode: USE_JAILER ? "jailer" : "direct",
-    mode: rootfsReadability.mode,
-    ownerUid: rootfsReadability.ownerUid,
-    ownerGid: rootfsReadability.ownerGid,
-    resolvedPath: rootfsReadability.resolvedPath,
-    error: rootfsReadability.error,
-  });
-  if (!rootfsReadability.readable) {
-    throw new Error(
-      `EACCES rootfs (vmBootStage=rootfs_access_check, rootfsAccessCheck=${rootfsReadability.reason}, ` +
-      `path=${rootfsReadability.path}, resolvedPath=${rootfsReadability.resolvedPath}, ` +
-      `jailerUid=${readabilityUid}, jailerGid=${readabilityGid}, mode=${rootfsReadability.mode ?? "unknown"}, ` +
-      `owner=${rootfsReadability.ownerUid ?? "unknown"}:${rootfsReadability.ownerGid ?? "unknown"}, ` +
-      `error=${rootfsReadability.error ?? "none"})`,
-    );
-  }
-
-  // Build Firecracker config (with vsock device if enabled)
-  const config = buildVMConfig({
-    vmId,
-    kernelImage: KERNEL_IMAGE,
-    rootfsPath: overlayPath,
-    vcpuCount: opts.vcpuCount,
-    memSizeMib: opts.memSizeMib,
-    tapDevice,
-    guestIp,
-    gatewayIp,
-    vsockSocketPath: USE_VSOCK ? vsockSocketPath : undefined,
-    vsockInitPath,
-  });
-
-  configPath = `/tmp/fc-config-${vmId}.json`;
-  const { writeFile, chmod } = await import("node:fs/promises");
-  await writeFile(configPath, JSON.stringify(config, null, 2));
-
-  // Set vsock socket permissions (worker process only)
-  if (USE_VSOCK) {
-    // Socket will be created by Firecracker, set parent dir permissions
-    // The socket itself will have restrictive permissions
-  }
-
-  // 4. Launch Firecracker (via jailer by default, direct mode for emergency compatibility)
-  const launchCmd = USE_JAILER ? JAILER_BIN : FIRECRACKER_BIN;
-  const launchArgs = USE_JAILER
-    ? [
-      "--id",
+    const overlaySetup = await setupVmOverlay({
       vmId,
-      "--exec-file",
-      FIRECRACKER_BIN,
-      "--uid",
-      JAILER_UID,
-      "--gid",
-      JAILER_GID,
-      "--",
-      "--config-file",
-      configPath,
-      "--no-api",
-    ]
-    : [
-      "--config-file",
-      configPath,
-      "--no-api",
-    ];
-  const fcChild = execFile(launchCmd, launchArgs);
-  firecrackerPid = fcChild.pid;
+      rootfsImage: opts.rootfsImage,
+    });
+    overlayPath = overlaySetup.overlayPath;
+    overlayType = overlaySetup.overlayType;
+    encryptedOverlay = overlaySetup.encryptedOverlay;
+    vmSshKeyPath = overlaySetup.vmSshKeyPath;
 
-  logger.info("Launching Firecracker", {
-    vmId,
-    launchMode: USE_JAILER ? "jailer" : "direct",
-    launchCmd,
-    configPath,
-    overlayType,
-    rootfsPath: overlayPath,
-    rootfsAccessCheck: rootfsReadability.reason,
-    jailerUid: readabilityUid,
-    jailerGid: readabilityGid,
-  });
+    const launchSetup = await launchVmProcess({
+      vmId,
+      overlayPath,
+      overlayType,
+      tapDevice,
+      guestIp,
+      gatewayIp,
+      vsockSocketPath,
+      opts,
+    });
+    configPath = launchSetup.configPath;
+    firecrackerPid = launchSetup.firecrackerPid;
+    vmProcessRef = launchSetup.vmProcessRef;
 
-  let firecrackerStdout = "";
-  let firecrackerStderr = "";
-  vmProcessRef = new Promise<FirecrackerProcessExit>((resolve) => {
-    fcChild.stdout?.on("data", (d: Buffer) => { firecrackerStdout += d.toString(); });
-    fcChild.stderr?.on("data", (d: Buffer) => { firecrackerStderr += d.toString(); });
-    fcChild.on("close", (code, signal) => resolve({
-      exitCode: code,
-      signal,
-      stdout: firecrackerStdout,
-      stderr: firecrackerStderr,
-    }));
-    fcChild.on("error", (err) => resolve({
-      exitCode: null,
-      signal: null,
-      stdout: firecrackerStdout,
-      stderr: firecrackerStderr,
-      processError: err.message,
-    }));
-  });
-
-  // 5. Wait for communication channel
-  if (USE_VSOCK) {
-    try {
-      const bootState = await Promise.race([
-        waitForVsock(vsockSocketPath, vmId).then(() => ({ state: "ready" as const })),
-        vmProcessRef!.then((exit) => ({ state: "exited" as const, exit })),
-      ]);
-      if (bootState.state === "exited") {
-        throw buildVmBootError({
-          vmId,
-          vmBootStage: "vsock_wait",
-          rootfsAccessCheck: rootfsReadability.reason,
-          processExit: bootState.exit,
-        });
-      }
-    } catch (err) {
-      if (err instanceof Error && err.message.startsWith("VM boot failed for")) {
-        throw err;
-      }
-      const earlyExit = await waitForProcessExitBriefly(vmProcessRef!, 200);
-      if (earlyExit) {
-        throw buildVmBootError({
-          vmId,
-          vmBootStage: "vsock_wait",
-          rootfsAccessCheck: rootfsReadability.reason,
-          processExit: earlyExit,
-          cause: err,
-        });
-      }
-      throw buildVmBootError({
-        vmId,
-        vmBootStage: "vsock_wait",
-        rootfsAccessCheck: rootfsReadability.reason,
-        cause: err,
-        stdoutTail: firecrackerStdout,
-        stderrTail: firecrackerStderr,
-      });
-    }
-    // Set socket permissions to 0600
-    await chmod(vsockSocketPath, 0o600).catch(() => {});
-  } else {
-    await waitForSSH(guestIp, vmId, vmSshKeyPath!);
-  }
+    await waitForVmCommunication({
+      vmId,
+      guestIp,
+      vmSshKeyPath,
+      vsockSocketPath,
+      vmProcessRef,
+      rootfsReadability: launchSetup.rootfsReadability,
+      firecrackerStdoutRef: launchSetup.firecrackerStdoutRef,
+      firecrackerStderrRef: launchSetup.firecrackerStderrRef,
+    });
 
   logger.info("MicroVM ready", { vmId, guestIp, useVsock: USE_VSOCK });
 
@@ -499,33 +635,20 @@ export async function createFirecrackerVM(
   return handle;
 
   } catch (err) {
-    // Best-effort cleanup for partial VM creation failures.
-    if (firecrackerPid) {
-      await terminateFirecrackerProcess(firecrackerPid, vmProcessRef).catch(() => {});
-    }
-    if (egressProxy) {
-      await removeProxyRedirect(tapDevice, egressProxy.port).catch(() => {});
-      await stopEgressProxy(egressProxy).catch(() => {});
-    }
-    await removeRateLimiting(tapDevice).catch(() => {});
-    if (dnsResolver) {
-      await removeDnsRedirect(tapDevice, gatewayIp).catch(() => {});
-      await stopDnsResolver(dnsResolver).catch(() => {});
-    }
-    await removeEgressFiltering(tapDevice).catch(() => {});
-    await execFileAsync("ip", ["tuntap", "del", tapDevice, "mode", "tap"]).catch(() => {});
-
-    const { unlink } = await import("node:fs/promises");
-    if (encryptedOverlay) {
-      await destroyEncryptedOverlay(encryptedOverlay).catch(() => {});
-    } else {
-      await unlinkManagedTmpFile(unlink, overlayPath, OVERLAY_FILE_RE, vmId);
-    }
-    await unlinkManagedTmpFile(unlink, configPath, CONFIG_FILE_RE, vmId);
-    await unlinkManagedTmpFile(unlink, vmSshKeyPath, SSH_KEY_FILE_RE, vmId);
-    await unlinkManagedTmpFile(unlink, vmSshKeyPath ? `${vmSshKeyPath}.pub` : undefined, SSH_PUB_KEY_FILE_RE, vmId);
-
-    releaseGuestIp(guestIp);
+    await cleanupFailedVmCreation({
+      vmId,
+      tapDevice,
+      guestIp,
+      gatewayIp,
+      overlayPath,
+      configPath,
+      vmSshKeyPath,
+      firecrackerPid,
+      vmProcessRef,
+      encryptedOverlay,
+      dnsResolver,
+      egressProxy,
+    });
     throw err;
   }
 }
@@ -565,32 +688,43 @@ export async function destroyFirecrackerVM(handle: VMHandle): Promise<void> {
   const int = handle as VMHandleInternal;
   logger.info("Destroying microVM", { vmId: handle.vmId });
 
-  // 1. Kill Firecracker process — try PID-based kill first, then pattern match as fallback
-  if (int.__firecrackerPid) {
+  await terminateFirecrackerProcessForHandle(handle.vmId, int.__firecrackerPid);
+  await removeVmEgressControls(int);
+  await removeVmTapDevice(handle.vmId, int.__tapDevice);
+  await removeVmEphemeralFiles(handle.vmId, int);
+  await verifyTapDeviceTeardown(handle.vmId, int.__tapDevice);
+
+  // Release the guest IP back to the pool
+  releaseGuestIp(handle.guestIp);
+
+  logger.info("MicroVM destroyed", { vmId: handle.vmId });
+}
+
+async function terminateFirecrackerProcessForHandle(vmId: string, firecrackerPid?: number): Promise<void> {
+  if (firecrackerPid) {
     try {
-      process.kill(int.__firecrackerPid, "SIGTERM");
-      // Wait briefly for graceful shutdown
-      await new Promise((r) => setTimeout(r, 2_000));
-      // Force kill if still alive
+      process.kill(firecrackerPid, "SIGTERM");
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
       try {
-        process.kill(int.__firecrackerPid, 0); // Check if alive
-        process.kill(int.__firecrackerPid, "SIGKILL");
+        process.kill(firecrackerPid, 0);
+        process.kill(firecrackerPid, "SIGKILL");
       } catch {
-        // Process already exited — good
+        // Process already exited.
       }
     } catch {
-      // Process may have already exited
+      // Process may already be gone.
     }
-  } else {
-    // Fallback to pkill pattern matching
-    try {
-      await execFileAsync("pkill", ["-f", `--id ${handle.vmId}`]);
-    } catch {
-      // Process may have already exited
-    }
+    return;
   }
 
-  // 2. Remove egress controls
+  try {
+    await execFileAsync("pkill", ["-f", `--id ${vmId}`]);
+  } catch {
+    // Process may already be gone.
+  }
+}
+
+async function removeVmEgressControls(int: VMHandleInternal): Promise<void> {
   if (int.__egressProxy && int.__tapDevice) {
     await removeProxyRedirect(int.__tapDevice, int.__egressProxy.port).catch(() => {});
     await stopEgressProxy(int.__egressProxy).catch(() => {});
@@ -603,79 +737,65 @@ export async function destroyFirecrackerVM(handle: VMHandle): Promise<void> {
   if (int.__tapDevice) {
     await removeEgressFiltering(int.__tapDevice);
   }
+}
 
-  // 3. Remove TAP device
-  if (int.__tapDevice) {
-    await execFileAsync("ip", [
-      "tuntap",
-      "del",
-      int.__tapDevice,
-      "mode",
-      "tap",
-    ]).catch((err) => {
-      logger.warn("Failed to remove TAP device", {
-        vmId: handle.vmId,
-        tapDevice: int.__tapDevice,
-        error: String(err),
-      });
+async function removeVmTapDevice(vmId: string, tapDevice?: string): Promise<void> {
+  if (!tapDevice) return;
+  await execFileAsync("ip", [
+    "tuntap",
+    "del",
+    tapDevice,
+    "mode",
+    "tap",
+  ]).catch((err) => {
+    logger.warn("Failed to remove TAP device", {
+      vmId,
+      tapDevice,
+      error: String(err),
     });
-  }
+  });
+}
 
-  // 4. Remove ephemeral files
+async function removeVmEphemeralFiles(vmId: string, int: VMHandleInternal): Promise<void> {
   const { unlink } = await import("node:fs/promises");
-
-  // Destroy encrypted overlay (wipes key from kernel memory, detaches loop, deletes file)
   if (int.__encryptedOverlay) {
     await destroyEncryptedOverlay(int.__encryptedOverlay).catch((err) => {
       logger.warn("Failed to destroy encrypted overlay", {
-        vmId: handle.vmId,
+        vmId,
         error: String(err),
       });
     });
   } else {
-    await unlinkManagedTmpFile(unlink, int.__overlayPath, OVERLAY_FILE_RE, handle.vmId);
+    await unlinkManagedTmpFile(unlink, int.__overlayPath, OVERLAY_FILE_RE, vmId);
   }
 
-  await unlinkManagedTmpFile(unlink, int.__configPath, CONFIG_FILE_RE, handle.vmId);
+  await unlinkManagedTmpFile(unlink, int.__configPath, CONFIG_FILE_RE, vmId);
 
-  // Clean up vsock pool connections and socket file
   if (int.__vsockSocketPath) {
     vsockPool.destroy(int.__vsockSocketPath);
-    await unlinkManagedTmpFile(
-      unlink,
-      int.__vsockSocketPath,
-      VSOCK_SOCKET_FILE_RE,
-      handle.vmId,
-    );
+    await unlinkManagedTmpFile(unlink, int.__vsockSocketPath, VSOCK_SOCKET_FILE_RE, vmId);
   }
 
-  // SECURITY (P2-3): Delete per-VM SSH keypair (only if SSH was used)
-  await unlinkManagedTmpFile(unlink, int.__sshKeyPath, SSH_KEY_FILE_RE, handle.vmId);
+  await unlinkManagedTmpFile(unlink, int.__sshKeyPath, SSH_KEY_FILE_RE, vmId);
   await unlinkManagedTmpFile(
     unlink,
     int.__sshKeyPath ? `${int.__sshKeyPath}.pub` : undefined,
     SSH_PUB_KEY_FILE_RE,
-    handle.vmId,
+    vmId,
   );
+}
 
-  // 5. Verify TAP device is actually removed
-  if (int.__tapDevice) {
-    try {
-      await execFileAsync("ip", ["link", "show", int.__tapDevice]);
-      // If we get here, TAP still exists — warn
-      logger.warn("TAP device still exists after teardown", {
-        vmId: handle.vmId,
-        tapDevice: int.__tapDevice,
-      });
-    } catch {
-      // Expected: TAP device gone
-    }
+async function verifyTapDeviceTeardown(vmId: string, tapDevice?: string): Promise<void> {
+  if (!tapDevice) return;
+  try {
+    await execFileAsync("ip", ["link", "show", tapDevice]);
+    logger.warn("TAP device still exists after teardown", {
+      vmId,
+      tapDevice,
+    });
+  } catch {
+    // Expected: TAP device no longer exists.
   }
-
-  // Release the guest IP back to the pool
-  releaseGuestIp(handle.guestIp);
-
-  logger.info("MicroVM destroyed", { vmId: handle.vmId });
 }
 
 // ---------------------------------------------------------------------------
