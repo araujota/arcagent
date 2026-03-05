@@ -17,6 +17,118 @@ interface ClaimInfo {
   maxSubmissions: number;
 }
 
+function isOwnClaim(authUser: ReturnType<typeof getAuthUser>, claim: ClaimInfo): boolean {
+  return authUser?.userId === claim.agentId;
+}
+
+function buildBountyHeader(bounty: ConvexBountyDetails): string {
+  return [
+    `# Claim Status for "${bounty.title}"`,
+    "",
+    `**Bounty Status:** ${bounty.status}`,
+    `**Is Claimed:** ${bounty.isClaimed ? "Yes" : "No"}`,
+    "",
+  ].join("\n");
+}
+
+function buildWorkspaceDetails(ws: {
+  found: boolean;
+  status?: string;
+  workspaceId?: string;
+  expiresAt?: number;
+}): string {
+  if (!ws.found) {
+    return "\n**Workspace:** Not provisioned. Use `workspace_status` to check.\n";
+  }
+
+  const lines = [
+    "\n### Workspace",
+    `**Status:** ${ws.status ?? "unknown"}`,
+    `**Workspace ID:** ${ws.workspaceId}`,
+  ];
+  const wsRemaining = (ws.expiresAt ?? 0) - Date.now();
+  if (wsRemaining > 0) {
+    const mins = Math.floor(wsRemaining / 60000);
+    const hours = Math.floor(mins / 60);
+    lines.push(`**Time remaining:** ${hours}h ${mins % 60}m`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function buildOwnClaimActionText(): string {
+  return [
+    "Use `workspace_status` to check your dev environment, `extend_claim` to extend the deadline, `release_claim` to give it up, or `submit_solution` to submit your work.",
+    "",
+    "If you pause or stop work on this claim, run `release_claim` immediately so the workspace slot is returned to the shared worker pool.",
+  ].join("\n");
+}
+
+function buildClaimDetailsText(args: {
+  claim: ClaimInfo;
+  isOwnClaim: boolean;
+}): string {
+  const timeLeft = args.claim.expiresAt - Date.now();
+  const hoursLeft = Math.max(0, timeLeft / (1000 * 60 * 60));
+  return [
+    `**Claim ID:** ${args.claim.claimId}`,
+    `**Your Claim:** ${args.isOwnClaim ? "Yes" : "No"}`,
+    `**Expires:** ${new Date(args.claim.expiresAt).toISOString()} (${hoursLeft.toFixed(1)} hours remaining)`,
+    `**Submissions:** ${args.claim.submissionCount} / ${args.claim.maxSubmissions}`,
+    "",
+  ].join("\n");
+}
+
+async function appendWorkspaceSection(args: {
+  text: string;
+  authUser: NonNullable<ReturnType<typeof getAuthUser>>;
+  bountyId: string;
+}): Promise<string> {
+  try {
+    const ws = await getWorkspaceForAgent(args.authUser.userId, args.bountyId);
+    return args.text + buildWorkspaceDetails(ws);
+  } catch {
+    // Workspace lookup failed — not critical
+    return args.text;
+  }
+}
+
+function buildClaimOwnershipFooter(isOwner: boolean): string {
+  if (isOwner) {
+    return buildOwnClaimActionText();
+  }
+  return "This bounty is claimed by another agent. It will become available after the claim expires.";
+}
+
+async function buildClaimedBountyText(args: {
+  bountyId: string;
+  authUser: ReturnType<typeof getAuthUser>;
+}): Promise<string> {
+  try {
+    const claimResult = await callConvex<{ claim: ClaimInfo | null }>(
+      "/api/mcp/claims/get",
+      { bountyId: args.bountyId },
+    );
+    const claim = claimResult.claim;
+    if (!claim) {
+      return "";
+    }
+
+    const ownerClaim = isOwnClaim(args.authUser, claim);
+    let text = buildClaimDetailsText({ claim, isOwnClaim: ownerClaim });
+    if (ownerClaim && args.authUser) {
+      text = await appendWorkspaceSection({
+        text,
+        authUser: args.authUser,
+        bountyId: args.bountyId,
+      });
+    }
+
+    return `${text}\n${buildClaimOwnershipFooter(ownerClaim)}`;
+  } catch {
+    return "This bounty is currently claimed. If this is your claim, use `extend_claim` to extend the deadline or `release_claim` to give it up.";
+  }
+}
+
 export function registerGetClaimStatus(server: McpServer): void {
   registerTool(
     server,
@@ -37,65 +149,15 @@ export function registerGetClaimStatus(server: McpServer): void {
 
       const bounty = result.bounty;
 
-      let text = `# Claim Status for "${bounty.title}"\n\n`;
-      text += `**Bounty Status:** ${bounty.status}\n`;
-      text += `**Is Claimed:** ${bounty.isClaimed ? "Yes" : "No"}\n\n`;
+      let text = buildBountyHeader(bounty);
 
       if (!bounty.isClaimed) {
         text += `This bounty is available for claiming. Use \`claim_bounty\` to claim it.`;
       } else {
-        // Fetch detailed claim info
-        try {
-          const claimResult = await callConvex<{ claim: ClaimInfo | null }>(
-            "/api/mcp/claims/get",
-            { bountyId: args.bountyId },
-          );
-          const claim = claimResult.claim;
-          if (claim) {
-            const isOwnClaim = authUser && claim.agentId === authUser.userId;
-            const expiryDate = new Date(claim.expiresAt).toISOString();
-            const timeLeft = claim.expiresAt - Date.now();
-            const hoursLeft = Math.max(0, timeLeft / (1000 * 60 * 60));
-
-            text += `**Claim ID:** ${claim.claimId}\n`;
-            text += `**Your Claim:** ${isOwnClaim ? "Yes" : "No"}\n`;
-            text += `**Expires:** ${expiryDate} (${hoursLeft.toFixed(1)} hours remaining)\n`;
-            text += `**Submissions:** ${claim.submissionCount} / ${claim.maxSubmissions}\n`;
-
-            // Show workspace status if this is the agent's own claim
-            if (isOwnClaim && authUser) {
-              try {
-                const ws = await getWorkspaceForAgent(authUser.userId, args.bountyId);
-                if (ws.found) {
-                  text += `\n### Workspace\n`;
-                  text += `**Status:** ${ws.status}\n`;
-                  text += `**Workspace ID:** ${ws.workspaceId}\n`;
-                  const wsRemaining = ws.expiresAt - Date.now();
-                  if (wsRemaining > 0) {
-                    const mins = Math.floor(wsRemaining / 60000);
-                    const hours = Math.floor(mins / 60);
-                    text += `**Time remaining:** ${hours}h ${mins % 60}m\n`;
-                  }
-                } else {
-                  text += `\n**Workspace:** Not provisioned. Use \`workspace_status\` to check.\n`;
-                }
-              } catch {
-                // Workspace lookup failed — not critical
-              }
-            }
-
-            text += `\n`;
-            if (isOwnClaim) {
-              text += `Use \`workspace_status\` to check your dev environment, \`extend_claim\` to extend the deadline, \`release_claim\` to give it up, or \`submit_solution\` to submit your work.`;
-              text += `\n\nIf you pause or stop work on this claim, run \`release_claim\` immediately so the workspace slot is returned to the shared worker pool.`;
-            } else {
-              text += `This bounty is claimed by another agent. It will become available after the claim expires.`;
-            }
-          }
-        } catch {
-          // Fallback if claim details endpoint doesn't exist yet
-          text += `This bounty is currently claimed. If this is your claim, use \`extend_claim\` to extend the deadline or \`release_claim\` to give it up.`;
-        }
+        text += await buildClaimedBountyText({
+          bountyId: args.bountyId,
+          authUser,
+        });
       }
 
       return { content: [{ type: "text" as const, text }] };

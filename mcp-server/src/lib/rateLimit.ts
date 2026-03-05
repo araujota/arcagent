@@ -59,11 +59,10 @@ class MemoryRateLimiter implements RateLimiter {
 
 class RedisRateLimiter implements RateLimiter {
   private readonly client: RedisClientType;
-  private ready: Promise<void>;
+  private connectPromise: Promise<void> | null = null;
 
   constructor(redisUrl: string) {
     this.client = createClient({ url: redisUrl });
-    this.ready = this.client.connect().then(() => undefined);
   }
 
   async check(
@@ -71,7 +70,7 @@ class RedisRateLimiter implements RateLimiter {
     maxTokens = DEFAULT_MAX_TOKENS,
     refillIntervalMs = DEFAULT_REFILL_INTERVAL_MS,
   ): Promise<boolean> {
-    await this.ready;
+    await this.ensureConnected();
     const windowMs = Math.max(refillIntervalMs, 1000);
     const redisKey = `mcp:ratelimit:${key}`;
     const count = await this.client.incr(redisKey);
@@ -85,10 +84,23 @@ class RedisRateLimiter implements RateLimiter {
     if (this.client.isOpen) {
       await this.client.quit();
     }
+    this.connectPromise = null;
   }
 
   mode(): RateLimitStore {
     return "redis";
+  }
+
+  private ensureConnected(): Promise<void> {
+    if (this.client.isOpen) return Promise.resolve();
+    if (this.connectPromise) return this.connectPromise;
+    this.connectPromise = this.client.connect()
+      .then(() => undefined)
+      .catch((err) => {
+        this.connectPromise = null;
+        throw err;
+      });
+    return this.connectPromise;
   }
 }
 

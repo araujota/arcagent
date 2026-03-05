@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import schema from "./schema";
 import { internal } from "./_generated/api";
 import { seedUser, seedBounty, seedClaim, seedRating } from "./__tests__/helpers";
@@ -214,14 +214,14 @@ describe("submitRatingFromMcp", () => {
     ).rejects.toThrow("speed must be an integer between 1 and 5");
   });
 
-  it("tier-ineligible if reward < $25", async () => {
+  it("tier-ineligible if reward < $50", async () => {
     const t = convexTest(schema);
     const { creatorId, bountyId } = await t.run(async (ctx) => {
       const creatorId = await seedUser(ctx, { role: "creator" });
       const agentId = await seedUser(ctx, { role: "agent" });
       const bountyId = await seedBounty(ctx, creatorId, {
         status: "completed",
-        reward: 20, // Below MIN_TIER_ELIGIBLE_REWARD of 25
+        reward: 20, // Below MIN_TIER_ELIGIBLE_REWARD of 50
       });
       await seedClaim(ctx, bountyId, agentId, { status: "completed" });
       return { creatorId, bountyId };

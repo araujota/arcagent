@@ -132,10 +132,31 @@ function extractTypeScriptSymbols(
   imports: ImportInfo[],
   exports: string[]
 ) {
-  // Extract imports
+  extractTypeScriptImports(content, imports);
+  extractTypeScriptFunctionDeclarations(content, lines, filePath, language, symbols, exports);
+  extractTypeScriptArrowFunctions(content, lines, filePath, language, symbols, exports);
+  extractTypeScriptClasses(content, lines, filePath, language, symbols, exports);
+  extractTypeScriptInterfaces(content, lines, filePath, language, symbols, exports);
+  extractTypeScriptTypeAliases(content, lines, filePath, language, symbols, exports);
+  extractTypeScriptEnums(content, lines, filePath, language, symbols, exports);
+}
+
+function addExport(exports: string[], name: string, isExported: boolean): void {
+  if (isExported) exports.push(name);
+}
+
+function getStartLine(content: string, matchIndex: number): number {
+  return content.slice(0, matchIndex).split("\n").length;
+}
+
+function getSymbolContent(lines: string[], startLine: number, endLine: number): string {
+  return lines.slice(startLine - 1, endLine).join("\n");
+}
+
+function extractTypeScriptImports(content: string, imports: ImportInfo[]): void {
   const importRegex =
     /import\s+(?:(?:(\w+)|(\{[^}]+\})|(\*\s+as\s+\w+))\s+from\s+)?['"]([^'"]+)['"]/g;
-  let match;
+  let match: RegExpExecArray | null;
   while ((match = importRegex.exec(content)) !== null) {
     const defaultName = match[1];
     const namedImports = match[2];
@@ -153,8 +174,7 @@ function extractTypeScriptSymbols(
       importedNames.push(...names);
     }
     if (namespaceImport) {
-      const nsName = namespaceImport.replace(/\*\s+as\s+/, "").trim();
-      importedNames.push(nsName);
+      importedNames.push(namespaceImport.replace(/\*\s+as\s+/, "").trim());
     }
 
     imports.push({
@@ -164,26 +184,35 @@ function extractTypeScriptSymbols(
       isNamespace: !!namespaceImport,
     });
   }
+}
 
-  // Extract function declarations
+function extractTypeScriptFunctionDeclarations(
+  content: string,
+  lines: string[],
+  filePath: string,
+  language: SupportedLanguage,
+  symbols: ExtractedSymbol[],
+  exports: string[],
+): void {
   const funcRegex =
     /^(\s*)(export\s+)?((?:async\s+)?function\s+(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)\s*(?::\s*([^\n{]+))?)/gm;
+  let match: RegExpExecArray | null;
   while ((match = funcRegex.exec(content)) !== null) {
     const isExported = !!match[2];
     const name = match[4];
     const params = match[5];
     const returnType = match[6]?.trim();
-    const startLine = content.slice(0, match.index).split("\n").length;
+    const startLine = getStartLine(content, match.index);
     const endLine = findBlockEnd(lines, startLine - 1);
 
-    const symbol: ExtractedSymbol = {
+    symbols.push({
       name,
       type: "function",
       filePath,
       language,
       startLine,
       endLine,
-      content: lines.slice(startLine - 1, endLine).join("\n"),
+      content: getSymbolContent(lines, startLine, endLine),
       signature: `${name}(${params})${returnType ? `: ${returnType}` : ""}`,
       parentScope: null,
       exported: isExported,
@@ -192,20 +221,27 @@ function extractTypeScriptSymbols(
         .map((p) => p.trim())
         .filter(Boolean),
       returnType: returnType || undefined,
-    };
-    symbols.push(symbol);
-    if (isExported) exports.push(name);
+    });
+    addExport(exports, name, isExported);
   }
+}
 
-  // Extract arrow function exports: export const foo = (...) => { ... }
+function extractTypeScriptArrowFunctions(
+  content: string,
+  lines: string[],
+  filePath: string,
+  language: SupportedLanguage,
+  symbols: ExtractedSymbol[],
+  exports: string[],
+): void {
   const arrowRegex =
     /^(\s*)(export\s+)?(?:const|let|var)\s+(\w+)\s*(?::\s*[^=]+)?\s*=\s*(?:async\s+)?(?:\([^)]*\)|(\w+))\s*(?::\s*[^\n=>]+)?\s*=>/gm;
+  let match: RegExpExecArray | null;
   while ((match = arrowRegex.exec(content)) !== null) {
     const isExported = !!match[2];
     const name = match[3];
-    const startLine = content.slice(0, match.index).split("\n").length;
+    const startLine = getStartLine(content, match.index);
     const endLine = findBlockEnd(lines, startLine - 1);
-
     symbols.push({
       name,
       type: "function",
@@ -213,17 +249,26 @@ function extractTypeScriptSymbols(
       language,
       startLine,
       endLine,
-      content: lines.slice(startLine - 1, endLine).join("\n"),
+      content: getSymbolContent(lines, startLine, endLine),
       signature: name,
       parentScope: null,
       exported: isExported,
     });
-    if (isExported) exports.push(name);
+    addExport(exports, name, isExported);
   }
+}
 
-  // Extract class declarations
+function extractTypeScriptClasses(
+  content: string,
+  lines: string[],
+  filePath: string,
+  language: SupportedLanguage,
+  symbols: ExtractedSymbol[],
+  exports: string[],
+): void {
   const classRegex =
     /^(\s*)(export\s+)?class\s+(\w+)(?:\s+extends\s+(\w+))?(?:\s+implements\s+([^{]+))?\s*\{/gm;
+  let match: RegExpExecArray | null;
   while ((match = classRegex.exec(content)) !== null) {
     const isExported = !!match[2];
     const name = match[3];
@@ -232,9 +277,8 @@ function extractTypeScriptSymbols(
       ?.split(",")
       .map((s) => s.trim())
       .filter(Boolean);
-    const startLine = content.slice(0, match.index).split("\n").length;
+    const startLine = getStartLine(content, match.index);
     const endLine = findBlockEnd(lines, startLine - 1);
-
     symbols.push({
       name,
       type: "class",
@@ -242,25 +286,32 @@ function extractTypeScriptSymbols(
       language,
       startLine,
       endLine,
-      content: lines.slice(startLine - 1, endLine).join("\n"),
+      content: getSymbolContent(lines, startLine, endLine),
       signature: `class ${name}${extendsName ? ` extends ${extendsName}` : ""}`,
       parentScope: null,
       exported: isExported,
       extends: extendsName ? [extendsName] : undefined,
       implements: implementsNames,
     });
-    if (isExported) exports.push(name);
+    addExport(exports, name, isExported);
   }
+}
 
-  // Extract interfaces
-  const ifaceRegex =
-    /^(\s*)(export\s+)?interface\s+(\w+)(?:\s+extends\s+([^{]+))?\s*\{/gm;
+function extractTypeScriptInterfaces(
+  content: string,
+  lines: string[],
+  filePath: string,
+  language: SupportedLanguage,
+  symbols: ExtractedSymbol[],
+  exports: string[],
+): void {
+  const ifaceRegex = /^(\s*)(export\s+)?interface\s+(\w+)(?:\s+extends\s+([^{]+))?\s*\{/gm;
+  let match: RegExpExecArray | null;
   while ((match = ifaceRegex.exec(content)) !== null) {
     const isExported = !!match[2];
     const name = match[3];
-    const startLine = content.slice(0, match.index).split("\n").length;
+    const startLine = getStartLine(content, match.index);
     const endLine = findBlockEnd(lines, startLine - 1);
-
     symbols.push({
       name,
       type: "interface",
@@ -268,23 +319,30 @@ function extractTypeScriptSymbols(
       language,
       startLine,
       endLine,
-      content: lines.slice(startLine - 1, endLine).join("\n"),
+      content: getSymbolContent(lines, startLine, endLine),
       signature: `interface ${name}`,
       parentScope: null,
       exported: isExported,
     });
-    if (isExported) exports.push(name);
+    addExport(exports, name, isExported);
   }
+}
 
-  // Extract type aliases
-  const typeRegex =
-    /^(\s*)(export\s+)?type\s+(\w+)(?:<[^>]*>)?\s*=/gm;
+function extractTypeScriptTypeAliases(
+  content: string,
+  lines: string[],
+  filePath: string,
+  language: SupportedLanguage,
+  symbols: ExtractedSymbol[],
+  exports: string[],
+): void {
+  const typeRegex = /^(\s*)(export\s+)?type\s+(\w+)(?:<[^>]*>)?\s*=/gm;
+  let match: RegExpExecArray | null;
   while ((match = typeRegex.exec(content)) !== null) {
     const isExported = !!match[2];
     const name = match[3];
-    const startLine = content.slice(0, match.index).split("\n").length;
+    const startLine = getStartLine(content, match.index);
     const endLine = findStatementEnd(lines, startLine - 1);
-
     symbols.push({
       name,
       type: "type",
@@ -292,23 +350,30 @@ function extractTypeScriptSymbols(
       language,
       startLine,
       endLine,
-      content: lines.slice(startLine - 1, endLine).join("\n"),
+      content: getSymbolContent(lines, startLine, endLine),
       signature: `type ${name}`,
       parentScope: null,
       exported: isExported,
     });
-    if (isExported) exports.push(name);
+    addExport(exports, name, isExported);
   }
+}
 
-  // Extract enum declarations
-  const enumRegex =
-    /^(\s*)(export\s+)?enum\s+(\w+)\s*\{/gm;
+function extractTypeScriptEnums(
+  content: string,
+  lines: string[],
+  filePath: string,
+  language: SupportedLanguage,
+  symbols: ExtractedSymbol[],
+  exports: string[],
+): void {
+  const enumRegex = /^(\s*)(export\s+)?enum\s+(\w+)\s*\{/gm;
+  let match: RegExpExecArray | null;
   while ((match = enumRegex.exec(content)) !== null) {
     const isExported = !!match[2];
     const name = match[3];
-    const startLine = content.slice(0, match.index).split("\n").length;
+    const startLine = getStartLine(content, match.index);
     const endLine = findBlockEnd(lines, startLine - 1);
-
     symbols.push({
       name,
       type: "enum",
@@ -316,12 +381,12 @@ function extractTypeScriptSymbols(
       language,
       startLine,
       endLine,
-      content: lines.slice(startLine - 1, endLine).join("\n"),
+      content: getSymbolContent(lines, startLine, endLine),
       signature: `enum ${name}`,
       parentScope: null,
       exported: isExported,
     });
-    if (isExported) exports.push(name);
+    addExport(exports, name, isExported);
   }
 }
 

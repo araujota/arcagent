@@ -76,7 +76,6 @@ export function registerRateAgent(server: McpServer): void {
           "/api/mcp/ratings/submit",
           {
             bountyId: args.bountyId,
-            creatorId: user.userId,
             codeQuality,
             speed,
             mergedWithoutChanges,

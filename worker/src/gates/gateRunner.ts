@@ -33,6 +33,73 @@ interface GateDescriptor {
   failFast?: boolean;
 }
 
+function getGateDisableReason(gateName: string, gateSettings: Record<string, unknown>): string | null {
+  if (gateName === "snyk" && gateSettings.snykEnabled === false) {
+    return "Snyk disabled by bounty creator";
+  }
+  if (gateName === "sonarqube" && gateSettings.sonarqubeEnabled === false) {
+    return "SonarQube disabled by bounty creator";
+  }
+  return null;
+}
+
+function skippedGateResult(gateName: string, summary: string): GateResult {
+  return {
+    gate: gateName,
+    status: "skipped",
+    durationMs: 0,
+    summary,
+  };
+}
+
+function shouldAbortAfterResult(args: {
+  ztacoMode: boolean;
+  gate: GateDescriptor;
+  result: GateResult;
+}): boolean {
+  if (args.ztacoMode || args.gate.failFast === false) {
+    return false;
+  }
+  return args.result.status === "fail" || args.result.status === "error";
+}
+
+function shouldAbortAfterException(ztacoMode: boolean, gate: GateDescriptor): boolean {
+  return !ztacoMode && gate.failFast !== false;
+}
+
+function buildGateExceptionResult(gateName: string, error: Error): GateResult {
+  return {
+    gate: gateName,
+    status: "error",
+    durationMs: 0,
+    summary: `Unexpected error: ${error.message}`,
+  };
+}
+
+async function executeGate(args: {
+  gate: GateDescriptor;
+  vm: VMHandle;
+  language: string;
+  timeoutMs: number;
+  diff: DiffContext | null;
+  testSuites?: TestSuiteInput[];
+  stepDefinitionsPublic?: string;
+  stepDefinitionsHidden?: string;
+}): Promise<GateResult> {
+  if (args.gate.name === "test") {
+    return runTestGate(
+      args.vm,
+      args.language,
+      args.timeoutMs,
+      args.diff,
+      args.testSuites,
+      args.stepDefinitionsPublic,
+      args.stepDefinitionsHidden,
+    );
+  }
+  return args.gate.fn(args.vm, args.language, args.timeoutMs, args.diff);
+}
+
 // ---------------------------------------------------------------------------
 // Gate pipeline definition
 // ---------------------------------------------------------------------------
@@ -89,33 +156,13 @@ export async function runGates(
   for (let i = 0; i < GATE_PIPELINE.length; i++) {
     const gate = GATE_PIPELINE[i]!;
 
-    // Skip gates disabled by the bounty creator
-    if (gate.name === "snyk" && gateSettings.snykEnabled === false) {
-      results.push({
-        gate: gate.name,
-        status: "skipped",
-        durationMs: 0,
-        summary: "Snyk disabled by bounty creator",
-      });
+    const disableReason = getGateDisableReason(gate.name, gateSettings);
+    if (disableReason) {
+      results.push(skippedGateResult(gate.name, disableReason));
       continue;
     }
-    if (gate.name === "sonarqube" && gateSettings.sonarqubeEnabled === false) {
-      results.push({
-        gate: gate.name,
-        status: "skipped",
-        durationMs: 0,
-        summary: "SonarQube disabled by bounty creator",
-      });
-      continue;
-    }
-
     if (pipelineAborted) {
-      results.push({
-        gate: gate.name,
-        status: "skipped",
-        durationMs: 0,
-        summary: "Skipped due to previous gate failure",
-      });
+      results.push(skippedGateResult(gate.name, "Skipped due to previous gate failure"));
       continue;
     }
 
@@ -125,10 +172,16 @@ export async function runGates(
     });
 
     try {
-      // Test gate receives testSuites + step definitions for visibility-tagged BDD execution
-      const result = gate.name === "test"
-        ? await runTestGate(vm, language, vmConfig.defaultGateTimeoutMs, diff, testSuites, stepDefinitionsPublic, stepDefinitionsHidden)
-        : await gate.fn(vm, language, vmConfig.defaultGateTimeoutMs, diff);
+      const result = await executeGate({
+        gate,
+        vm,
+        language,
+        timeoutMs: vmConfig.defaultGateTimeoutMs,
+        diff,
+        testSuites,
+        stepDefinitionsPublic,
+        stepDefinitionsHidden,
+      });
       results.push(result);
 
       logger.info(`Gate completed: ${gate.name}`, {
@@ -139,11 +192,7 @@ export async function runGates(
       });
 
       // Check fail-fast (disabled in ZTACO mode — agent sees ALL issues at once)
-      if (
-        !ztacoMode &&
-        gate.failFast !== false &&
-        (result.status === "fail" || result.status === "error")
-      ) {
+      if (shouldAbortAfterResult({ ztacoMode, gate, result })) {
         logger.warn(`Fail-fast triggered by gate: ${gate.name}`, {
           jobId: job.data.jobId,
         });
@@ -157,14 +206,9 @@ export async function runGates(
         error: error.message,
       });
 
-      results.push({
-        gate: gate.name,
-        status: "error",
-        durationMs: 0,
-        summary: `Unexpected error: ${error.message}`,
-      });
+      results.push(buildGateExceptionResult(gate.name, error));
 
-      if (!ztacoMode && gate.failFast !== false) {
+      if (shouldAbortAfterException(ztacoMode, gate)) {
         pipelineAborted = true;
       }
     }

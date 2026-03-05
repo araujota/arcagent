@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import schema from "./schema";
 import { internal } from "./_generated/api";
 import {
@@ -16,12 +16,16 @@ import {
 // transaction" unhandled rejections. We suppress them here since the mutation
 // itself completes correctly.
 let rejectionHandler: (err: unknown) => void;
+const TRUSTED_AGE_MS = 40 * 24 * 60 * 60 * 1000;
 beforeEach(() => {
   rejectionHandler = () => {};
   process.on("unhandledRejection", rejectionHandler);
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
 });
 afterEach(() => {
   process.removeListener("unhandledRejection", rejectionHandler);
+  vi.useRealTimers();
 });
 
 /**
@@ -63,7 +67,71 @@ async function seedCompletedBountyWithRating(
     ...(overrides.ratingOverrides ?? {}),
   });
 
+  await ctx.db.insert("payments" as any, {
+    bountyId,
+    recipientId: agentId,
+    amount: overrides.bountyReward ?? 100,
+    currency: "USD",
+    method: "stripe",
+    status: "completed",
+    createdAt: now,
+  });
+
   return bountyId;
+}
+
+async function seedTrustedCreator(ctx: any) {
+  const creatorId = await seedUser(ctx, { role: "creator" });
+  const recipientId = await seedUser(ctx, { role: "agent" });
+
+  for (let i = 0; i < 2; i++) {
+    const bountyId = await seedBounty(ctx, creatorId, {
+      status: "completed",
+      reward: 100,
+    });
+    await ctx.db.insert("payments" as any, {
+      bountyId,
+      recipientId,
+      amount: 100,
+      currency: "USD",
+      method: "stripe",
+      status: "completed",
+      createdAt: Date.now(),
+    });
+  }
+
+  return creatorId;
+}
+
+async function seedAgentStatsRow(
+  ctx: any,
+  agentId: any,
+  overrides: Record<string, unknown> = {},
+) {
+  const now = Date.now();
+  return await ctx.db.insert("agentStats" as any, {
+    agentId,
+    totalBountiesCompleted: 5,
+    totalBountiesClaimed: 5,
+    totalBountiesExpired: 0,
+    totalSubmissions: 5,
+    totalFirstAttemptPasses: 5,
+    totalGateWarnings: 0,
+    totalGatePasses: 5,
+    avgTimeToResolutionMs: 60_000,
+    avgSubmissionsPerBounty: 1,
+    firstAttemptPassRate: 1,
+    completionRate: 1,
+    gateQualityScore: 1,
+    avgCreatorRating: 5,
+    totalRatings: 5,
+    uniqueRaters: 3,
+    singleCreatorConcentration: 0.33,
+    compositeScore: 80,
+    tier: "A",
+    lastComputedAt: now,
+    ...overrides,
+  });
 }
 
 describe("recomputeForAgent", () => {
@@ -71,7 +139,7 @@ describe("recomputeForAgent", () => {
     const t = convexTest(schema);
 
     const { agentId } = await t.run(async (ctx) => {
-      const creatorId = await seedUser(ctx, { role: "creator" });
+      const creatorId = await seedTrustedCreator(ctx);
       const agentId = await seedUser(ctx, { role: "agent" });
 
       await seedCompletedBountyWithRating(ctx, agentId, creatorId);
@@ -79,6 +147,7 @@ describe("recomputeForAgent", () => {
       return { agentId };
     });
 
+    vi.advanceTimersByTime(TRUSTED_AGE_MS);
     await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
 
     const stats = await t.run(async (ctx) => {
@@ -102,6 +171,7 @@ describe("recomputeForAgent", () => {
       return { agentId };
     });
 
+    vi.advanceTimersByTime(TRUSTED_AGE_MS);
     await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
 
     const stats = await t.run(async (ctx) => {
@@ -126,7 +196,7 @@ describe("recomputeForAgent", () => {
     const t = convexTest(schema);
 
     const { agentId } = await t.run(async (ctx) => {
-      const creatorId = await seedUser(ctx, { role: "creator" });
+      const creatorId = await seedTrustedCreator(ctx);
       const agentId = await seedUser(ctx, { role: "agent" });
 
       await seedCompletedBountyWithRating(ctx, agentId, creatorId, {
@@ -142,6 +212,7 @@ describe("recomputeForAgent", () => {
       return { agentId };
     });
 
+    vi.advanceTimersByTime(TRUSTED_AGE_MS);
     await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
 
     const stats = await t.run(async (ctx) => {
@@ -155,11 +226,98 @@ describe("recomputeForAgent", () => {
     expect(stats!.avgCreatorRating).toBe(5);
   });
 
+  it("excludes test bounties from paid ranking metrics", async () => {
+    const t = convexTest(schema);
+
+    const { agentId } = await t.run(async (ctx) => {
+      const creatorId = await seedTrustedCreator(ctx);
+      const agentId = await seedUser(ctx, { role: "agent" });
+      const now = Date.now();
+
+      await seedCompletedBountyWithRating(ctx, agentId, creatorId, {
+        bountyReward: 100,
+      });
+
+      const testBountyId = await seedBounty(ctx, creatorId, {
+        status: "completed",
+        reward: 500,
+        isTestBounty: true,
+      });
+      await seedClaim(ctx, testBountyId, agentId, {
+        status: "completed",
+        claimedAt: now - 60 * 60 * 1000,
+      });
+      await seedRating(ctx, testBountyId, agentId, creatorId, {
+        codeQuality: 5,
+        speed: 5,
+        mergedWithoutChanges: 5,
+        communication: 5,
+        testCoverage: 5,
+        tierEligible: true,
+        createdAt: now,
+      });
+      await ctx.db.insert("payments" as any, {
+        bountyId: testBountyId,
+        recipientId: agentId,
+        amount: 500,
+        currency: "USD",
+        method: "stripe",
+        status: "completed",
+        createdAt: now,
+      });
+
+      return { agentId };
+    });
+
+    vi.advanceTimersByTime(TRUSTED_AGE_MS);
+    await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
+
+    const stats = await t.run(async (ctx) =>
+      ctx.db
+        .query("agentStats")
+        .withIndex("by_agentId", (q: any) => q.eq("agentId", agentId))
+        .first()
+    );
+
+    expect(stats).not.toBeNull();
+    expect(stats!.totalBountiesCompleted).toBe(2);
+    expect(stats!.paidBountiesCompleted).toBe(1);
+    expect(stats!.paidPayoutVolumeUsd).toBe(100);
+  });
+
+  it("excludes fresh sybil creators from trusted unique rater gate", async () => {
+    const t = convexTest(schema);
+
+    const { agentId } = await t.run(async (ctx) => {
+      const agentId = await seedUser(ctx, { role: "agent" });
+      for (let i = 0; i < 3; i++) {
+        const creatorId = await seedUser(ctx, { role: "creator" });
+        await seedCompletedBountyWithRating(ctx, agentId, creatorId, {
+          bountyReward: 100,
+        });
+      }
+      return { agentId };
+    });
+
+    await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
+
+    const stats = await t.run(async (ctx) =>
+      ctx.db
+        .query("agentStats")
+        .withIndex("by_agentId", (q: any) => q.eq("agentId", agentId))
+        .first()
+    );
+
+    expect(stats).not.toBeNull();
+    expect(stats!.uniqueRaters).toBe(3);
+    expect(stats!.trustedUniqueRaters).toBe(0);
+  });
+
   it("derives Sonar/Snyk risk burdens and advisory process reliability from normalized receipts", async () => {
     const t = convexTest(schema);
 
     const { agentId } = await t.run(async (ctx) => {
-      const creatorId = await seedUser(ctx, { role: "creator" });
+      const creatorId = await seedTrustedCreator(ctx);
       const agentId = await seedUser(ctx, { role: "agent" });
 
       const bountyId = await seedBounty(ctx, creatorId, {
@@ -184,6 +342,16 @@ describe("recomputeForAgent", () => {
 
       await seedRating(ctx, bountyId, agentId, creatorId, {
         tierEligible: true,
+        createdAt: now,
+      });
+
+      await ctx.db.insert("payments" as any, {
+        bountyId,
+        recipientId: agentId,
+        amount: 100,
+        currency: "USD",
+        method: "stripe",
+        status: "completed",
         createdAt: now,
       });
 
@@ -318,7 +486,7 @@ describe("recomputeAllTiers", () => {
       // Create unique creators for ratings
       const creatorIds: any[] = [];
       for (let c = 0; c < NUM_UNIQUE_CREATORS; c++) {
-        creatorIds.push(await seedUser(ctx, { role: "creator" }));
+        creatorIds.push(await seedTrustedCreator(ctx));
       }
 
       // Create agents with completed bounties and ratings
@@ -335,7 +503,7 @@ describe("recomputeAllTiers", () => {
           const ratingValue = a === 0 ? 5 : Math.max(1, 5 - a);
 
           await seedCompletedBountyWithRating(ctx, agentId, creatorId, {
-            bountyReward: 100,
+            bountyReward: 250,
             ratingOverrides: {
               codeQuality: ratingValue,
               speed: ratingValue,
@@ -350,6 +518,7 @@ describe("recomputeAllTiers", () => {
       return agentIds;
     });
 
+    vi.advanceTimersByTime(TRUSTED_AGE_MS);
     // Recompute stats for all agents
     for (const agentId of agentIds) {
       await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
@@ -358,7 +527,7 @@ describe("recomputeAllTiers", () => {
     // Run tier assignment
     await t.mutation(internal.agentStats.recomputeAllTiers, {});
 
-    // The top agent (index 0, all 5s) should have tier S or A
+    // The top agent (index 0, all 5s) should satisfy A-tier constraints.
     const topAgentStats = await t.run(async (ctx) => {
       return await ctx.db
         .query("agentStats")
@@ -367,7 +536,7 @@ describe("recomputeAllTiers", () => {
     });
 
     expect(topAgentStats).not.toBeNull();
-    expect(["S", "A"]).toContain(topAgentStats!.tier);
+    expect(topAgentStats!.tier).toBe("A");
   });
 
   it("marks unqualified agents as unranked", async () => {
@@ -397,6 +566,62 @@ describe("recomputeAllTiers", () => {
     expect(stats!.tier).toBe("unranked");
   });
 
+  it("prevents S/A tiers when payout volume is below high-tier gates", async () => {
+    const t = convexTest(schema);
+
+    const NUM_AGENTS = 7;
+    const NUM_BOUNTIES_EACH = 5;
+    const NUM_UNIQUE_CREATORS = 3;
+
+    const agentIds = await t.run(async (ctx) => {
+      const creatorIds: any[] = [];
+      for (let c = 0; c < NUM_UNIQUE_CREATORS; c++) {
+        creatorIds.push(await seedTrustedCreator(ctx));
+      }
+
+      const agentIds: any[] = [];
+      for (let a = 0; a < NUM_AGENTS; a++) {
+        const agentId = await seedUser(ctx, { role: "agent" });
+        agentIds.push(agentId);
+
+        for (let b = 0; b < NUM_BOUNTIES_EACH; b++) {
+          const creatorId = creatorIds[b % NUM_UNIQUE_CREATORS];
+          const ratingValue = a === 0 ? 5 : 2;
+          await seedCompletedBountyWithRating(ctx, agentId, creatorId, {
+            bountyReward: 100, // 5 x $100 = $500 (below A/S payout gates)
+            ratingOverrides: {
+              codeQuality: ratingValue,
+              speed: ratingValue,
+              mergedWithoutChanges: ratingValue,
+              communication: ratingValue,
+              testCoverage: ratingValue,
+            },
+          });
+        }
+      }
+
+      return agentIds;
+    });
+
+    vi.advanceTimersByTime(TRUSTED_AGE_MS);
+    for (const agentId of agentIds) {
+      await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
+    }
+    await t.mutation(internal.agentStats.recomputeAllTiers, {});
+
+    const topStats = await t.run(async (ctx) =>
+      ctx.db
+        .query("agentStats")
+        .withIndex("by_agentId", (q: any) => q.eq("agentId", agentIds[0]))
+        .first()
+    );
+
+    expect(topStats).not.toBeNull();
+    expect(topStats!.paidPayoutVolumeUsd).toBe(500);
+    expect(["S", "A"]).not.toContain(topStats!.tier);
+    expect(topStats!.tier).not.toBe("unranked");
+  });
+
   it("concentration cap: high-concentration agent capped at B", async () => {
     const t = convexTest(schema);
 
@@ -413,7 +638,7 @@ describe("recomputeAllTiers", () => {
     const { concentratedAgentId, otherAgentIds } = await t.run(async (ctx) => {
       const creatorIds: any[] = [];
       for (let c = 0; c < NUM_UNIQUE_CREATORS; c++) {
-        creatorIds.push(await seedUser(ctx, { role: "creator" }));
+        creatorIds.push(await seedTrustedCreator(ctx));
       }
 
       const primaryCreator = creatorIds[0];
@@ -433,18 +658,18 @@ describe("recomputeAllTiers", () => {
       // 5 bounties from the primary creator (high concentration)
       for (let b = 0; b < 5; b++) {
         await seedCompletedBountyWithRating(ctx, concentratedAgentId, primaryCreator, {
-          bountyReward: 100,
+          bountyReward: 300,
           ratingOverrides: perfectRatings,
         });
       }
 
       // 1 bounty each from two other creators (to reach uniqueRaters=3)
       await seedCompletedBountyWithRating(ctx, concentratedAgentId, secondaryCreator1, {
-        bountyReward: 100,
+        bountyReward: 300,
         ratingOverrides: perfectRatings,
       });
       await seedCompletedBountyWithRating(ctx, concentratedAgentId, secondaryCreator2, {
-        bountyReward: 100,
+        bountyReward: 300,
         ratingOverrides: perfectRatings,
       });
 
@@ -459,7 +684,7 @@ describe("recomputeAllTiers", () => {
         for (let b = 0; b < 5; b++) {
           const creatorId = creatorIds[(b % 3) + 1]; // use creatorIds[1..3]
           await seedCompletedBountyWithRating(ctx, otherAgentId, creatorId, {
-            bountyReward: 100,
+            bountyReward: 300,
             ratingOverrides: {
               codeQuality: 2,
               speed: 2,
@@ -474,6 +699,7 @@ describe("recomputeAllTiers", () => {
       return { concentratedAgentId, otherAgentIds };
     });
 
+    vi.advanceTimersByTime(TRUSTED_AGE_MS);
     // Recompute stats for all agents
     await t.mutation(internal.agentStats.recomputeForAgent, {
       agentId: concentratedAgentId,
@@ -495,8 +721,47 @@ describe("recomputeAllTiers", () => {
     expect(stats).not.toBeNull();
     // Concentration should be 5/7 ~= 0.714 (5 ratings from primary creator out of 7 total)
     expect(stats!.singleCreatorConcentration).toBeGreaterThan(0.6);
-    // Agent is qualified (7 bounties >= 5, 3 unique raters >= 3) but concentration
-    // cap should prevent S or A tier. The cap forces them to at most B.
-    expect(["B", "C", "D"]).toContain(stats!.tier);
+    // Agent is otherwise strong but concentration cap prevents S/A promotion.
+    expect(stats!.tier).toBe("B");
+  });
+});
+
+describe("leaderboard filtering", () => {
+  it("defaults to ranked-only results", async () => {
+    const t = convexTest(schema);
+
+    await t.run(async (ctx) => {
+      const rankedAgentId = await seedUser(ctx, { role: "agent" });
+      const unrankedAgentId = await seedUser(ctx, { role: "agent" });
+      await seedAgentStatsRow(ctx, rankedAgentId, { tier: "A", compositeScore: 80 });
+      await seedAgentStatsRow(ctx, unrankedAgentId, { tier: "unranked", compositeScore: 95 });
+    });
+
+    const leaderboard = await t.query(internal.agentStats.getLeaderboardInternal, {
+      limit: 10,
+    });
+
+    expect(leaderboard).toHaveLength(1);
+    expect(leaderboard[0].tier).not.toBe("unranked");
+  });
+
+  it("can include unranked rows when explicitly requested", async () => {
+    const t = convexTest(schema);
+
+    await t.run(async (ctx) => {
+      const rankedAgentId = await seedUser(ctx, { role: "agent" });
+      const unrankedAgentId = await seedUser(ctx, { role: "agent" });
+      await seedAgentStatsRow(ctx, rankedAgentId, { tier: "A", compositeScore: 80 });
+      await seedAgentStatsRow(ctx, unrankedAgentId, { tier: "unranked", compositeScore: 95 });
+    });
+
+    const leaderboard = await t.query(internal.agentStats.getLeaderboardInternal, {
+      limit: 10,
+      rankedOnly: false,
+      includeUnranked: true,
+    });
+
+    expect(leaderboard).toHaveLength(2);
+    expect(leaderboard.some((entry: any) => entry.tier === "unranked")).toBe(true);
   });
 });

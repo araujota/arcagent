@@ -8,6 +8,67 @@ import { findGitHubInstallationForRepo, isGitHubAppConfigured, parseGitHubRepoUr
 
 const MAX_TITLE_LENGTH = 200;
 const MAX_DESCRIPTION_LENGTH = 50_000;
+const FROZEN_UPDATE_STATUSES = ["in_progress", "completed"] as const;
+const FROZEN_UPDATE_FIELDS = ["reward", "rewardCurrency", "description", "paymentMethod", "repositoryUrl"] as const;
+
+type BountyTier = "S" | "A" | "B" | "C" | "D";
+type FrozenUpdateField = typeof FROZEN_UPDATE_FIELDS[number];
+
+type BountyUpdateValidationArgs = {
+  title?: string;
+  description?: string;
+  reward?: number;
+  requiredTier?: BountyTier;
+} & Partial<Record<FrozenUpdateField, unknown>>;
+
+type BountyUpdateValidationRecord = {
+  status: string;
+  reward: number;
+  requiredTier?: BountyTier;
+} & Record<FrozenUpdateField, unknown>;
+
+function validateUpdateTextFields(args: BountyUpdateValidationArgs): void {
+  if (args.title !== undefined && args.title.length > MAX_TITLE_LENGTH) {
+    throw new Error(`Title must be ${MAX_TITLE_LENGTH} characters or fewer`);
+  }
+  if (args.description !== undefined && args.description.length > MAX_DESCRIPTION_LENGTH) {
+    throw new Error(`Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer`);
+  }
+}
+
+function validateUpdateRewardRules(
+  args: BountyUpdateValidationArgs,
+  bounty: BountyUpdateValidationRecord,
+): void {
+  const effectiveReward = args.reward ?? bounty.reward;
+  const effectiveTier = args.requiredTier ?? bounty.requiredTier;
+  if (effectiveReward < MIN_BOUNTY_REWARD) {
+    throw new Error(`Minimum bounty reward is $${MIN_BOUNTY_REWARD}`);
+  }
+  if (effectiveTier === "S" && effectiveReward < MIN_S_TIER_BOUNTY_REWARD) {
+    throw new Error(`S-Tier bounties require a minimum reward of $${MIN_S_TIER_BOUNTY_REWARD}`);
+  }
+}
+
+function assertUpdateAllowedForStatus(
+  args: BountyUpdateValidationArgs,
+  bounty: BountyUpdateValidationRecord,
+): void {
+  if (!FROZEN_UPDATE_STATUSES.includes(bounty.status as typeof FROZEN_UPDATE_STATUSES[number])) {
+    return;
+  }
+  for (const field of FROZEN_UPDATE_FIELDS) {
+    if (args[field] !== undefined && args[field] !== bounty[field]) {
+      throw new Error(`Cannot modify "${field}" while bounty is ${bounty.status}`);
+    }
+  }
+}
+
+function filterDefinedUpdateValues(
+  updates: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(updates).filter(([, value]) => value !== undefined));
+}
 
 export const list = query({
   args: {
@@ -272,41 +333,12 @@ export const update = mutation({
       throw new Error("Unauthorized");
     }
 
-    // Input validation for optional fields
-    if (args.title !== undefined && args.title.length > MAX_TITLE_LENGTH) {
-      throw new Error(`Title must be ${MAX_TITLE_LENGTH} characters or fewer`);
-    }
-    if (args.description !== undefined && args.description.length > MAX_DESCRIPTION_LENGTH) {
-      throw new Error(`Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer`);
-    }
-
-    // Enforce minimum reward
-    const effectiveReward = args.reward ?? bounty.reward;
-    const effectiveTier = args.requiredTier !== undefined ? args.requiredTier : bounty.requiredTier;
-    if (effectiveReward < MIN_BOUNTY_REWARD) {
-      throw new Error(`Minimum bounty reward is $${MIN_BOUNTY_REWARD}`);
-    }
-    if (effectiveTier === "S" && effectiveReward < MIN_S_TIER_BOUNTY_REWARD) {
-      throw new Error(`S-Tier bounties require a minimum reward of $${MIN_S_TIER_BOUNTY_REWARD}`);
-    }
-
-    // SECURITY (H2): Freeze critical terms once an agent has claimed
-    const frozenStatuses = ["in_progress", "completed"];
-    if (frozenStatuses.includes(bounty.status)) {
-      const frozenFields = ["reward", "rewardCurrency", "description", "paymentMethod", "repositoryUrl"] as const;
-      for (const field of frozenFields) {
-        if (args[field] !== undefined && args[field] !== bounty[field]) {
-          throw new Error(
-            `Cannot modify "${field}" while bounty is ${bounty.status}`
-          );
-        }
-      }
-    }
+    validateUpdateTextFields(args);
+    validateUpdateRewardRules(args, bounty as BountyUpdateValidationRecord);
+    assertUpdateAllowedForStatus(args, bounty as BountyUpdateValidationRecord);
 
     const { bountyId, ...updates } = args;
-    const filteredUpdates = Object.fromEntries(
-      Object.entries(updates).filter(([, v]) => v !== undefined)
-    );
+    const filteredUpdates = filterDefinedUpdateValues(updates);
 
     await ctx.db.patch(bountyId, filteredUpdates);
     return bountyId;

@@ -119,6 +119,70 @@ interface SnykScanSummary {
   error?: string;
 }
 
+function emptySnykSummary(error?: string): SnykScanSummary {
+  return {
+    totalFindings: 0,
+    criticalCount: 0,
+    highCount: 0,
+    mediumCount: 0,
+    lowCount: 0,
+    findings: [],
+    error,
+  };
+}
+
+function resolveSnykCodeSeverity(finding: {
+  level?: string;
+  properties?: { severity?: string };
+}): "critical" | "high" | "medium" | "low" {
+  const severity = finding.properties?.severity?.toLowerCase();
+  if (severity === "critical" || severity === "high" || severity === "medium" || severity === "low") {
+    return severity;
+  }
+
+  const level = finding.level?.toUpperCase();
+  if (level === "ERROR") {
+    return "high";
+  }
+  if (level === "WARNING") {
+    return "medium";
+  }
+  return "low";
+}
+
+function incrementSeverityCount(summary: SnykScanSummary, severity: "critical" | "high" | "medium" | "low"): void {
+  if (severity === "critical") {
+    summary.criticalCount += 1;
+    return;
+  }
+  if (severity === "high") {
+    summary.highCount += 1;
+    return;
+  }
+  if (severity === "medium") {
+    summary.mediumCount += 1;
+    return;
+  }
+  summary.lowCount += 1;
+}
+
+function summarizeSnykCodeOutput(parsed: SnykCodeOutput): SnykScanSummary {
+  const summary = emptySnykSummary();
+  const runs = parsed.runs ?? [];
+
+  for (const run of runs) {
+    for (const finding of run.results ?? []) {
+      summary.findings.push(finding);
+      const severity = resolveSnykCodeSeverity(finding);
+      incrementSeverityCount(summary, severity);
+      summary.totalFindings += 1;
+    }
+  }
+
+  summary.findings = summary.findings.slice(0, 200);
+  return summary;
+}
+
 async function runSnykTest(
   vm: VMHandle,
   token: string,
@@ -136,31 +200,13 @@ async function runSnykTest(
   );
 
   // Snyk exits with 1 when vulnerabilities are found, 0 when clean
-  if (!result.stdout.trim()) {
-    return {
-      totalFindings: 0,
-      criticalCount: 0,
-      highCount: 0,
-      mediumCount: 0,
-      lowCount: 0,
-      findings: [],
-      error: result.exitCode !== 0
-        ? `Snyk test exited with code ${result.exitCode}`
-        : undefined,
-    };
+  if (result.stdout.trim().length === 0) {
+    return emptySnykSummary(result.exitCode === 0 ? undefined : `Snyk test exited with code ${result.exitCode}`);
   }
 
   const parsed = parseJsonSafe<SnykTestOutput>(result.stdout);
   if (!parsed) {
-    return {
-      totalFindings: 0,
-      criticalCount: 0,
-      highCount: 0,
-      mediumCount: 0,
-      lowCount: 0,
-      findings: [],
-      error: "Failed to parse Snyk test output",
-    };
+    return emptySnykSummary("Failed to parse Snyk test output");
   }
 
   let criticalCount = 0;
@@ -201,75 +247,15 @@ async function runSnykCode(
     timeoutMs,
   );
 
-  if (!result.stdout.trim()) {
-    return {
-      totalFindings: 0,
-      criticalCount: 0,
-      highCount: 0,
-      mediumCount: 0,
-      lowCount: 0,
-      findings: [],
-      error: result.exitCode !== 0
-        ? `Snyk code test exited with code ${result.exitCode}`
-        : undefined,
-    };
+  if (result.stdout.trim().length === 0) {
+    return emptySnykSummary(result.exitCode === 0 ? undefined : `Snyk code test exited with code ${result.exitCode}`);
   }
 
   const parsed = parseJsonSafe<SnykCodeOutput>(result.stdout);
   if (!parsed) {
-    return {
-      totalFindings: 0,
-      criticalCount: 0,
-      highCount: 0,
-      mediumCount: 0,
-      lowCount: 0,
-      findings: [],
-      error: "Failed to parse Snyk Code output",
-    };
+    return emptySnykSummary("Failed to parse Snyk Code output");
   }
-
-  let criticalCount = 0;
-  let highCount = 0;
-  let mediumCount = 0;
-  let lowCount = 0;
-  const runs = parsed.runs ?? [];
-  const findings: unknown[] = [];
-
-  for (const run of runs) {
-    for (const finding of run.results ?? []) {
-      findings.push(finding);
-
-      const severity = finding.properties?.severity?.toLowerCase();
-      if (severity === "critical") {
-        criticalCount++;
-      } else if (severity === "high") {
-        highCount++;
-      } else if (severity === "medium") {
-        mediumCount++;
-      } else if (severity === "low") {
-        lowCount++;
-      } else {
-        const level = finding.level?.toUpperCase();
-        if (level === "ERROR") highCount++;
-        else if (level === "WARNING") mediumCount++;
-        else lowCount++;
-      }
-    }
-  }
-
-  const totalFindings = runs.reduce(
-    (sum, run) => sum + (run.results?.length ?? 0),
-    0,
-  );
-
-  return {
-    totalFindings,
-    criticalCount,
-    highCount,
-    mediumCount,
-    lowCount,
-    findings: findings.slice(0, 200),
-  };
+  return summarizeSnykCodeOutput(parsed);
 }
 
 // ---------------------------------------------------------------------------

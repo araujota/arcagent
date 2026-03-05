@@ -10,6 +10,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import type { Dirent, Stats } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { v4 as uuidv4 } from "uuid";
@@ -29,6 +30,12 @@ interface ProcessWorkspaceFile {
   path: string;
   relativePath: string;
   mtimeMs: number;
+}
+
+interface GrepSearchState {
+  fileMatchCounts: Map<string, number>;
+  grepMatches: NonNullable<VsockResponse["matches"]>;
+  totalMatches: number;
 }
 
 const DEFAULT_GLOB_MAX_RESULTS = 500;
@@ -383,72 +390,90 @@ function isBinaryBuffer(content: Buffer): boolean {
   return sample.includes(0);
 }
 
+async function safeReadDir(path: string): Promise<Dirent[]> {
+  try {
+    return await readdir(path, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+async function safeStat(path: string): Promise<Stats | null> {
+  try {
+    return await stat(path);
+  } catch {
+    return null;
+  }
+}
+
+async function safeRealPath(path: string): Promise<string | null> {
+  try {
+    return toPosixPath(await realpath(path));
+  } catch {
+    return null;
+  }
+}
+
+function isWithinBasePath(path: string, normalizedBase: string): boolean {
+  return path === normalizedBase || path.startsWith(`${normalizedBase}/`);
+}
+
+function toWorkspaceRelativePath(path: string, normalizedBase: string): string | null {
+  const relativePath = relative(normalizedBase, path).split("/").join("/");
+  if (relativePath.startsWith("..")) return null;
+  return relativePath;
+}
+
+async function addWorkspaceFileIfApplicable(
+  childPath: string,
+  stats: Stats,
+  normalizedBase: string,
+  files: ProcessWorkspaceFile[],
+): Promise<void> {
+  if (!stats.isFile()) return;
+  const resolvedPath = await safeRealPath(childPath);
+  if (!resolvedPath || !isWithinBasePath(resolvedPath, normalizedBase)) return;
+  const relativePath = toWorkspaceRelativePath(resolvedPath, normalizedBase);
+  if (!relativePath) return;
+  files.push({
+    path: resolvedPath,
+    relativePath,
+    mtimeMs: stats.mtimeMs,
+  });
+}
+
+async function walkWorkspaceDir(
+  current: string,
+  normalizedBase: string,
+  seen: Set<string>,
+  files: ProcessWorkspaceFile[],
+): Promise<void> {
+  const entries = await safeReadDir(current);
+  for (const entry of entries) {
+    const childPath = toPosixPath(`${current}/${entry.name}`);
+    const stats = await safeStat(childPath);
+    if (!stats) continue;
+
+    const inodeKey = `${stats.dev}:${stats.ino}`;
+    if (seen.has(inodeKey)) continue;
+    seen.add(inodeKey);
+
+    if (stats.isDirectory()) {
+      const resolvedDir = await safeRealPath(childPath);
+      if (!resolvedDir || !isWithinBasePath(resolvedDir, normalizedBase)) continue;
+      await walkWorkspaceDir(childPath, normalizedBase, seen, files);
+      continue;
+    }
+
+    await addWorkspaceFileIfApplicable(childPath, stats, normalizedBase, files);
+  }
+}
+
 async function collectWorkspaceFiles(basePath: string): Promise<ProcessWorkspaceFile[]> {
   const normalizedBase = toPosixPath(await realpath(basePath));
   const files: ProcessWorkspaceFile[] = [];
   const seen = new Set<string>();
-
-  const walk = async (current: string): Promise<void> => {
-    let entries;
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      const childPath = toPosixPath(`${current}/${entry.name}`);
-      let stats;
-      try {
-        stats = await stat(childPath);
-      } catch {
-        continue;
-      }
-
-      const inodeKey = `${stats.dev}:${stats.ino}`;
-      if (seen.has(inodeKey)) continue;
-      seen.add(inodeKey);
-
-      if (stats.isDirectory()) {
-        let resolvedDir: string;
-        try {
-          resolvedDir = toPosixPath(await realpath(childPath));
-        } catch {
-          continue;
-        }
-        if (!resolvedDir.startsWith(`${normalizedBase}/`) && resolvedDir !== normalizedBase) {
-          continue;
-        }
-        await walk(childPath);
-        continue;
-      }
-
-      if (!stats.isFile()) continue;
-
-      let resolvedPath: string;
-      try {
-        resolvedPath = toPosixPath(await realpath(childPath));
-      } catch {
-        continue;
-      }
-
-      if (!resolvedPath.startsWith(`${normalizedBase}/`) && resolvedPath !== normalizedBase) {
-        continue;
-      }
-
-      const relativePath = relative(normalizedBase, resolvedPath).split("/").join("/");
-      if (relativePath.startsWith("..")) {
-        continue;
-      }
-      files.push({
-        path: resolvedPath,
-        relativePath,
-        mtimeMs: stats.mtimeMs,
-      });
-    }
-  };
-
-  await walk(normalizedBase);
+  await walkWorkspaceDir(normalizedBase, normalizedBase, seen, files);
   return files;
 }
 
@@ -472,7 +497,7 @@ async function handleFileGlobRequest(
 
   const files = await collectWorkspaceFiles(searchPath);
   const matched = files.filter((file) => matchGlobPattern(pattern, file.relativePath));
-  const sorted = matched.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const sorted = [...matched].sort((a, b) => b.mtimeMs - a.mtimeMs);
   const truncated = sorted.length > maxResults;
   const selected = truncated ? sorted.slice(0, maxResults) : sorted;
 
@@ -480,6 +505,116 @@ async function handleFileGlobRequest(
     type: "file_result",
     files: selected.map((entry) => entry.path),
     totalMatches: sorted.length,
+    truncated,
+  };
+}
+
+function buildCaseSensitiveRegex(pattern: string): RegExp {
+  return new RegExp(pattern);
+}
+
+function buildCaseInsensitiveRegex(pattern: string): RegExp {
+  return new RegExp(pattern, "i");
+}
+
+function recordFileMatch(state: GrepSearchState, filePath: string): void {
+  state.totalMatches += 1;
+  state.fileMatchCounts.set(filePath, (state.fileMatchCounts.get(filePath) ?? 0) + 1);
+}
+
+function buildContextLines(
+  lines: string[],
+  lineIndex: number,
+  contextLines: number,
+): { before: string[]; after: string[] } {
+  const beforeStart = Math.max(lineIndex - contextLines, 0);
+  const afterEnd = Math.min(lineIndex + contextLines + 1, lines.length);
+  return {
+    before: lines.slice(beforeStart, lineIndex).map((text) => text.replace(/\r?\n$/, "")),
+    after: lines.slice(lineIndex + 1, afterEnd).map((text) => text.replace(/\r?\n$/, "")),
+  };
+}
+
+function maybeAppendContentMatch(
+  state: GrepSearchState,
+  filePath: string,
+  line: string,
+  lineIndex: number,
+  lines: string[],
+  contextLines: number,
+  maxResults: number,
+): void {
+  if (state.grepMatches.length >= maxResults) return;
+  const context = buildContextLines(lines, lineIndex, contextLines);
+  state.grepMatches.push({
+    file: filePath,
+    line: lineIndex + 1,
+    text: line.replace(/\r?\n$/, ""),
+    contextBefore: context.before,
+    contextAfter: context.after,
+  });
+}
+
+async function scanFileForGrep(
+  file: ProcessWorkspaceFile,
+  searchRegex: RegExp,
+  request: VsockRequest,
+  state: GrepSearchState,
+  maxResults: number,
+): Promise<void> {
+  if (request.glob && !matchGlobPattern(request.glob, file.relativePath)) return;
+
+  const contentBuffer = await readFile(file.path);
+  if (isBinaryBuffer(contentBuffer)) return;
+  const fileContent = contentBuffer.toString("utf-8");
+  const lines = fileContent.split(/\r?\n/);
+  const contextLines = Math.max(0, request.contextLines ?? 0);
+  const outputMode = request.outputMode ?? "content";
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    if (searchRegex.global) {
+      searchRegex.lastIndex = 0;
+    }
+    if (!searchRegex.test(line)) continue;
+
+    recordFileMatch(state, file.path);
+    if (outputMode === "content") {
+      maybeAppendContentMatch(state, file.path, line, lineIndex, lines, contextLines, maxResults);
+    }
+  }
+}
+
+function buildGrepResponse(outputMode: string, state: GrepSearchState, maxResults: number): VsockResponse {
+  const truncated = state.totalMatches > maxResults;
+
+  if (outputMode === "files_with_matches") {
+    return {
+      type: "file_result",
+      files: Array.from(state.fileMatchCounts.keys()),
+      totalMatches: state.totalMatches,
+      truncated,
+    };
+  }
+
+  if (outputMode === "count") {
+    const counts = Array.from(state.fileMatchCounts.entries()).map(([file, count]) => ({
+      file,
+      line: 0,
+      text: String(count),
+    }));
+    return {
+      type: "file_result",
+      matches: counts,
+      totalMatches: state.totalMatches,
+      truncated,
+    };
+  }
+
+  return {
+    type: "file_result",
+    matches: state.grepMatches,
+    totalMatches: state.totalMatches,
     truncated,
   };
 }
@@ -501,14 +636,14 @@ async function handleFileGrepRequest(
   const maxResults = request.maxResults && request.maxResults > 0
     ? request.maxResults
     : DEFAULT_GREP_MAX_RESULTS;
-  const contextLines = Math.max(0, request.contextLines ?? 0);
   const caseSensitive = request.caseSensitive ?? true;
   const outputMode = request.outputMode ?? "content";
-  const fileGlob = request.glob;
 
   let searchRegex: RegExp;
   try {
-    searchRegex = caseSensitive ? new RegExp(pattern) : new RegExp(pattern, "i");
+    searchRegex = caseSensitive
+      ? buildCaseSensitiveRegex(pattern)
+      : buildCaseInsensitiveRegex(pattern);
   } catch (err) {
     return {
       type: "error",
@@ -517,88 +652,17 @@ async function handleFileGrepRequest(
   }
 
   const files = await collectWorkspaceFiles(searchPath);
-  const fileMatchCounts = new Map<string, number>();
-  const grepMatches: NonNullable<VsockResponse["matches"]> = [];
-  let totalMatches = 0;
+  const state: GrepSearchState = {
+    fileMatchCounts: new Map<string, number>(),
+    grepMatches: [],
+    totalMatches: 0,
+  };
 
   for (const file of files) {
-    if (fileGlob && !matchGlobPattern(fileGlob, file.relativePath)) {
-      continue;
-    }
-
-    const contentBuffer = await readFile(file.path);
-    if (isBinaryBuffer(contentBuffer)) continue;
-    const fileContent = contentBuffer.toString("utf-8");
-    const lines = fileContent.split(/\r?\n/);
-
-    let matchedInFile = 0;
-    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-      const line = lines[lineIndex];
-      if (searchRegex.global) {
-        searchRegex.lastIndex = 0;
-      }
-      if (!searchRegex.test(line)) {
-        continue;
-      }
-      matchedInFile += 1;
-      totalMatches += 1;
-      fileMatchCounts.set(file.path, (fileMatchCounts.get(file.path) ?? 0) + 1);
-
-      if (outputMode === "content" && grepMatches.length < maxResults) {
-        const beforeStart = Math.max(lineIndex - contextLines, 0);
-        const afterEnd = Math.min(lineIndex + contextLines + 1, lines.length);
-        const before = lines
-          .slice(beforeStart, lineIndex)
-          .map((text) => text.replace(/\r?\n$/, ""));
-        const after = lines
-          .slice(lineIndex + 1, afterEnd)
-          .map((text) => text.replace(/\r?\n$/, ""));
-
-        grepMatches.push({
-          file: file.path,
-          line: lineIndex + 1,
-          text: line.replace(/\r?\n$/, ""),
-          contextBefore: before,
-          contextAfter: after,
-        });
-      }
-    }
-
+    await scanFileForGrep(file, searchRegex, request, state, maxResults);
   }
 
-  const truncated = totalMatches > maxResults;
-
-  if (outputMode === "files_with_matches") {
-    const filesWithMatches = Array.from(fileMatchCounts.keys());
-    return {
-      type: "file_result",
-      files: filesWithMatches,
-      totalMatches,
-      truncated,
-    };
-  }
-
-  if (outputMode === "count") {
-    const counts = Array.from(fileMatchCounts.entries()).map(([file, count]) => ({
-      file,
-      line: 0,
-      text: String(count),
-    }));
-
-    return {
-      type: "file_result",
-      matches: counts,
-      totalMatches,
-      truncated,
-    };
-  }
-
-  return {
-    type: "file_result",
-    matches: grepMatches,
-    totalMatches,
-    truncated,
-  };
+  return buildGrepResponse(outputMode, state, maxResults);
 }
 
 async function handleSessionRequest(

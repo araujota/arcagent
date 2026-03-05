@@ -35,21 +35,37 @@ export const logger = createLogger({
   ],
 });
 
-// ---------------------------------------------------------------------------
-// Bootstrap
-// ---------------------------------------------------------------------------
-async function main(): Promise<void> {
-  // -------------------------------------------------------------------------
-  // Startup validation — crash immediately if misconfigured
-  // -------------------------------------------------------------------------
-  const requiredEnvVars = ["WORKER_SHARED_SECRET"] as const;
+interface RuntimeOptions {
+  port: number;
+  redisUrl: string;
+  workerRole: "api";
+  runsQueue: boolean;
+  runsWorkspace: boolean;
+  hasLocalExecution: boolean;
+  executionBackend: string;
+  isProduction: boolean;
+  supportedBackends: Set<string>;
+}
+
+interface HealthContext {
+  workerRole: string;
+  runsQueue: boolean;
+  runsWorkspace: boolean;
+  hasLocalExecution: boolean;
+  executionBackend: string;
+  supportedBackends: Set<string>;
+}
+
+function ensureRequiredEnvVars(requiredEnvVars: readonly string[]): void {
   for (const envVar of requiredEnvVars) {
     if (!process.env[envVar]) {
       logger.error("Missing required environment variable", { envVar });
       process.exit(1);
     }
   }
+}
 
+function resolveRuntimeOptions(): RuntimeOptions {
   const port = parseInt(process.env.PORT ?? "3001", 10);
   const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
   const workerRoleRaw = (process.env.WORKER_ROLE ?? "api").toLowerCase();
@@ -59,64 +75,88 @@ async function main(): Promise<void> {
     });
     process.exit(1);
   }
-  const workerRole = "api";
-  // API workers must consume verification jobs. If this is false, /api/verify
-  // will enqueue work that never leaves BullMQ "wait".
+
   const runsQueue = true;
   const runsWorkspace = true;
   const hasLocalExecution = runsQueue || runsWorkspace;
   const executionBackend = (process.env.WORKER_EXECUTION_BACKEND ?? "process").toLowerCase();
   const isProduction = process.env.NODE_ENV === "production";
-  const supportedBackends = new Set(["firecracker", "process"]);
+  const supportedBackends = new Set<string>(["firecracker", "process"]);
 
-  if (hasLocalExecution && !supportedBackends.has(executionBackend)) {
+  return {
+    port,
+    redisUrl,
+    workerRole: "api",
+    runsQueue,
+    runsWorkspace,
+    hasLocalExecution,
+    executionBackend,
+    isProduction,
+    supportedBackends,
+  };
+}
+
+function validateBackendPolicy(options: RuntimeOptions): void {
+  if (!options.hasLocalExecution) return;
+  assertSupportedBackend(options);
+  assertFirecrackerProductionEgress(options);
+  assertProcessScannerTools(options);
+  assertScannerRootfsCoverage(options);
+}
+
+function assertSupportedBackend(options: RuntimeOptions): void {
+  if (!options.supportedBackends.has(options.executionBackend)) {
     logger.error("Unsupported execution backend", {
-      executionBackend,
-      supportedBackends: Array.from(supportedBackends),
+      executionBackend: options.executionBackend,
+      supportedBackends: Array.from(options.supportedBackends),
     });
     process.exit(1);
   }
+}
 
-  if (hasLocalExecution && executionBackend === "firecracker" && isProduction && process.env.FC_HARDEN_EGRESS !== "true") {
+function assertFirecrackerProductionEgress(options: RuntimeOptions): void {
+  if (options.executionBackend === "firecracker" && options.isProduction && process.env.FC_HARDEN_EGRESS !== "true") {
     logger.error("FC_HARDEN_EGRESS must be true in production firecracker mode");
     process.exit(1);
   }
+}
 
-  if (hasLocalExecution && executionBackend === "process") {
-    const requiredTools: string[] = [];
-    if (process.env.SNYK_TOKEN) requiredTools.push("snyk");
-    if (process.env.SONARQUBE_URL && process.env.SONARQUBE_TOKEN) requiredTools.push("sonar-scanner");
-    for (const tool of requiredTools) {
-      if (!hasBinary(tool)) {
-        logger.error("Required scanner binary missing", { tool, executionBackend });
-        process.exit(1);
-      }
-    }
-  }
-
-  if (hasLocalExecution && executionBackend === "firecracker" && process.env.SCANNER_GLOBAL_ENFORCEMENT === "true") {
-    const rootfsDir = process.env.FC_ROOTFS_DIR ?? "/var/lib/firecracker/rootfs";
-    const coverage = evaluateScannerCoverageByImageClass(rootfsDir);
-    if (coverage.missingImages.length > 0) {
-      logger.error("Global scanner enforcement enabled with incomplete rootfs coverage", {
-        rootfsDir,
-        missingImages: coverage.missingImages,
-        requiredImages: coverage.requiredImages,
-      });
+function assertProcessScannerTools(options: RuntimeOptions): void {
+  if (options.executionBackend !== "process") return;
+  const requiredTools: string[] = [];
+  if (process.env.SNYK_TOKEN) requiredTools.push("snyk");
+  if (process.env.SONARQUBE_URL && process.env.SONARQUBE_TOKEN) requiredTools.push("sonar-scanner");
+  for (const tool of requiredTools) {
+    if (!hasBinary(tool)) {
+      logger.error("Required scanner binary missing", { tool, executionBackend: options.executionBackend });
       process.exit(1);
     }
   }
+}
 
-  // -------------------------------------------------------------------------
-  // Startup cleanup — remove orphaned resources from prior unclean shutdowns
-  // -------------------------------------------------------------------------
-  if (hasLocalExecution && executionBackend === "firecracker") {
+function assertScannerRootfsCoverage(options: RuntimeOptions): void {
+  if (options.executionBackend !== "firecracker" || process.env.SCANNER_GLOBAL_ENFORCEMENT !== "true") {
+    return;
+  }
+  const rootfsDir = process.env.FC_ROOTFS_DIR ?? "/var/lib/firecracker/rootfs";
+  const coverage = evaluateScannerCoverageByImageClass(rootfsDir);
+  if (coverage.missingImages.length > 0) {
+    logger.error("Global scanner enforcement enabled with incomplete rootfs coverage", {
+      rootfsDir,
+      missingImages: coverage.missingImages,
+      requiredImages: coverage.requiredImages,
+    });
+    process.exit(1);
+  }
+}
+
+async function runStartupCleanup(options: RuntimeOptions): Promise<void> {
+  if (options.hasLocalExecution && options.executionBackend === "firecracker") {
     await cleanupStaleCryptDevices();
     await cleanupStaleResources();
   }
 
-  if (hasLocalExecution) {
-    // Initialize crash recovery: generate instance ID, recover orphans, start heartbeat
+  if (options.hasLocalExecution) {
     const instanceId = generateWorkerInstanceId();
     setWorkerInstanceId(instanceId);
     logger.info("Worker instance ID generated", { instanceId });
@@ -124,21 +164,160 @@ async function main(): Promise<void> {
     await recoverOrphanedSessions(instanceId);
     workspaceHeartbeat.startWorkerHeartbeat(instanceId);
   }
+}
+
+async function runRedisHealthCheck(checks: Record<string, string>): Promise<boolean> {
+  try {
+    await sessionStore.ping();
+    checks.redis = "ok";
+    return true;
+  } catch {
+    checks.redis = "error";
+    return false;
+  }
+}
+
+function setStaticHealthChecks(checks: Record<string, string>, context: HealthContext): void {
+  checks.workerRole = context.workerRole;
+  checks.verificationQueueConsumer = context.runsQueue ? "enabled" : "disabled";
+  checks.localExecution = context.hasLocalExecution ? "enabled" : "disabled";
+  checks.workspaceMode = context.runsWorkspace ? "local" : "external_only";
+  checks.executionBackend = context.executionBackend;
+  checks.firecrackerLocked = context.executionBackend === "firecracker" ? "true" : "false";
+  checks.executionIsolation = context.executionBackend === "firecracker" ? "microvm_rootfs" : "process_sandbox";
+  checks.workerHostRuntime = "ok";
+  checks.snykCli = hasBinary("snyk") ? "ok" : "missing";
+  checks.sonarScanner = hasBinary("sonar-scanner") ? "ok" : "missing";
+}
+
+function applyExecutionBackendPolicyHealth(checks: Record<string, string>, context: HealthContext): boolean {
+  if (!context.hasLocalExecution) {
+    checks.executionBackendPolicy = "external_executor_required";
+    checks.firecrackerLocked = "not_applicable";
+    checks.executionIsolation = "external_executor";
+    return true;
+  }
+
+  if (!context.supportedBackends.has(context.executionBackend)) {
+    checks.executionBackendPolicy = "violation";
+    return false;
+  }
+
+  checks.executionBackendPolicy = "ok";
+  return true;
+}
+
+function applyProcessBackendHealthChecks(checks: Record<string, string>, context: HealthContext): boolean {
+  if (context.executionBackend !== "process") return true;
+  if (process.env.SNYK_TOKEN && checks.snykCli !== "ok") return false;
+  if (process.env.SONARQUBE_URL && process.env.SONARQUBE_TOKEN && checks.sonarScanner !== "ok") {
+    return false;
+  }
+  return true;
+}
+
+function applyFirecrackerRootfsHealthChecks(checks: Record<string, string>): boolean {
+  const rootfsDir = process.env.FC_ROOTFS_DIR ?? "/var/lib/firecracker/rootfs";
+  checks.rootfsPath = rootfsDir;
+  try {
+    const files = readdirSync(rootfsDir).filter((file) => file.endsWith(".ext4"));
+    checks.rootfsDirectory = "ok";
+    checks.rootfsImages = files.length > 0 ? "ok" : "empty";
+    const coverage = evaluateScannerCoverageByImageClass(rootfsDir, files);
+    checks.scannerImageClassCount = String(coverage.requiredImages.length);
+    checks.scannerImageCoverage = coverage.missingImages.length === 0 ? "ok" : "missing";
+    checks.scannerImageMissing = coverage.missingImages.join(",") || "none";
+    checks.scannerGlobalEnforcement = process.env.SCANNER_GLOBAL_ENFORCEMENT === "true" ? "enabled" : "disabled";
+    if (process.env.SCANNER_GLOBAL_ENFORCEMENT === "true" && coverage.missingImages.length > 0) {
+      return false;
+    }
+    return checks.rootfsImages === "ok";
+  } catch {
+    checks.rootfsDirectory = "missing";
+    checks.rootfsImages = "unknown";
+    checks.scannerImageCoverage = "unknown";
+    checks.scannerImageMissing = "unknown";
+    checks.scannerGlobalEnforcement = process.env.SCANNER_GLOBAL_ENFORCEMENT === "true" ? "enabled" : "disabled";
+    return false;
+  }
+}
+
+function applyFirecrackerIdentityHealthChecks(checks: Record<string, string>): boolean {
+  const jailerUid = process.env.FC_JAILER_UID ?? "1001";
+  const jailerGid = process.env.FC_JAILER_GID ?? "1001";
+  checks.jailerUid = jailerUid;
+  checks.jailerGid = jailerGid;
+
+  const encryptedRootfsSamplePath = resolveEncryptedRootfsSamplePath();
+  checks.encryptedRootfsSamplePath = encryptedRootfsSamplePath ?? "none";
+  checks.jailerCanReadEncryptedRootfsSample = evaluateReadabilityForIdentity(
+    encryptedRootfsSamplePath,
+    jailerUid,
+    jailerGid,
+  );
+
+  return !(
+    checks.jailerCanReadEncryptedRootfsSample.startsWith("permission_denied") ||
+    checks.jailerCanReadEncryptedRootfsSample.startsWith("stat_failed") ||
+    checks.jailerCanReadEncryptedRootfsSample.startsWith("invalid_jailer_identity")
+  );
+}
+
+function applyFirecrackerBackendHealthChecks(checks: Record<string, string>, context: HealthContext): boolean {
+  if (context.executionBackend !== "firecracker") return true;
+
+  const firecrackerBinary = process.env.FIRECRACKER_BIN ?? "/usr/local/bin/firecracker";
+  checks.firecracker = existsSync(firecrackerBinary) ? "ok" : "missing";
+  const kernelImage = process.env.FC_KERNEL_IMAGE ?? "/var/lib/firecracker/vmlinux";
+  checks.kernel = existsSync(kernelImage) ? "ok" : "missing";
+  checks.kvmDevice = existsSync("/dev/kvm") ? "ok" : "missing";
+  checks.vhostVsockDevice = existsSync("/dev/vhost-vsock") ? "ok" : "missing";
+  checks.firecrackerLaunchMode = process.env.FC_USE_JAILER === "false" ? "direct" : "jailer";
+
+  const rootfsHealthy = applyFirecrackerRootfsHealthChecks(checks);
+  const identityHealthy = applyFirecrackerIdentityHealthChecks(checks);
+
+  return checks.firecracker === "ok"
+    && checks.kernel === "ok"
+    && checks.kvmDevice === "ok"
+    && checks.vhostVsockDevice === "ok"
+    && rootfsHealthy
+    && identityHealthy;
+}
+
+async function collectHealthStatus(context: HealthContext): Promise<{ checks: Record<string, string>; healthy: boolean }> {
+  const checks: Record<string, string> = {};
+  let healthy = await runRedisHealthCheck(checks);
+  setStaticHealthChecks(checks, context);
+  healthy = applyExecutionBackendPolicyHealth(checks, context) && healthy;
+  healthy = applyProcessBackendHealthChecks(checks, context) && healthy;
+  healthy = applyFirecrackerBackendHealthChecks(checks, context) && healthy;
+  return { checks, healthy };
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap
+// ---------------------------------------------------------------------------
+async function main(): Promise<void> {
+  ensureRequiredEnvVars(["WORKER_SHARED_SECRET"] as const);
+  const runtime = resolveRuntimeOptions();
+  validateBackendPolicy(runtime);
+  await runStartupCleanup(runtime);
 
   // Initialise the BullMQ queue & worker
-  const { queue, worker, queueEvents } = await createVerificationQueueWithMode(redisUrl, {
-    processJobs: runsQueue,
+  const { queue, worker, queueEvents } = await createVerificationQueueWithMode(runtime.redisUrl, {
+    processJobs: runtime.runsQueue,
   });
 
   logger.info("BullMQ queue and worker initialised", {
-    workerRole,
-    runsQueue,
-    runsWorkspace,
-    redisUrl: redisUrl.replace(/\/\/.*@/, "//<redacted>@"),
+    workerRole: runtime.workerRole,
+    runsQueue: runtime.runsQueue,
+    runsWorkspace: runtime.runsWorkspace,
+    redisUrl: runtime.redisUrl.replace(/\/\/.*@/, "//<redacted>@"),
   });
   logger.info("Execution backend lock state", {
-    executionBackend,
-    firecrackerLocked: executionBackend === "firecracker",
+    executionBackend: runtime.executionBackend,
+    firecrackerLocked: runtime.executionBackend === "firecracker",
   });
 
   // Express app
@@ -148,119 +327,14 @@ async function main(): Promise<void> {
 
   // Health endpoint — deep check of critical dependencies
   app.get("/api/health", async (_req, res) => {
-    const checks: Record<string, string> = {};
-    let healthy = true;
-
-    // Redis
-    try {
-      await sessionStore.ping();
-      checks.redis = "ok";
-    } catch {
-      checks.redis = "error";
-      healthy = false;
-    }
-
-    checks.workerRole = workerRole;
-    checks.verificationQueueConsumer = runsQueue ? "enabled" : "disabled";
-    checks.localExecution = hasLocalExecution ? "enabled" : "disabled";
-    checks.workspaceMode = runsWorkspace ? "local" : "external_only";
-    checks.executionBackend = executionBackend;
-    checks.firecrackerLocked = executionBackend === "firecracker" ? "true" : "false";
-    checks.executionIsolation = executionBackend === "firecracker" ? "microvm_rootfs" : "process_sandbox";
-    checks.workerHostRuntime = "ok";
-    checks.snykCli = hasBinary("snyk") ? "ok" : "missing";
-    checks.sonarScanner = hasBinary("sonar-scanner") ? "ok" : "missing";
-
-    if (!hasLocalExecution) {
-      checks.executionBackendPolicy = "external_executor_required";
-      checks.firecrackerLocked = "not_applicable";
-      checks.executionIsolation = "external_executor";
-    } else {
-      if (!supportedBackends.has(executionBackend)) {
-        checks.executionBackendPolicy = "violation";
-        healthy = false;
-      } else {
-        checks.executionBackendPolicy = "ok";
-      }
-
-      if (executionBackend === "process" && process.env.SNYK_TOKEN && checks.snykCli !== "ok") {
-        healthy = false;
-      }
-      if (
-        executionBackend === "process" &&
-        process.env.SONARQUBE_URL &&
-        process.env.SONARQUBE_TOKEN &&
-        checks.sonarScanner !== "ok"
-      ) {
-        healthy = false;
-      }
-
-      if (executionBackend === "firecracker") {
-        // Firecracker binary
-        const fcBin = process.env.FIRECRACKER_BIN ?? "/usr/local/bin/firecracker";
-        checks.firecracker = existsSync(fcBin) ? "ok" : "missing";
-        if (checks.firecracker !== "ok") healthy = false;
-
-        // Kernel image
-        const kernel = process.env.FC_KERNEL_IMAGE ?? "/var/lib/firecracker/vmlinux";
-        checks.kernel = existsSync(kernel) ? "ok" : "missing";
-        if (checks.kernel !== "ok") healthy = false;
-
-        // Rootfs directory (check at least one .ext4 exists)
-        const rootfsDir = process.env.FC_ROOTFS_DIR ?? "/var/lib/firecracker/rootfs";
-        checks.rootfsPath = rootfsDir;
-        try {
-          const files = readdirSync(rootfsDir).filter(f => f.endsWith(".ext4"));
-          checks.rootfsDirectory = "ok";
-          checks.rootfsImages = files.length > 0 ? "ok" : "empty";
-          if (checks.rootfsImages !== "ok") healthy = false;
-
-          const coverage = evaluateScannerCoverageByImageClass(rootfsDir, files);
-          checks.scannerImageClassCount = String(coverage.requiredImages.length);
-          checks.scannerImageCoverage = coverage.missingImages.length === 0 ? "ok" : "missing";
-          checks.scannerImageMissing = coverage.missingImages.join(",") || "none";
-          checks.scannerGlobalEnforcement = process.env.SCANNER_GLOBAL_ENFORCEMENT === "true" ? "enabled" : "disabled";
-          if (process.env.SCANNER_GLOBAL_ENFORCEMENT === "true" && coverage.missingImages.length > 0) {
-            healthy = false;
-          }
-        } catch {
-          checks.rootfsDirectory = "missing";
-          checks.rootfsImages = "unknown";
-          checks.scannerImageCoverage = "unknown";
-          checks.scannerImageMissing = "unknown";
-          checks.scannerGlobalEnforcement = process.env.SCANNER_GLOBAL_ENFORCEMENT === "true" ? "enabled" : "disabled";
-          healthy = false;
-        }
-
-        checks.kvmDevice = existsSync("/dev/kvm") ? "ok" : "missing";
-        if (checks.kvmDevice !== "ok") healthy = false;
-
-        checks.vhostVsockDevice = existsSync("/dev/vhost-vsock") ? "ok" : "missing";
-        if (checks.vhostVsockDevice !== "ok") healthy = false;
-        checks.firecrackerLaunchMode = process.env.FC_USE_JAILER === "false" ? "direct" : "jailer";
-
-        const jailerUid = process.env.FC_JAILER_UID ?? "1001";
-        const jailerGid = process.env.FC_JAILER_GID ?? "1001";
-        checks.jailerUid = jailerUid;
-        checks.jailerGid = jailerGid;
-
-        const encryptedRootfsSamplePath = resolveEncryptedRootfsSamplePath();
-        checks.encryptedRootfsSamplePath = encryptedRootfsSamplePath ?? "none";
-        checks.jailerCanReadEncryptedRootfsSample = evaluateReadabilityForIdentity(
-          encryptedRootfsSamplePath,
-          jailerUid,
-          jailerGid,
-        );
-        if (
-          checks.jailerCanReadEncryptedRootfsSample.startsWith("permission_denied") ||
-          checks.jailerCanReadEncryptedRootfsSample.startsWith("stat_failed") ||
-          checks.jailerCanReadEncryptedRootfsSample.startsWith("invalid_jailer_identity")
-        ) {
-          healthy = false;
-        }
-      }
-    }
-
+    const { checks, healthy } = await collectHealthStatus({
+      workerRole: runtime.workerRole,
+      runsQueue: runtime.runsQueue,
+      runsWorkspace: runtime.runsWorkspace,
+      hasLocalExecution: runtime.hasLocalExecution,
+      executionBackend: runtime.executionBackend,
+      supportedBackends: runtime.supportedBackends,
+    });
     const status = healthy ? 200 : 503;
     res.status(status).json({
       status: healthy ? "ok" : "degraded",
@@ -280,19 +354,19 @@ async function main(): Promise<void> {
   app.use("/api", workspaceRoutes);
 
   // API-only mode: no local workspace checker.
-  if (runsWorkspace) {
+  if (runtime.runsWorkspace) {
     startIdleChecker();
   }
 
   // Initialize warm VM pool (background, non-blocking)
-  if (runsWorkspace && executionBackend === "firecracker") {
+  if (runtime.runsWorkspace && runtime.executionBackend === "firecracker") {
     vmPool.initialize().catch((err) => {
       logger.warn("Warm VM pool initialization failed", { error: String(err) });
     });
   }
 
-  const server = app.listen(port, () => {
-    logger.info("Worker API server listening", { port });
+  const server = app.listen(runtime.port, () => {
+    logger.info("Worker API server listening", { port: runtime.port });
   });
   const stopWatchdog = startSystemdWatchdog();
 
@@ -315,7 +389,7 @@ async function main(): Promise<void> {
     server.close();
 
     // 2. Stop heartbeat intervals
-    if (runsWorkspace) {
+    if (runtime.runsWorkspace) {
       workspaceHeartbeat.stopAll();
     }
     stopWatchdog();
@@ -329,12 +403,12 @@ async function main(): Promise<void> {
     }
 
     // 4. Now destroy workspace sessions (dev VMs)
-    if (runsWorkspace) {
+    if (runtime.runsWorkspace) {
       await destroyAllSessions();
     }
 
     // 5. Drain warm pool and close vsock connections
-    if (runsWorkspace) {
+    if (runtime.runsWorkspace) {
       await vmPool.drainAll();
       vsockPool.destroyAll();
     }
@@ -444,7 +518,7 @@ function evaluateScannerCoverageByImageClass(
 } {
   const requiredImages: string[] = Array.from(
     new Set<string>(getSupportedLanguages().map((language) => getVMConfig(language).rootfsImage)),
-  ).sort();
+  ).sort((a, b) => a.localeCompare(b));
 
   const availableImages = new Set<string>(
     existingImages ?? readdirSync(rootfsDir).filter((entry) => entry.endsWith(".ext4")),
@@ -463,7 +537,7 @@ function resolveEncryptedRootfsSamplePath(): string | null {
   try {
     const mapperEntries = readdirSync("/dev/mapper")
       .filter((entry) => entry.startsWith("fc-crypt-"))
-      .sort();
+      .sort((a, b) => a.localeCompare(b));
     if (mapperEntries.length > 0) {
       return `/dev/mapper/${mapperEntries[0]}`;
     }

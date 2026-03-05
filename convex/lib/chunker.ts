@@ -37,6 +37,106 @@ const MAX_CHUNK_CHARS = 6000; // ~1500 tokens
 const MIN_CHUNK_CHARS = 200; // ~50 tokens
 const CLASS_SPLIT_THRESHOLD = 200; // lines
 
+function appendChunkWithSplit(chunks: CodeChunk[], chunk: CodeChunk): void {
+  if (chunk.content.length <= MAX_CHUNK_CHARS) {
+    chunks.push(chunk);
+    return;
+  }
+  chunks.push(...splitLargeChunk(chunk));
+}
+
+function classHeaderChunk(symbol: ExtractedSymbol, filePath: string, language: string): CodeChunk {
+  const headerLines = symbol.content.split("\n").slice(0, 10);
+  return {
+    filePath,
+    symbolName: symbol.name,
+    symbolType: "class",
+    language,
+    content: headerLines.join("\n") + "\n  // ... (methods below)",
+    startLine: symbol.startLine,
+    endLine: symbol.startLine + 10,
+    parentScope: null,
+    signature: symbol.signature,
+  };
+}
+
+function appendFunctionChunks(
+  chunks: CodeChunk[],
+  symbols: ExtractedSymbol[],
+  filePath: string,
+  language: string,
+): void {
+  for (const symbol of symbols) {
+    if (symbol.parentScope) continue;
+    appendChunkWithSplit(chunks, symbolToChunk(symbol, filePath, language));
+  }
+}
+
+function appendClassChunks(
+  chunks: CodeChunk[],
+  classes: ExtractedSymbol[],
+  symbols: ExtractedSymbol[],
+  filePath: string,
+  language: string,
+): void {
+  for (const cls of classes) {
+    const lineCount = cls.endLine - cls.startLine;
+    if (lineCount <= CLASS_SPLIT_THRESHOLD) {
+      appendChunkWithSplit(chunks, symbolToChunk(cls, filePath, language));
+      continue;
+    }
+
+    chunks.push(classHeaderChunk(cls, filePath, language));
+    const methods = symbols.filter(
+      (symbol) => symbol.type === "method" && symbol.parentScope === cls.name,
+    );
+    for (const method of methods) {
+      chunks.push(symbolToChunk(method, filePath, language));
+    }
+  }
+}
+
+function isTinyChunk(chunk: CodeChunk): boolean {
+  return chunk.content.length < MIN_CHUNK_CHARS;
+}
+
+function canMergeChunks(left: CodeChunk, right: CodeChunk): boolean {
+  return left.filePath === right.filePath && left.content.length + right.content.length <= MAX_CHUNK_CHARS;
+}
+
+function mergeChunkPair(left: CodeChunk, right: CodeChunk): CodeChunk {
+  return {
+    ...left,
+    symbolName: `${left.symbolName}+${right.symbolName}`,
+    content: `${left.content}\n\n${right.content}`,
+    endLine: right.endLine,
+  };
+}
+
+function foldChunkIntoMergeState(
+  merged: CodeChunk[],
+  pending: CodeChunk | null,
+  chunk: CodeChunk,
+): CodeChunk | null {
+  if (!pending) {
+    if (isTinyChunk(chunk)) return chunk;
+    merged.push(chunk);
+    return null;
+  }
+
+  if (!canMergeChunks(pending, chunk)) {
+    merged.push(pending);
+    if (isTinyChunk(chunk)) return chunk;
+    merged.push(chunk);
+    return null;
+  }
+
+  const mergedPending = mergeChunkPair(pending, chunk);
+  if (isTinyChunk(mergedPending)) return mergedPending;
+  merged.push(mergedPending);
+  return null;
+}
+
 /**
  * Chunk a single file's parse results into semantic code chunks.
  */
@@ -60,55 +160,8 @@ export function chunkFile(parseResult: FileParseResult): CodeChunk[] {
   );
   const constants = symbols.filter((s) => s.type === "constant");
 
-  // Process functions — each becomes its own chunk
-  for (const fn of functions) {
-    if (fn.parentScope) continue; // Methods handled within class chunks
-
-    const chunk = symbolToChunk(fn, filePath, language);
-    if (chunk.content.length <= MAX_CHUNK_CHARS) {
-      chunks.push(chunk);
-    } else {
-      // Split large functions
-      chunks.push(...splitLargeChunk(chunk));
-    }
-  }
-
-  // Process classes — split if too large
-  for (const cls of classes) {
-    const lineCount = cls.endLine - cls.startLine;
-
-    if (lineCount <= CLASS_SPLIT_THRESHOLD) {
-      // Small enough to be one chunk
-      const chunk = symbolToChunk(cls, filePath, language);
-      if (chunk.content.length <= MAX_CHUNK_CHARS) {
-        chunks.push(chunk);
-      } else {
-        chunks.push(...splitLargeChunk(chunk));
-      }
-    } else {
-      // Split class: header chunk + individual method chunks
-      const headerLines = cls.content.split("\n").slice(0, 10);
-      chunks.push({
-        filePath,
-        symbolName: cls.name,
-        symbolType: "class",
-        language,
-        content: headerLines.join("\n") + "\n  // ... (methods below)",
-        startLine: cls.startLine,
-        endLine: cls.startLine + 10,
-        parentScope: null,
-        signature: cls.signature,
-      });
-
-      // Find methods within this class
-      const methods = symbols.filter(
-        (s) => s.type === "method" && s.parentScope === cls.name
-      );
-      for (const method of methods) {
-        chunks.push(symbolToChunk(method, filePath, language));
-      }
-    }
-  }
+  appendFunctionChunks(chunks, functions, filePath, language);
+  appendClassChunks(chunks, classes, symbols, filePath, language);
 
   // Process types/interfaces — group small ones together
   if (types.length > 0) {
@@ -257,48 +310,8 @@ function mergeTinyChunks(chunks: CodeChunk[]): CodeChunk[] {
 
   const merged: CodeChunk[] = [];
   let pending: CodeChunk | null = null;
-
-  for (const chunk of chunks) {
-    if (pending === null) {
-      if (chunk.content.length < MIN_CHUNK_CHARS) {
-        pending = chunk;
-      } else {
-        merged.push(chunk);
-      }
-      continue;
-    }
-
-    // Merge pending with current if same file and combined is under limit
-    if (
-      pending.filePath === chunk.filePath &&
-      pending.content.length + chunk.content.length <= MAX_CHUNK_CHARS
-    ) {
-      pending = {
-        ...pending,
-        symbolName: `${pending.symbolName}+${chunk.symbolName}`,
-        content: pending.content + "\n\n" + chunk.content,
-        endLine: chunk.endLine,
-      };
-
-      if (pending.content.length >= MIN_CHUNK_CHARS) {
-        merged.push(pending);
-        pending = null;
-      }
-    } else {
-      // Can't merge — push pending as-is and start new
-      merged.push(pending);
-      if (chunk.content.length < MIN_CHUNK_CHARS) {
-        pending = chunk;
-      } else {
-        merged.push(chunk);
-        pending = null;
-      }
-    }
-  }
-
-  if (pending) {
-    merged.push(pending);
-  }
+  for (const chunk of chunks) pending = foldChunkIntoMergeState(merged, pending, chunk);
+  if (pending) merged.push(pending);
 
   return merged;
 }

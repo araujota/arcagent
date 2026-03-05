@@ -5,112 +5,90 @@ import (
 	"strings"
 )
 
-// handleFileEdit handles "file_edit" requests: surgical string replacement.
-func handleFileEdit(req *Request) *Response {
-	if req.Path == "" {
-		return errorResponse("missing path")
+func fileResultError(message string) *Response {
+	return &Response{
+		Type:  "file_result",
+		Error: message,
 	}
-	if req.OldString == "" {
-		return &Response{
-			Type:  "file_result",
-			Error: "missing oldString",
-		}
+}
+
+func fileResultWithReplacementsError(message string) *Response {
+	return &Response{
+		Type:         "file_result",
+		Error:        message,
+		Replacements: intPtr(0),
 	}
-	if req.OldString == req.NewString {
-		return &Response{
-			Type:  "file_result",
-			Error: "oldString and newString are identical",
-		}
-	}
+}
 
-	safePath, err := validatePath(req.Path)
-	if err != nil {
-		return &Response{
-			Type:  "file_result",
-			Error: err.Error(),
-		}
-	}
-
-	content, err := os.ReadFile(safePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &Response{
-				Type:  "file_result",
-				Error: "not_found",
-			}
-		}
-		return &Response{
-			Type:  "file_result",
-			Error: "read failed: " + err.Error(),
-		}
-	}
-
-	original := string(content)
-
-	if req.ReplaceAll {
-		// Replace all occurrences.
-		count := strings.Count(original, req.OldString)
-		if count == 0 {
-			return &Response{
-				Type:         "file_result",
-				Error:        "not_found",
-				Replacements: intPtr(0),
-			}
-		}
-
-		result := strings.ReplaceAll(original, req.OldString, req.NewString)
-
-		if err := os.WriteFile(safePath, []byte(result), 0); err != nil {
-			return &Response{
-				Type:  "file_result",
-				Error: "write failed: " + err.Error(),
-			}
-		}
-
-		return &Response{
-			Type:         "file_result",
-			Replacements: intPtr(count),
-		}
-	}
-
-	// Single replacement: oldString must be unique in the file.
-	count := strings.Count(original, req.OldString)
+func replaceAllInFile(path, original, oldString, newString string) *Response {
+	count := strings.Count(original, oldString)
 	if count == 0 {
-		return &Response{
-			Type:         "file_result",
-			Error:        "not_found",
-			Replacements: intPtr(0),
-		}
+		return fileResultWithReplacementsError("not_found")
+	}
+
+	result := strings.ReplaceAll(original, oldString, newString)
+	if err := os.WriteFile(path, []byte(result), 0); err != nil {
+		return fileResultError("write failed: " + err.Error())
+	}
+
+	return &Response{
+		Type:         "file_result",
+		Replacements: intPtr(count),
+	}
+}
+
+func replaceSingleInFile(path, original, oldString, newString string) *Response {
+	count := strings.Count(original, oldString)
+	if count == 0 {
+		return fileResultWithReplacementsError("not_found")
 	}
 	if count > 1 {
-		return &Response{
-			Type:         "file_result",
-			Error:        "ambiguous",
-			Replacements: intPtr(0),
-		}
+		return fileResultWithReplacementsError("ambiguous")
 	}
 
-	// Exactly one match: replace it.
-	result := strings.Replace(original, req.OldString, req.NewString, 1)
-
-	// Preserve original file permissions.
-	info, err := os.Stat(safePath)
+	result := strings.Replace(original, oldString, newString, 1)
+	info, err := os.Stat(path)
 	if err != nil {
-		return &Response{
-			Type:  "file_result",
-			Error: "stat failed: " + err.Error(),
-		}
+		return fileResultError("stat failed: " + err.Error())
 	}
-
-	if err := os.WriteFile(safePath, []byte(result), info.Mode()); err != nil {
-		return &Response{
-			Type:  "file_result",
-			Error: "write failed: " + err.Error(),
-		}
+	if err := os.WriteFile(path, []byte(result), info.Mode()); err != nil {
+		return fileResultError("write failed: " + err.Error())
 	}
 
 	return &Response{
 		Type:         "file_result",
 		Replacements: intPtr(1),
 	}
+}
+
+// handleFileEdit handles "file_edit" requests: surgical string replacement.
+func handleFileEdit(req *Request) *Response {
+	if req.Path == "" {
+		return errorResponse("missing path")
+	}
+	if req.OldString == "" {
+		return fileResultError("missing oldString")
+	}
+	if req.OldString == req.NewString {
+		return fileResultError("oldString and newString are identical")
+	}
+
+	safePath, err := validatePath(req.Path)
+	if err != nil {
+		return fileResultError(err.Error())
+	}
+
+	content, err := os.ReadFile(safePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fileResultError("not_found")
+		}
+		return fileResultError("read failed: " + err.Error())
+	}
+
+	original := string(content)
+	if req.ReplaceAll {
+		return replaceAllInFile(safePath, original, req.OldString, req.NewString)
+	}
+	return replaceSingleInFile(safePath, original, req.OldString, req.NewString)
 }

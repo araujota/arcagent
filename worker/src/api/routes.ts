@@ -81,6 +81,20 @@ interface PublishPrRequestBody {
   prBody: string;
 }
 
+const PUBLISH_PR_REQUIRED_FIELDS: Array<keyof PublishPrRequestBody> = [
+  "verificationId",
+  "submissionId",
+  "bountyId",
+  "repoUrl",
+  "baseCommitSha",
+  "baseBranch",
+  "featureBranchName",
+  "diffPatch",
+  "prTitle",
+  "prBody",
+  "repoAuthToken",
+];
+
 async function runGit(
   args: string[],
   cwd: string,
@@ -222,6 +236,20 @@ async function createReviewRequest(
   };
 }
 
+function collectMissingPublishPrFields(body: PublishPrRequestBody): string[] {
+  const missing: string[] = [];
+  for (const field of PUBLISH_PR_REQUIRED_FIELDS) {
+    if (!body[field]) {
+      missing.push(field);
+    }
+  }
+  return missing;
+}
+
+function isValidFeatureBranchName(featureBranchName: string): boolean {
+  return /^arcagent\/verified-[a-z0-9]+$/i.test(featureBranchName);
+}
+
 /**
  * Creates and returns the Express router with all API route handlers.
  */
@@ -341,36 +369,21 @@ export function createRoutes(queue: Queue<VerificationJobData>): Router {
   // --------------------------------------------------------------------------
   router.post("/verify/publish-pr", async (req: Request, res: Response) => {
     const body = req.body as PublishPrRequestBody;
-    const missing: string[] = [];
-    if (!body.verificationId) missing.push("verificationId");
-    if (!body.submissionId) missing.push("submissionId");
-    if (!body.bountyId) missing.push("bountyId");
-    if (!body.repoUrl) missing.push("repoUrl");
-    if (!body.baseCommitSha) missing.push("baseCommitSha");
-    if (!body.baseBranch) missing.push("baseBranch");
-    if (!body.featureBranchName) missing.push("featureBranchName");
-    if (!body.diffPatch) missing.push("diffPatch");
-    if (!body.prTitle) missing.push("prTitle");
-    if (!body.prBody) missing.push("prBody");
-    if (!body.repoAuthToken) missing.push("repoAuthToken");
+    const missing = collectMissingPublishPrFields(body);
 
     if (missing.length > 0) {
       res.status(400).json({ error: `Missing required fields: ${missing.join(", ")}` });
       return;
     }
 
-    if (!/^arcagent\/verified-[a-z0-9]+$/i.test(body.featureBranchName)) {
+    if (!isValidFeatureBranchName(body.featureBranchName)) {
       res.status(400).json({
         error: "featureBranchName must match arcagent/verified-<id>",
       });
       return;
     }
 
-    const repoAuthToken = body.repoAuthToken;
-    if (!repoAuthToken) {
-      res.status(400).json({ error: "Missing required fields: repoAuthToken" });
-      return;
-    }
+    const repoAuthToken = body.repoAuthToken as string;
 
     const workRoot = await mkdtemp(join(tmpdir(), "arcagent-pr-"));
     const repoDir = join(workRoot, "repo");

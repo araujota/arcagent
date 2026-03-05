@@ -124,6 +124,38 @@ function parseGitHubRepo(url: string): { owner: string; repo: string } | null {
   return { owner: match[1], repo: match[2] };
 }
 
+function parseCommitShaFromBody(textBody: string): string | null {
+  const payload = safeParseJson(textBody) as { sha?: string };
+  if (!payload.sha) return null;
+  return payload.sha;
+}
+
+function parseRateLimitResetIso(rateLimitReset: string | null): string | null {
+  if (!rateLimitReset || !/^\d+$/.test(rateLimitReset)) return null;
+  return new Date(Number.parseInt(rateLimitReset, 10) * 1000).toISOString();
+}
+
+function buildCommitResolveError(response: Response, textBody: string, token: string | undefined): Error {
+  const githubMessage = extractGitHubErrorMessage(textBody);
+  const rateLimitRemaining = response.headers.get("x-ratelimit-remaining");
+  const rateLimitReset = response.headers.get("x-ratelimit-reset");
+  const rateLimitResetIso = parseRateLimitResetIso(rateLimitReset);
+  const remediation =
+    "Set TEST_BOUNTY_COMMIT_SHA to a known-good commit, install the Arcagent GitHub App on the repository, or configure GITHUB_API_TOKEN for authenticated API access.";
+  const details = [
+    `status=${response.status}`,
+    githubMessage ? `githubMessage=${githubMessage}` : null,
+    `rateLimitRemaining=${rateLimitRemaining ?? "unknown"}`,
+    `rateLimitReset=${rateLimitResetIso ?? rateLimitReset ?? "unknown"}`,
+    `authMode=${token ? "authenticated" : "unauthenticated"}`,
+  ].filter(Boolean).join(", ");
+  return new Error(`Failed to resolve test bounty commit SHA (${details}). ${remediation}`);
+}
+
+function shouldRetryCommitResolution(status: number, attempt: number, maxAttempts: number): boolean {
+  return attempt < maxAttempts && (status === 403 || status === 429 || status >= 500);
+}
+
 async function resolveCommitSha(repositoryUrl: string, branch: string): Promise<string> {
   if (process.env.TEST_BOUNTY_COMMIT_SHA) {
     return process.env.TEST_BOUNTY_COMMIT_SHA;
@@ -155,35 +187,15 @@ async function resolveCommitSha(repositoryUrl: string, branch: string): Promise<
 
     const textBody = await response.text();
     if (response.ok) {
-      const payload = safeParseJson(textBody) as { sha?: string };
-      if (!payload.sha) {
+      const sha = parseCommitShaFromBody(textBody);
+      if (!sha) {
         throw new Error("GitHub commit response did not include sha");
       }
-      return payload.sha;
+      return sha;
     }
 
-    const githubMessage = extractGitHubErrorMessage(textBody);
-    const rateLimitRemaining = response.headers.get("x-ratelimit-remaining");
-    const rateLimitReset = response.headers.get("x-ratelimit-reset");
-    const rateLimitResetIso = rateLimitReset && /^\d+$/.test(rateLimitReset)
-      ? new Date(parseInt(rateLimitReset, 10) * 1000).toISOString()
-      : null;
-    const remediation =
-      "Set TEST_BOUNTY_COMMIT_SHA to a known-good commit, install the Arcagent GitHub App on the repository, or configure GITHUB_API_TOKEN for authenticated API access.";
-    const details = [
-      `status=${response.status}`,
-      githubMessage ? `githubMessage=${githubMessage}` : null,
-      `rateLimitRemaining=${rateLimitRemaining ?? "unknown"}`,
-      `rateLimitReset=${rateLimitResetIso ?? rateLimitReset ?? "unknown"}`,
-      `authMode=${token ? "authenticated" : "unauthenticated"}`,
-    ].filter(Boolean).join(", ");
-
-    lastError = new Error(`Failed to resolve test bounty commit SHA (${details}). ${remediation}`);
-
-    const shouldRetry =
-      attempt < maxAttempts &&
-      (response.status === 403 || response.status === 429 || response.status >= 500);
-    if (!shouldRetry) {
+    lastError = buildCommitResolveError(response, textBody, token);
+    if (!shouldRetryCommitResolution(response.status, attempt, maxAttempts)) {
       break;
     }
     await sleep(baseRetryDelayMs * attempt);

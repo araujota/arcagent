@@ -125,6 +125,94 @@ async function wait(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function decodeConsoleOutput(output?: string): string {
+  return output
+    ? Buffer.from(output, "base64").toString("utf-8").slice(-8_000)
+    : "No console output available";
+}
+
+async function fetchConsoleBootLog(
+  ec2: { send: (command: unknown) => Promise<{ Output?: string }> },
+  GetConsoleOutputCommand: new (args: { InstanceId: string; Latest: true }) => unknown,
+  instanceId: string,
+): Promise<string> {
+  const consoleOut = await ec2
+    .send(new GetConsoleOutputCommand({ InstanceId: instanceId, Latest: true }))
+    .catch(() => null);
+  return decodeConsoleOutput(consoleOut?.Output);
+}
+
+async function markAttemptWorkerError(
+  ctx: { runMutation: (mutation: unknown, payload: Record<string, unknown>) => Promise<unknown> },
+  args: { attemptWorkerId: unknown },
+  errorMessage: string,
+  bootLog: string,
+  publicHost?: string,
+): Promise<void> {
+  await ctx.runMutation(internal.attemptWorkers.update, {
+    attemptWorkerId: args.attemptWorkerId,
+    status: "error",
+    errorMessage,
+    bootLogRef: bootLog,
+    ...(publicHost ? { publicHost } : {}),
+  });
+}
+
+function buildPublicHost(protocol: string, fqdn: string, publicPort: number): string {
+  const needsPort =
+    (protocol === "http" && publicPort !== 80) || (protocol === "https" && publicPort !== 443);
+  const portSuffix = needsPort ? `:${publicPort}` : "";
+  return `${protocol}://${fqdn}${portSuffix}`;
+}
+
+async function waitForRunningInstance(args: {
+  ec2: { send: (command: unknown) => Promise<any> };
+  DescribeInstancesCommand: new (input: { InstanceIds: string[] }) => unknown;
+  instanceId: string;
+  attemptWorkerId: unknown;
+  ctx: { runMutation: (mutation: unknown, payload: Record<string, unknown>) => Promise<unknown> };
+  deadline: number;
+  pollMs: number;
+}): Promise<string> {
+  while (Date.now() < args.deadline) {
+    const desc = await args.ec2.send(new args.DescribeInstancesCommand({ InstanceIds: [args.instanceId] }));
+    const instance = desc.Reservations?.[0]?.Instances?.[0];
+    const state = instance?.State?.Name ?? "unknown";
+    const currentPublicIp = instance?.PublicIpAddress ?? "";
+
+    if (state === "running" && currentPublicIp) {
+      await args.ctx.runMutation(internal.attemptWorkers.update, {
+        attemptWorkerId: args.attemptWorkerId,
+        status: "running",
+        runningAt: Date.now(),
+        instanceId: args.instanceId,
+      });
+      return currentPublicIp;
+    }
+
+    await wait(args.pollMs);
+  }
+  return "";
+}
+
+async function waitForWorkerHealth(controlHost: string, deadline: number, pollMs: number): Promise<boolean> {
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${controlHost}/api/health`, {
+        method: "GET",
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (response.ok) {
+        return true;
+      }
+    } catch {
+      // keep polling
+    }
+    await wait(pollMs);
+  }
+  return false;
+}
+
 export const awaitHealthy = internalAction({
   args: {
     attemptWorkerId: v.id("attemptWorkers"),
@@ -138,48 +226,33 @@ export const awaitHealthy = internalAction({
     const { ChangeResourceRecordSetsCommand } = require("@aws-sdk/client-route-53") as typeof import("@aws-sdk/client-route-53");
     const ec2 = getEc2Client();
 
-    const healthTimeoutMs = parseInt(process.env.ATTEMPT_WORKER_HEALTH_TIMEOUT_MS ?? "240000", 10);
-    const pollMs = parseInt(process.env.ATTEMPT_WORKER_HEALTH_POLL_MS ?? "5000", 10);
+    const healthTimeoutMs = Number.parseInt(process.env.ATTEMPT_WORKER_HEALTH_TIMEOUT_MS ?? "240000", 10);
+    const pollMs = Number.parseInt(process.env.ATTEMPT_WORKER_HEALTH_POLL_MS ?? "5000", 10);
     const deadline = Date.now() + Math.max(30_000, healthTimeoutMs);
     const publishDns = boolEnv("ATTEMPT_WORKER_PUBLISH_DNS_HOST", false);
     const protocol = (process.env.ATTEMPT_WORKER_PUBLIC_PROTOCOL ?? "http").toLowerCase();
-    const publicPort = parseInt(process.env.ATTEMPT_WORKER_PUBLIC_PORT ?? "3001", 10);
+    const publicPort = Number.parseInt(process.env.ATTEMPT_WORKER_PUBLIC_PORT ?? "3001", 10);
     const dnsZoneId = process.env.ATTEMPT_WORKER_ROUTE53_ZONE_ID ?? "";
     const baseDomain = (process.env.ATTEMPT_WORKER_BASE_DOMAIN ?? "").trim().replace(/\.$/, "");
 
-    let publicIp = "";
-    while (Date.now() < deadline) {
-      const desc = await ec2.send(new DescribeInstancesCommand({ InstanceIds: [args.instanceId] }));
-      const instance = desc.Reservations?.[0]?.Instances?.[0];
-      const state = instance?.State?.Name ?? "unknown";
-      const currentPublicIp = instance?.PublicIpAddress ?? "";
-
-      if (state === "running" && currentPublicIp) {
-        publicIp = currentPublicIp;
-        await ctx.runMutation(internal.attemptWorkers.update, {
-          attemptWorkerId: args.attemptWorkerId,
-          status: "running",
-          runningAt: Date.now(),
-          instanceId: args.instanceId,
-        });
-        break;
-      }
-      await wait(pollMs);
-    }
+    const publicIp = await waitForRunningInstance({
+      ec2,
+      DescribeInstancesCommand,
+      instanceId: args.instanceId,
+      attemptWorkerId: args.attemptWorkerId,
+      ctx,
+      deadline,
+      pollMs,
+    });
 
     if (!publicIp) {
-      const consoleOut = await ec2
-        .send(new GetConsoleOutputCommand({ InstanceId: args.instanceId, Latest: true }))
-        .catch(() => null);
-      const bootLog = consoleOut?.Output
-        ? Buffer.from(consoleOut.Output, "base64").toString("utf-8").slice(-8_000)
-        : "No console output available";
-      await ctx.runMutation(internal.attemptWorkers.update, {
-        attemptWorkerId: args.attemptWorkerId,
-        status: "error",
-        errorMessage: "Attempt worker did not reach running state with public IP before timeout",
-        bootLogRef: bootLog,
-      });
+      const bootLog = await fetchConsoleBootLog(ec2, GetConsoleOutputCommand, args.instanceId);
+      await markAttemptWorkerError(
+        ctx,
+        args,
+        "Attempt worker did not reach running state with public IP before timeout",
+        bootLog,
+      );
       throw new Error("Attempt worker failed to reach running state");
     }
 
@@ -201,7 +274,7 @@ export const awaitHealthy = internalAction({
                 ResourceRecordSet: {
                   Name: fqdn,
                   Type: "A",
-                  TTL: parseInt(process.env.ATTEMPT_WORKER_DNS_TTL ?? "60", 10),
+                  TTL: Number.parseInt(process.env.ATTEMPT_WORKER_DNS_TTL ?? "60", 10),
                   ResourceRecords: [{ Value: publicIp }],
                 },
               },
@@ -209,45 +282,22 @@ export const awaitHealthy = internalAction({
           },
         }),
       );
-      const needsPort =
-        (protocol === "http" && publicPort !== 80) || (protocol === "https" && publicPort !== 443);
-      publicHost = `${protocol}://${fqdn}${needsPort ? `:${publicPort}` : ""}`;
+      publicHost = buildPublicHost(protocol, fqdn, publicPort);
     }
 
-    while (Date.now() < deadline) {
-      try {
-        const response = await fetch(`${controlHost}/api/health`, {
-          method: "GET",
-          signal: AbortSignal.timeout(5_000),
-        });
-        if (response.ok) {
-          await ctx.runMutation(internal.attemptWorkers.update, {
-            attemptWorkerId: args.attemptWorkerId,
-            status: "healthy",
-            healthyAt: Date.now(),
-            publicHost,
-          });
-          return { controlHost, publicHost };
-        }
-      } catch {
-        // keep polling
-      }
-      await wait(pollMs);
+    const healthy = await waitForWorkerHealth(controlHost, deadline, pollMs);
+    if (healthy) {
+      await ctx.runMutation(internal.attemptWorkers.update, {
+        attemptWorkerId: args.attemptWorkerId,
+        status: "healthy",
+        healthyAt: Date.now(),
+        publicHost,
+      });
+      return { controlHost, publicHost };
     }
 
-    const consoleOut = await ec2
-      .send(new GetConsoleOutputCommand({ InstanceId: args.instanceId, Latest: true }))
-      .catch(() => null);
-    const bootLog = consoleOut?.Output
-      ? Buffer.from(consoleOut.Output, "base64").toString("utf-8").slice(-8_000)
-      : "No console output available";
-    await ctx.runMutation(internal.attemptWorkers.update, {
-      attemptWorkerId: args.attemptWorkerId,
-      status: "error",
-      errorMessage: "Attempt worker failed health checks before timeout",
-      bootLogRef: bootLog,
-      publicHost,
-    });
+    const bootLog = await fetchConsoleBootLog(ec2, GetConsoleOutputCommand, args.instanceId);
+    await markAttemptWorkerError(ctx, args, "Attempt worker failed health checks before timeout", bootLog, publicHost);
     throw new Error("Attempt worker failed health checks before timeout");
   },
 });

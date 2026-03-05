@@ -6,6 +6,88 @@ import { callWorker } from "../worker/client";
 import { registerTool } from "../lib/toolHelper";
 
 const MAX_STREAM_OUTPUT = 500 * 1024; // 500 KB
+const MAX_STREAM_TIMEOUT_MS = 300_000;
+const MAX_POLL_ATTEMPTS = 300;
+
+interface StreamPollResult {
+  allStdout: string;
+  allStderr: string;
+  exitCode: number | undefined;
+}
+
+function parseTimeoutMs(raw: string | undefined): number {
+  if (!raw) return MAX_STREAM_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return MAX_STREAM_TIMEOUT_MS;
+  return Math.min(parsed, MAX_STREAM_TIMEOUT_MS);
+}
+
+async function pollStreamingOutput(
+  workerHost: string,
+  workspaceId: string,
+  jobId: string,
+): Promise<StreamPollResult> {
+  let allStdout = "";
+  let allStderr = "";
+  let offset = 0;
+  let done = false;
+  let exitCode: number | undefined;
+  let pollCount = 0;
+
+  while (!done) {
+    const delay = pollCount < 5 ? 2000 : 5000;
+    await new Promise((r) => setTimeout(r, delay));
+    pollCount++;
+
+    const pollResult = await callWorker<{
+      stdout: string;
+      stderr: string;
+      done: boolean;
+      exitCode?: number;
+      offset: number;
+    }>(workerHost, "/api/workspace/exec-output", {
+      workspaceId,
+      jobId,
+      offset,
+    });
+
+    allStdout += pollResult.stdout;
+    allStderr = pollResult.stderr; // stderr is always full (not offset-based)
+    offset = pollResult.offset;
+    done = pollResult.done;
+    exitCode = pollResult.exitCode;
+
+    if (Buffer.byteLength(allStdout, "utf-8") > MAX_STREAM_OUTPUT) {
+      allStdout = `${allStdout.slice(-MAX_STREAM_OUTPUT)}\n... [earlier output truncated]`;
+      break;
+    }
+    if (pollCount > MAX_POLL_ATTEMPTS) {
+      break;
+    }
+  }
+
+  return { allStdout, allStderr, exitCode };
+}
+
+function buildExecStreamText(
+  allStdout: string,
+  allStderr: string,
+  exitCode: number | undefined,
+): string {
+  const parts: string[] = [];
+  if (allStdout) {
+    parts.push(`**stdout:**\n\`\`\`\n${allStdout}\n\`\`\``);
+  }
+  if (allStderr) {
+    parts.push(`**stderr:**\n\`\`\`\n${allStderr}\n\`\`\``);
+  }
+  if (exitCode !== undefined) {
+    parts.push(`**exit code:** ${exitCode}`);
+  } else {
+    parts.push("**status:** command may still be running (polling stopped)");
+  }
+  return parts.join("\n\n");
+}
 
 export function registerWorkspaceExecStream(server: McpServer): void {
   registerTool(
@@ -45,9 +127,7 @@ export function registerWorkspaceExecStream(server: McpServer): void {
       }
 
       try {
-        const timeout = args.timeoutMs
-          ? Math.min(parseInt(args.timeoutMs, 10), 300000)
-          : 300000;
+        const timeout = parseTimeoutMs(args.timeoutMs);
 
         // Start the streaming job
         const startResult = await callWorker<{ jobId: string }>(
@@ -61,67 +141,23 @@ export function registerWorkspaceExecStream(server: McpServer): void {
         );
 
         const jobId = startResult.jobId;
-
-        // Poll for output until done
-        let allStdout = "";
-        let allStderr = "";
-        let offset = 0;
-        let done = false;
-        let exitCode: number | undefined;
-        let pollCount = 0;
-
-        // Poll interval: 2s for first 5 polls, then 5s
-        while (!done) {
-          const delay = pollCount < 5 ? 2000 : 5000;
-          await new Promise((r) => setTimeout(r, delay));
-          pollCount++;
-
-          const pollResult = await callWorker<{
-            stdout: string;
-            stderr: string;
-            done: boolean;
-            exitCode?: number;
-            offset: number;
-          }>(ws.workerHost, "/api/workspace/exec-output", {
-            workspaceId: ws.workspaceId,
-            jobId,
-            offset,
-          });
-
-          allStdout += pollResult.stdout;
-          allStderr = pollResult.stderr; // stderr is always full (not offset-based)
-          offset = pollResult.offset;
-          done = pollResult.done;
-          exitCode = pollResult.exitCode;
-
-          // Cap total output
-          if (Buffer.byteLength(allStdout, "utf-8") > MAX_STREAM_OUTPUT) {
-            allStdout = allStdout.slice(-MAX_STREAM_OUTPUT) +
-              "\n... [earlier output truncated]";
-            break;
-          }
-
-          // Safety: don't poll forever
-          if (pollCount > 300) {
-            break;
-          }
-        }
-
-        const parts: string[] = [];
-        if (allStdout) {
-          parts.push("**stdout:**\n```\n" + allStdout + "\n```");
-        }
-        if (allStderr) {
-          parts.push("**stderr:**\n```\n" + allStderr + "\n```");
-        }
-        if (exitCode !== undefined) {
-          parts.push(`**exit code:** ${exitCode}`);
-        } else {
-          parts.push("**status:** command may still be running (polling stopped)");
-        }
+        const pollResult = await pollStreamingOutput(
+          ws.workerHost,
+          ws.workspaceId,
+          jobId,
+        );
 
         return {
-          content: [{ type: "text" as const, text: parts.join("\n\n") }],
+          content: [
+            {
+              type: "text" as const,
+              text: buildExecStreamText(
+                pollResult.allStdout,
+                pollResult.allStderr,
+                pollResult.exitCode,
+              ),
+            },
+          ],
         };
       } catch (err) {
         const message =

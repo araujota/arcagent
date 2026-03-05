@@ -281,6 +281,279 @@ async function authenticateRequest(req: Request): Promise<{
   }
 }
 
+function buildWorkerProxyTargetUrl(baseUrl: string, requestUrl: string): string {
+  return `${baseUrl}${requestUrl.startsWith("/") ? requestUrl : `/${requestUrl}`}`;
+}
+
+function copyProxyRequestHeaders(source: Request["headers"]): Headers {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(source)) {
+    if (HOP_BY_HOP_HEADERS.has(key.toLowerCase()) || value === undefined) continue;
+    if (Array.isArray(value)) {
+      headers.set(key, value.join(","));
+      continue;
+    }
+    if (typeof value === "string") {
+      headers.set(key, value);
+    }
+  }
+  return headers;
+}
+
+function buildWorkerProxyRequestInit(req: Request, headers: Headers): RequestInit {
+  const method = req.method.toUpperCase();
+  const hasBody = method !== "GET" && method !== "HEAD";
+  const init: RequestInit = {
+    method,
+    headers,
+    redirect: "manual",
+  };
+  if (!hasBody || req.body === undefined) {
+    return init;
+  }
+  if (!headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+  init.body = JSON.stringify(req.body);
+  return init;
+}
+
+async function parseWorkerProxyJsonPayload(
+  res: Response,
+  upstream: globalThis.Response,
+): Promise<{ ok: boolean; payload?: unknown }> {
+  const upstreamContentType = (upstream.headers.get("content-type") ?? "").toLowerCase();
+  if (!upstreamContentType.includes("application/json")) {
+    sendError(
+      res,
+      502,
+      "worker_proxy_invalid_content_type",
+      "Worker response must be JSON",
+    );
+    return { ok: false };
+  }
+  const payloadText = await upstream.text();
+  if (payloadText.length === 0) {
+    return { ok: true, payload: null };
+  }
+  try {
+    return { ok: true, payload: JSON.parse(payloadText) as unknown };
+  } catch {
+    sendError(
+      res,
+      502,
+      "worker_proxy_invalid_json",
+      "Worker response body was not valid JSON",
+    );
+    return { ok: false };
+  }
+}
+
+function createWorkerProxyHandler(config: ServerConfig) {
+  return async (req: Request, res: Response): Promise<void> => {
+    const headers = copyProxyRequestHeaders(req.headers);
+    const init = buildWorkerProxyRequestInit(req, headers);
+    const targetUrl = buildWorkerProxyTargetUrl(config.internalWorkerBaseUrl!, req.url);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 130_000);
+    init.signal = controller.signal;
+
+    try {
+      const upstream = await fetch(targetUrl, init);
+      const parsed = await parseWorkerProxyJsonPayload(res, upstream);
+      if (!parsed.ok) return;
+      res.status(upstream.status).json(parsed.payload);
+    } catch (error) {
+      sendError(
+        res,
+        502,
+        "worker_proxy_error",
+        error instanceof Error ? error.message : "Failed to proxy worker request",
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+}
+
+type RegisterRequestMeta = {
+  requestId: string | undefined;
+  ip: string;
+  isOAuthCompatibilityRoute: boolean;
+};
+
+type EmitAuditLogFn = (
+  level: LogLevel,
+  eventType: string,
+  message: string,
+  details?: Record<string, unknown>,
+) => void;
+
+function getRegisterRequestMeta(req: Request): RegisterRequestMeta {
+  return {
+    requestId: (req as RequestWithMeta).mcpRequestId,
+    ip: req.ip || req.socket.remoteAddress || "unknown",
+    isOAuthCompatibilityRoute: req.path === "/register",
+  };
+}
+
+async function rejectAlreadyAuthenticatedRegistration(
+  req: Request,
+  res: Response,
+  telemetry: HttpTelemetry,
+  emitAuditLog: EmitAuditLogFn,
+  meta: RegisterRequestMeta,
+): Promise<boolean> {
+  const presentedApiKey = extractApiKey(req.headers.authorization);
+  if (!presentedApiKey) return false;
+  const existingAuth = await validateApiKey(presentedApiKey);
+  if (!existingAuth) return false;
+
+  telemetry.recordRegisterFailure();
+  emitAuditLog(
+    "warning",
+    "register_already_authenticated",
+    "Blocked registration attempt from authenticated session",
+    {
+      requestId: meta.requestId,
+      ip: meta.ip,
+      userId: existingAuth.userId,
+      email: existingAuth.email,
+    },
+  );
+  sendError(
+    res,
+    409,
+    "already_authenticated",
+    "Already authenticated. Reuse the current API key instead of registering again.",
+  );
+  return true;
+}
+
+function deriveRegisterEmailKey(req: Request, meta: RegisterRequestMeta): string {
+  if (typeof req.body?.email === "string") {
+    return req.body.email.trim().toLowerCase();
+  }
+  if (meta.isOAuthCompatibilityRoute) {
+    return `oauth:${meta.ip}`;
+  }
+  return "unknown";
+}
+
+function rejectRegisterByHoneypot(
+  req: Request,
+  res: Response,
+  config: ServerConfig,
+  telemetry: HttpTelemetry,
+  emitAuditLog: EmitAuditLogFn,
+  meta: RegisterRequestMeta,
+): boolean {
+  if (!config.registerHoneypotField) return false;
+  const honeypotValue = req.body?.[config.registerHoneypotField];
+  if (typeof honeypotValue !== "string" || !honeypotValue.trim()) return false;
+
+  telemetry.recordRegisterFailure();
+  emitAuditLog("warning", "register_honeypot_blocked", "Blocked registration by honeypot field", {
+    requestId: meta.requestId,
+    ip: meta.ip,
+    honeypotField: config.registerHoneypotField,
+  });
+  res.status(202).json({ status: "accepted" });
+  return true;
+}
+
+function rejectRegisterByCaptcha(
+  req: Request,
+  res: Response,
+  config: ServerConfig,
+  telemetry: HttpTelemetry,
+  emitAuditLog: EmitAuditLogFn,
+  meta: RegisterRequestMeta,
+): boolean {
+  if (!config.registerCaptchaSecret) return false;
+  const captchaToken = req.headers[config.registerCaptchaHeader]?.toString() || "";
+  if (captchaToken === config.registerCaptchaSecret) return false;
+
+  telemetry.recordRegisterFailure();
+  emitAuditLog("warning", "register_captcha_failed", "Blocked registration due to missing/invalid captcha token", {
+    requestId: meta.requestId,
+    ip: meta.ip,
+  });
+  sendError(res, 403, "captcha_required", "Captcha verification failed");
+  return true;
+}
+
+async function enforceRegisterRateLimits(
+  res: Response,
+  registerLimiter: ReturnType<typeof createRateLimiter>,
+  telemetry: HttpTelemetry,
+  emitAuditLog: EmitAuditLogFn,
+  meta: RegisterRequestMeta,
+  emailKey: string,
+): Promise<boolean> {
+  const ipAllowed = await registerLimiter.check(`register:ip:${meta.ip}`, 20, 60_000);
+  if (!ipAllowed) {
+    telemetry.recordRateLimited();
+    telemetry.recordRegisterRateLimited();
+    emitAuditLog("warning", "register_rate_limited", "Rate limited registration attempt by IP", {
+      requestId: meta.requestId,
+      ip: meta.ip,
+    });
+    sendError(res, 429, "register_rate_limited", "Too many registration attempts", true);
+    return false;
+  }
+
+  const emailAllowed = await registerLimiter.check(
+    `register:email:${emailKey}`,
+    5,
+    60_000,
+  );
+  if (emailAllowed) return true;
+
+  telemetry.recordRateLimited();
+  telemetry.recordRegisterRateLimited();
+  emitAuditLog("warning", "register_rate_limited", "Rate limited registration attempt by email", {
+    requestId: meta.requestId,
+    ip: meta.ip,
+    email: emailKey,
+  });
+  sendError(res, 429, "register_rate_limited", "Too many registration attempts", true);
+  return false;
+}
+
+function maybeHandleOAuthCompatibilityRegistration(
+  req: Request,
+  res: Response,
+  telemetry: HttpTelemetry,
+  emitAuditLog: EmitAuditLogFn,
+  meta: RegisterRequestMeta,
+  name?: string,
+  email?: string,
+): boolean {
+  if (!meta.isOAuthCompatibilityRoute || (name && email)) return false;
+  const redirectUris = Array.isArray(req.body?.redirect_uris)
+    ? req.body.redirect_uris.filter((uri): uri is string => typeof uri === "string")
+    : [];
+  const issuedAt = Math.floor(Date.now() / 1000);
+
+  res.status(201).json({
+    client_id: `arcagent_${randomUUID().replaceAll("-", "")}`,
+    client_secret: randomUUID().replaceAll("-", ""),
+    client_id_issued_at: issuedAt,
+    client_secret_expires_at: 0,
+    redirect_uris: redirectUris,
+    token_endpoint_auth_method: "client_secret_post",
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+  });
+  telemetry.recordRegisterSuccess();
+  emitAuditLog("info", "register_oauth_compat", "Returned OAuth-compatible registration payload", {
+    requestId: meta.requestId,
+    ip: meta.ip,
+  });
+  return true;
+}
+
 export async function createHttpRuntime(config: ServerConfig): Promise<HttpRuntime> {
   const app = express();
   app.set("trust proxy", true);
@@ -469,151 +742,27 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
 
   if (config.internalWorkerBaseUrl) {
     const proxyPrefix = config.workerProxyPathPrefix;
-    app.use(proxyPrefix, async (req, res) => {
-      const targetUrl = `${config.internalWorkerBaseUrl}${req.url.startsWith("/") ? req.url : `/${req.url}`}`;
-      const method = req.method.toUpperCase();
-      const hasBody = method !== "GET" && method !== "HEAD";
-      const headers = new Headers();
-
-      for (const [key, value] of Object.entries(req.headers)) {
-        if (HOP_BY_HOP_HEADERS.has(key.toLowerCase()) || value === undefined) continue;
-        headers.set(key, Array.isArray(value) ? value.join(",") : value);
-      }
-
-      const init: RequestInit = {
-        method,
-        headers,
-        redirect: "manual",
-      };
-
-      if (hasBody && req.body !== undefined) {
-        if (!headers.has("content-type")) {
-          headers.set("content-type", "application/json");
-        }
-        init.body = JSON.stringify(req.body);
-      }
-
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 130_000);
-      init.signal = controller.signal;
-
-      try {
-        const upstream = await fetch(targetUrl, init);
-        clearTimeout(timeout);
-
-        res.status(upstream.status);
-        for (const [key, value] of upstream.headers.entries()) {
-          if (HOP_BY_HOP_HEADERS.has(key.toLowerCase())) continue;
-          res.setHeader(key, value);
-        }
-
-        const payload = Buffer.from(await upstream.arrayBuffer());
-        res.send(payload);
-      } catch (error) {
-        clearTimeout(timeout);
-        sendError(
-          res,
-          502,
-          "worker_proxy_error",
-          error instanceof Error ? error.message : "Failed to proxy worker request",
-        );
-      }
-    });
+    app.use(proxyPrefix, createWorkerProxyHandler(config));
   }
 
   const handleRegister = async (req: Request, res: Response) => {
     telemetry.recordRegisterAttempt();
-    const requestId = (req as RequestWithMeta).mcpRequestId;
-    const ip = req.ip || req.socket.remoteAddress || "unknown";
-    const isOAuthCompatibilityRoute = req.path === "/register";
+    const meta = getRegisterRequestMeta(req);
 
-    const presentedApiKey = extractApiKey(req.headers.authorization);
-    if (presentedApiKey) {
-      const existingAuth = await validateApiKey(presentedApiKey);
-      if (existingAuth) {
-        telemetry.recordRegisterFailure();
-        emitAuditLog(
-          "warning",
-          "register_already_authenticated",
-          "Blocked registration attempt from authenticated session",
-          {
-            requestId,
-            ip,
-            userId: existingAuth.userId,
-            email: existingAuth.email,
-          },
-        );
-        sendError(
-          res,
-          409,
-          "already_authenticated",
-          "Already authenticated. Reuse the current API key instead of registering again.",
-        );
-        return;
-      }
-    }
+    if (await rejectAlreadyAuthenticatedRegistration(req, res, telemetry, emitAuditLog, meta)) return;
+    if (rejectRegisterByHoneypot(req, res, config, telemetry, emitAuditLog, meta)) return;
+    if (rejectRegisterByCaptcha(req, res, config, telemetry, emitAuditLog, meta)) return;
 
-    const emailKey = typeof req.body?.email === "string"
-      ? req.body.email.trim().toLowerCase()
-      : isOAuthCompatibilityRoute
-        ? `oauth:${ip}`
-        : "unknown";
-
-    if (config.registerHoneypotField) {
-      const honeypotValue = req.body?.[config.registerHoneypotField];
-      if (typeof honeypotValue === "string" && honeypotValue.trim()) {
-        telemetry.recordRegisterFailure();
-        emitAuditLog("warning", "register_honeypot_blocked", "Blocked registration by honeypot field", {
-          requestId,
-          ip,
-          honeypotField: config.registerHoneypotField,
-        });
-        res.status(202).json({ status: "accepted" });
-        return;
-      }
-    }
-
-    if (config.registerCaptchaSecret) {
-      const captchaToken = req.headers[config.registerCaptchaHeader]?.toString() || "";
-      if (captchaToken !== config.registerCaptchaSecret) {
-        telemetry.recordRegisterFailure();
-        emitAuditLog("warning", "register_captcha_failed", "Blocked registration due to missing/invalid captcha token", {
-          requestId,
-          ip,
-        });
-        sendError(res, 403, "captcha_required", "Captcha verification failed");
-        return;
-      }
-    }
-
-    const ipAllowed = await registerLimiter.check(`register:ip:${ip}`, 20, 60_000);
-    if (!ipAllowed) {
-      telemetry.recordRateLimited();
-      telemetry.recordRegisterRateLimited();
-      emitAuditLog("warning", "register_rate_limited", "Rate limited registration attempt by IP", {
-        requestId,
-        ip,
-      });
-      sendError(res, 429, "register_rate_limited", "Too many registration attempts", true);
-      return;
-    }
-
-    const emailAllowed = await registerLimiter.check(
-      `register:email:${emailKey}`,
-      5,
-      60_000,
+    const emailKey = deriveRegisterEmailKey(req, meta);
+    const withinRateLimit = await enforceRegisterRateLimits(
+      res,
+      registerLimiter,
+      telemetry,
+      emitAuditLog,
+      meta,
+      emailKey,
     );
-    if (!emailAllowed) {
-      telemetry.recordRateLimited();
-      telemetry.recordRegisterRateLimited();
-      emitAuditLog("warning", "register_rate_limited", "Rate limited registration attempt by email", {
-        requestId,
-        ip,
-        email: emailKey,
-      });
-      sendError(res, 429, "register_rate_limited", "Too many registration attempts", true);
-      return;
-    }
+    if (!withinRateLimit) return;
 
     try {
       const { name, email, githubUsername } = req.body as {
@@ -622,30 +771,7 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
         githubUsername?: string;
       };
 
-      // Some MCP directories probe /register expecting OAuth Dynamic Client
-      // Registration semantics. Keep this compatibility route distinct from the
-      // ArcAgent account-registration payload used at /api/mcp/register.
-      if (isOAuthCompatibilityRoute && (!name || !email)) {
-        const redirectUris = Array.isArray(req.body?.redirect_uris)
-          ? req.body.redirect_uris.filter((uri): uri is string => typeof uri === "string")
-          : [];
-        const issuedAt = Math.floor(Date.now() / 1000);
-
-        res.status(201).json({
-          client_id: `arcagent_${randomUUID().replaceAll("-", "")}`,
-          client_secret: randomUUID().replaceAll("-", ""),
-          client_id_issued_at: issuedAt,
-          client_secret_expires_at: 0,
-          redirect_uris: redirectUris,
-          token_endpoint_auth_method: "client_secret_post",
-          grant_types: ["authorization_code", "refresh_token"],
-          response_types: ["code"],
-        });
-        telemetry.recordRegisterSuccess();
-        emitAuditLog("info", "register_oauth_compat", "Returned OAuth-compatible registration payload", {
-          requestId,
-          ip,
-        });
+      if (maybeHandleOAuthCompatibilityRegistration(req, res, telemetry, emitAuditLog, meta, name, email)) {
         return;
       }
 
@@ -672,14 +798,14 @@ export async function createHttpRuntime(config: ServerConfig): Promise<HttpRunti
       });
       telemetry.recordRegisterSuccess();
       emitAuditLog("info", "register_success", "Issued API key for new MCP registration", {
-        requestId,
+        requestId: meta.requestId,
         email: email.trim().toLowerCase(),
         userId: result.userId,
       });
     } catch (error) {
       telemetry.recordRegisterFailure();
       emitAuditLog("error", "register_failed", "MCP registration failed", {
-        requestId,
+        requestId: meta.requestId,
         error: error instanceof Error ? error.message : "Registration failed",
       });
       sendError(

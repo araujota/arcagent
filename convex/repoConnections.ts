@@ -11,7 +11,9 @@ import {
 } from "./lib/githubApp";
 import { resolveRepoAuth } from "./lib/repoAuth";
 
-function providerCapabilities(provider: "github" | "gitlab" | "bitbucket") {
+type RepoProviderName = "github" | "gitlab" | "bitbucket";
+
+function providerCapabilities(provider: RepoProviderName) {
   return {
     supportsWebhookPush: true,
     supportsNativePr: true,
@@ -360,6 +362,135 @@ export const triggerReIndex = internalMutation({
   },
 });
 
+type RepoConnectionForUpdateCheck = {
+  _id: unknown;
+  bountyId: unknown;
+  provider?: RepoProviderName;
+  owner?: string;
+  repo?: string;
+  trackedBranch?: string;
+  defaultBranch: string;
+  githubInstallationId?: number;
+  githubInstallationAccountLogin?: string;
+  commitSha?: string;
+};
+
+function buildRepositoryUrl(provider: RepoProviderName, owner: string, repo: string): string {
+  switch (provider) {
+    case "github":
+      return `https://github.com/${owner}/${repo}`;
+    case "gitlab":
+      return `https://gitlab.com/${owner}/${repo}`;
+    case "bitbucket":
+      return `https://bitbucket.org/${owner}/${repo}`;
+  }
+}
+
+async function resolveProviderTokenForUpdateCheck(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ctx: any,
+  provider: RepoProviderName,
+  bountyId: unknown,
+): Promise<string | undefined> {
+  if (provider === "github") return undefined;
+  const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+    bountyId,
+  });
+  if (!bounty) return undefined;
+  const providerAuthConnection = await ctx.runQuery(
+    internal.providerConnections.getActiveAuthByUserAndProviderInternal,
+    {
+      userId: bounty.creatorId,
+      provider,
+    },
+  );
+  return providerAuthConnection?.accessToken;
+}
+
+function buildProviderForUpdateCheck(
+  providerName: RepoProviderName,
+  auth: {
+    provider: RepoProviderName;
+    repoAuthToken?: string;
+    repoAuthUsername?: string;
+  },
+): RepoProvider {
+  return getRepoProvider(providerName, {
+    githubToken: auth.provider === "github" ? auth.repoAuthToken : undefined,
+    gitlabToken: auth.provider === "gitlab" ? auth.repoAuthToken : undefined,
+    bitbucketCredentials:
+      auth.provider === "bitbucket"
+        ? {
+            account: auth.repoAuthUsername,
+            token: auth.repoAuthToken,
+          }
+        : undefined,
+  });
+}
+
+function assertGitHubAuthForUpdateCheck(provider: RepoProviderName, repoAuthToken?: string): void {
+  if (provider === "github" && !repoAuthToken) {
+    throw new Error(
+      "GitHub installation token is required for repository update checks. Install/repair the GitHub App for this repository.",
+    );
+  }
+}
+
+async function maybeSyncInstallationForUpdateCheck(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ctx: any,
+  connection: RepoConnectionForUpdateCheck,
+  auth: {
+    installationId?: number;
+    accountLogin?: string;
+  },
+): Promise<void> {
+  if (
+    !auth.installationId ||
+    (auth.installationId === connection.githubInstallationId &&
+      auth.accountLogin === connection.githubInstallationAccountLogin)
+  ) {
+    return;
+  }
+  await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
+    repoConnectionId: connection._id,
+    githubInstallationId: auth.installationId,
+    githubInstallationAccountLogin: auth.accountLogin,
+  });
+}
+
+async function checkConnectionForUpdates(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ctx: any,
+  connection: RepoConnectionForUpdateCheck,
+): Promise<void> {
+  if (!connection.owner || !connection.repo) return;
+
+  const providerName = connection.provider ?? "github";
+  const branch = connection.trackedBranch || connection.defaultBranch;
+  const repoUrl = buildRepositoryUrl(providerName, connection.owner, connection.repo);
+  const providerToken = await resolveProviderTokenForUpdateCheck(ctx, providerName, connection.bountyId);
+  const auth = await resolveRepoAuth({
+    repositoryUrl: repoUrl,
+    preferredGitHubInstallationId: connection.githubInstallationId,
+    writeAccess: false,
+    providerToken,
+  });
+  assertGitHubAuthForUpdateCheck(providerName, auth.repoAuthToken);
+
+  const provider = buildProviderForUpdateCheck(providerName, auth);
+  await maybeSyncInstallationForUpdateCheck(ctx, connection, auth);
+
+  const headSha = await provider.fetchHeadCommitId(connection.owner, connection.repo, branch);
+  if (!headSha || headSha === connection.commitSha) return;
+
+  console.log(`[checkForUpdates] New commit on ${connection.owner}/${connection.repo}@${branch}: ${headSha}`);
+  await ctx.runMutation(internal.repoConnections.triggerReIndex, {
+    repoConnectionId: connection._id,
+    newCommitSha: headSha,
+  });
+}
+
 /**
  * Cron-driven check for tracked repos that may have new commits.
  * Polls the appropriate provider API for HEAD commit on the tracked branch.
@@ -372,77 +503,8 @@ export const checkForUpdates = internalAction({
     );
 
     for (const conn of readyConnections) {
-      if (!conn.owner || !conn.repo) continue;
-
-      const providerName = conn.provider ?? "github";
-      const branch = conn.trackedBranch || conn.defaultBranch;
-
       try {
-        const repoUrl =
-          providerName === "github"
-            ? `https://github.com/${conn.owner}/${conn.repo}`
-            : providerName === "gitlab"
-              ? `https://gitlab.com/${conn.owner}/${conn.repo}`
-              : `https://bitbucket.org/${conn.owner}/${conn.repo}`;
-        const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
-          bountyId: conn.bountyId,
-        });
-        const providerAuthConnection =
-          providerName !== "github" && bounty
-            ? await ctx.runQuery(internal.providerConnections.getActiveAuthByUserAndProviderInternal, {
-                userId: bounty.creatorId,
-                provider: providerName,
-              })
-            : null;
-        const auth = await resolveRepoAuth({
-          repositoryUrl: repoUrl,
-          preferredGitHubInstallationId: conn.githubInstallationId,
-          writeAccess: false,
-          providerToken: providerAuthConnection?.accessToken,
-        });
-
-        if (providerName === "github" && !auth.repoAuthToken) {
-          throw new Error(
-            "GitHub installation token is required for repository update checks. Install/repair the GitHub App for this repository.",
-          );
-        }
-        const provider: RepoProvider = getRepoProvider(providerName, {
-          githubToken: auth.provider === "github" ? auth.repoAuthToken : undefined,
-          gitlabToken: auth.provider === "gitlab" ? auth.repoAuthToken : undefined,
-          bitbucketCredentials:
-            auth.provider === "bitbucket"
-              ? {
-                  account: auth.repoAuthUsername,
-                  token: auth.repoAuthToken,
-                }
-              : undefined,
-        });
-        if (
-          auth.installationId &&
-          (auth.installationId !== conn.githubInstallationId ||
-            auth.accountLogin !== conn.githubInstallationAccountLogin)
-        ) {
-          await ctx.runMutation(internal.repoConnections.updateGitHubInstallation, {
-            repoConnectionId: conn._id,
-            githubInstallationId: auth.installationId,
-            githubInstallationAccountLogin: auth.accountLogin,
-          });
-        }
-        const headSha = await provider.fetchHeadCommitId(
-          conn.owner,
-          conn.repo,
-          branch
-        );
-
-        if (headSha && headSha !== conn.commitSha) {
-          console.log(
-            `[checkForUpdates] New commit on ${conn.owner}/${conn.repo}@${branch}: ${headSha}`
-          );
-          await ctx.runMutation(internal.repoConnections.triggerReIndex, {
-            repoConnectionId: conn._id,
-            newCommitSha: headSha,
-          });
-        }
+        await checkConnectionForUpdates(ctx, conn as RepoConnectionForUpdateCheck);
       } catch (error) {
         console.warn(
           `[checkForUpdates] Failed to check ${conn.owner}/${conn.repo}: ${error}`

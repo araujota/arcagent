@@ -146,6 +146,101 @@ http.route({
 // GitHub Push Webhook (re-indexing)
 // ---------------------------------------------------------------------------
 
+async function computeSha256Hmac(secret: string, payload: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(payload),
+  );
+  return `sha256=${Array.from(new Uint8Array(signature)).map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function extractBranchFromRef(ref: string): string | null {
+  const branchMatch = ref.match(/^refs\/heads\/(.+)$/);
+  return branchMatch ? branchMatch[1] : null;
+}
+
+function isConnectionMatch(args: {
+  conn: {
+    provider?: string;
+    owner: string;
+    repo: string;
+    trackedBranch?: string;
+    defaultBranch: string;
+    commitSha?: string;
+  };
+  provider: "github" | "gitlab" | "bitbucket";
+  owner: string;
+  repo: string;
+  branch: string;
+  newSha: string;
+}): boolean {
+  const trackedBranch = args.conn.trackedBranch || args.conn.defaultBranch;
+  return (
+    (args.conn.provider ?? "github") === args.provider &&
+    args.conn.owner === args.owner &&
+    args.conn.repo === args.repo &&
+    trackedBranch === args.branch &&
+    args.conn.commitSha !== args.newSha
+  );
+}
+
+async function triggerReindexForPush(args: {
+  ctx: any;
+  provider: "github" | "gitlab" | "bitbucket";
+  owner: string;
+  repo: string;
+  branch: string;
+  newSha: string;
+}): Promise<void> {
+  const readyConnections = await args.ctx.runQuery(internal.repoConnections.listReady);
+  for (const conn of readyConnections) {
+    if (!isConnectionMatch({ conn, provider: args.provider, owner: args.owner, repo: args.repo, branch: args.branch, newSha: args.newSha })) {
+      continue;
+    }
+    await args.ctx.runMutation(internal.repoConnections.triggerReIndex, {
+      repoConnectionId: conn._id,
+      newCommitSha: args.newSha,
+    });
+  }
+}
+
+async function handleGitHubPushEvent(ctx: any, payload: string): Promise<Response> {
+  let body: {
+    ref: string;
+    after: string;
+    repository: { full_name: string };
+  };
+  try {
+    body = JSON.parse(payload);
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+
+  const branch = extractBranchFromRef(body.ref);
+  if (!branch) {
+    return new Response("Not a branch push", { status: 200 });
+  }
+  const newSha = body.after;
+  const [owner, repo] = body.repository.full_name.split("/");
+  await triggerReindexForPush({
+    ctx,
+    provider: "github",
+    owner,
+    repo,
+    branch,
+    newSha,
+  });
+  return new Response("OK", { status: 200 });
+}
+
 http.route({
   path: "/github-webhook",
   method: "POST",
@@ -164,26 +259,7 @@ http.route({
     }
 
     const payload = await request.text();
-
-    // Verify HMAC-SHA256 signature
-    const encoder = new TextEncoder();
-    const key = await crypto.subtle.importKey(
-      "raw",
-      encoder.encode(webhookSecret),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"]
-    );
-    const signature = await crypto.subtle.sign(
-      "HMAC",
-      key,
-      encoder.encode(payload)
-    );
-    const expectedSig =
-      "sha256=" +
-      Array.from(new Uint8Array(signature))
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
+    const expectedSig = await computeSha256Hmac(webhookSecret, payload);
 
     if (expectedSig.length !== signatureHeader.length) {
       return new Response("Invalid signature", { status: 401 });
@@ -204,47 +280,7 @@ http.route({
 
     // Handle push events
     if (event === "push") {
-      let body: {
-        ref: string;
-        after: string;
-        repository: { full_name: string };
-      };
-      try {
-        body = JSON.parse(payload);
-      } catch {
-        return new Response("Invalid JSON", { status: 400 });
-      }
-
-      // Extract branch from refs/heads/<branch>
-      const branchMatch = body.ref.match(/^refs\/heads\/(.+)$/);
-      if (!branchMatch) {
-        return new Response("Not a branch push", { status: 200 });
-      }
-      const branch = branchMatch[1];
-      const newSha = body.after;
-      const [owner, repo] = body.repository.full_name.split("/");
-
-      // Find matching repo connections
-      const readyConnections = await ctx.runQuery(
-        internal.repoConnections.listReady
-      );
-
-      for (const conn of readyConnections) {
-        const trackedBranch = conn.trackedBranch || conn.defaultBranch;
-        if (
-          conn.owner === owner &&
-          conn.repo === repo &&
-          trackedBranch === branch &&
-          conn.commitSha !== newSha
-        ) {
-          await ctx.runMutation(internal.repoConnections.triggerReIndex, {
-            repoConnectionId: conn._id,
-            newCommitSha: newSha,
-          });
-        }
-      }
-
-      return new Response("OK", { status: 200 });
+      return handleGitHubPushEvent(ctx, payload);
     }
 
     return new Response("Unhandled event", { status: 200 });
@@ -339,6 +375,51 @@ http.route({
 // Bitbucket Push Webhook (re-indexing)
 // ---------------------------------------------------------------------------
 
+async function handleBitbucketPushEvent(ctx: any, payload: string): Promise<Response> {
+  let body: {
+    repository?: { full_name?: string };
+    push?: {
+      changes?: Array<{
+        new?: {
+          name?: string;
+          target?: { hash?: string };
+        };
+      }>;
+    };
+  };
+  try {
+    body = JSON.parse(payload) as typeof body;
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+
+  const fullName = body.repository?.full_name;
+  if (!fullName) {
+    return new Response("Missing repository full_name", { status: 200 });
+  }
+  const [owner, repo] = fullName.split("/");
+  if (!owner || !repo) {
+    return new Response("Invalid repository full_name", { status: 200 });
+  }
+
+  const changes = body.push?.changes ?? [];
+  for (const change of changes) {
+    const branch = change.new?.name;
+    const newSha = change.new?.target?.hash;
+    if (!branch || !newSha) continue;
+    await triggerReindexForPush({
+      ctx,
+      provider: "bitbucket",
+      owner,
+      repo,
+      branch,
+      newSha,
+    });
+  }
+
+  return new Response("OK", { status: 200 });
+}
+
 http.route({
   path: "/bitbucket-webhook",
   method: "POST",
@@ -362,19 +443,7 @@ http.route({
     }
 
     const payload = await request.text();
-    const key = await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(webhookSecret),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"],
-    );
-    const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
-    const expectedSig =
-      "sha256=" +
-      Array.from(new Uint8Array(digest))
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
+    const expectedSig = await computeSha256Hmac(webhookSecret, payload);
 
     if (!constantTimeEqual(signature, expectedSig)) {
       return new Response("Invalid signature", { status: 401 });
@@ -384,59 +453,7 @@ http.route({
     if (event !== "repo:push") {
       return new Response("Unhandled event", { status: 200 });
     }
-
-    let body: {
-      repository?: { full_name?: string };
-      push?: {
-        changes?: Array<{
-          new?: {
-            name?: string;
-            target?: { hash?: string };
-          };
-        }>;
-      };
-    };
-    try {
-      body = JSON.parse(payload) as typeof body;
-    } catch {
-      return new Response("Invalid JSON", { status: 400 });
-    }
-
-    const fullName = body.repository?.full_name;
-    if (!fullName) {
-      return new Response("Missing repository full_name", { status: 200 });
-    }
-    const [owner, repo] = fullName.split("/");
-    if (!owner || !repo) {
-      return new Response("Invalid repository full_name", { status: 200 });
-    }
-
-    const readyConnections = await ctx.runQuery(internal.repoConnections.listReady);
-    const changes = body.push?.changes ?? [];
-
-    for (const change of changes) {
-      const branch = change.new?.name;
-      const newSha = change.new?.target?.hash;
-      if (!branch || !newSha) continue;
-
-      for (const conn of readyConnections) {
-        const trackedBranch = conn.trackedBranch || conn.defaultBranch;
-        if (
-          (conn.provider ?? "github") === "bitbucket" &&
-          conn.owner === owner &&
-          conn.repo === repo &&
-          trackedBranch === branch &&
-          conn.commitSha !== newSha
-        ) {
-          await ctx.runMutation(internal.repoConnections.triggerReIndex, {
-            repoConnectionId: conn._id,
-            newCommitSha: newSha,
-          });
-        }
-      }
-    }
-
-    return new Response("OK", { status: 200 });
+    return handleBitbucketPushEvent(ctx, payload);
   }),
 });
 
@@ -1080,6 +1097,85 @@ http.route({
 });
 
 // --- Bounties: Create (MCP) ---
+
+async function resolveGitHubInstallationForRepository(
+  repositoryUrl: string | undefined,
+): Promise<{
+  githubInstallationId?: number;
+  githubInstallationAccountLogin?: string;
+  errorResponse?: Response;
+}> {
+  if (!repositoryUrl || detectProvider(repositoryUrl) !== "github") {
+    return {};
+  }
+  if (!isGitHubAppConfigured()) {
+    return {
+      errorResponse: mcpError(
+        "GitHub App is not configured in this environment. Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY before creating GitHub-backed bounties.",
+      ),
+    };
+  }
+
+  const parsedRepo = parseGitHubRepoUrlSafe(repositoryUrl);
+  if (!parsedRepo) {
+    return { errorResponse: mcpError("Invalid GitHub repository URL") };
+  }
+
+  const installation = await findGitHubInstallationForRepo(parsedRepo.owner, parsedRepo.repo);
+  if (!installation) {
+    return {
+      errorResponse: mcpError(
+        "GitHub App installation is required for this repository. Install the Arcagent GitHub App on the repo or owning organization, then retry.",
+      ),
+    };
+  }
+
+  return {
+    githubInstallationId: installation.installationId,
+    githubInstallationAccountLogin: installation.accountLogin,
+  };
+}
+
+async function setupBountyRepositoryAutomation(args: {
+  ctx: any;
+  bountyId: Id<"bounties">;
+  repositoryUrl?: string;
+  githubInstallationId?: number;
+  githubInstallationAccountLogin?: string;
+}): Promise<{ repoConnectionId: string | null; conversationId: string | null }> {
+  if (!args.repositoryUrl) {
+    return { repoConnectionId: null, conversationId: null };
+  }
+
+  const repoConnectionId = await args.ctx.runMutation(
+    internal.repoConnections.createInternal,
+    {
+      bountyId: args.bountyId,
+      repositoryUrl: args.repositoryUrl,
+      githubInstallationId: args.githubInstallationId,
+      githubInstallationAccountLogin: args.githubInstallationAccountLogin,
+    }
+  );
+
+  const conversationId = await args.ctx.runMutation(
+    internal.conversations.createInternal,
+    { bountyId: args.bountyId, autonomous: true }
+  );
+
+  await args.ctx.scheduler.runAfter(
+    0,
+    internal.orchestrator.runAutonomousPipeline,
+    {
+      bountyId: args.bountyId,
+      repoConnectionId: repoConnectionId as Id<"repoConnections">,
+      conversationId: conversationId as Id<"conversations">,
+      repositoryUrl: args.repositoryUrl,
+    }
+  );
+
+  return { repoConnectionId, conversationId };
+}
+
 http.route({
   path: "/api/mcp/bounties/create",
   method: "POST",
@@ -1131,29 +1227,8 @@ http.route({
     }
 
     try {
-      let githubInstallationId: number | undefined;
-      let githubInstallationAccountLogin: string | undefined;
-      if (repositoryUrl && detectProvider(repositoryUrl) === "github") {
-        if (!isGitHubAppConfigured()) {
-          return mcpError(
-            "GitHub App is not configured in this environment. Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY before creating GitHub-backed bounties."
-          );
-        }
-
-        const parsedRepo = parseGitHubRepoUrlSafe(repositoryUrl);
-        if (!parsedRepo) {
-          return mcpError("Invalid GitHub repository URL");
-        }
-
-        const installation = await findGitHubInstallationForRepo(parsedRepo.owner, parsedRepo.repo);
-        if (!installation) {
-          return mcpError(
-            "GitHub App installation is required for this repository. Install the Arcagent GitHub App on the repo or owning organization, then retry."
-          );
-        }
-        githubInstallationId = installation.installationId;
-        githubInstallationAccountLogin = installation.accountLogin;
-      }
+      const installation = await resolveGitHubInstallationForRepository(repositoryUrl);
+      if (installation.errorResponse) return installation.errorResponse;
 
       const bountyId = await ctx.runMutation(internal.bounties.createFromMcp, {
         creatorId: creatorId as Id<"users">,
@@ -1173,37 +1248,13 @@ http.route({
         pmConnectionId: pmConnectionId as Id<"pmConnections"> | undefined,
         requiredTier: body.requiredTier,
       });
-
-      let repoConnectionId: string | null = null;
-      let conversationId: string | null = null;
-
-      if (repositoryUrl) {
-        repoConnectionId = await ctx.runMutation(
-          internal.repoConnections.createInternal,
-          {
-            bountyId,
-            repositoryUrl,
-            githubInstallationId,
-            githubInstallationAccountLogin,
-          }
-        );
-
-        conversationId = await ctx.runMutation(
-          internal.conversations.createInternal,
-          { bountyId, autonomous: true }
-        );
-
-        await ctx.scheduler.runAfter(
-          0,
-          internal.orchestrator.runAutonomousPipeline,
-          {
-            bountyId,
-            repoConnectionId: repoConnectionId as Id<"repoConnections">,
-            conversationId: conversationId as Id<"conversations">,
-            repositoryUrl,
-          }
-        );
-      }
+      const { repoConnectionId, conversationId } = await setupBountyRepositoryAutomation({
+        ctx,
+        bountyId,
+        repositoryUrl,
+        githubInstallationId: installation.githubInstallationId,
+        githubInstallationAccountLogin: installation.githubInstallationAccountLogin,
+      });
 
       return mcpJson({
         bountyId,
@@ -1693,6 +1744,129 @@ http.route({
 });
 
 // --- Verifications: Get agent-facing status (includes hidden failure feedback) ---
+
+async function resolveVerificationLookup(args: {
+  ctx: any;
+  verificationId?: string;
+  submissionId?: string;
+}): Promise<{ verificationId?: Id<"verifications">; submissionId?: Id<"submissions">; errorResponse?: Response }> {
+  if (args.verificationId) {
+    const resolvedVerificationId = args.verificationId as Id<"verifications">;
+    const verification = await args.ctx.runQuery(internal.verifications.getByIdInternal, {
+      verificationId: resolvedVerificationId,
+    });
+    if (!verification) return { errorResponse: mcpError("Verification not found", 404) };
+    return {
+      verificationId: resolvedVerificationId,
+      submissionId: verification.submissionId,
+    };
+  }
+
+  if (args.submissionId) {
+    const verification = await args.ctx.runQuery(
+      internal.verifications.getBySubmissionInternal,
+      { submissionId: args.submissionId as Id<"submissions"> }
+    );
+    if (!verification) return { errorResponse: mcpError("Verification not found", 404) };
+    return {
+      verificationId: verification._id,
+      submissionId: verification.submissionId,
+    };
+  }
+
+  return { errorResponse: mcpError("Verification not found", 404) };
+}
+
+async function enforceVerificationReadAccessForApiKey(args: {
+  ctx: any;
+  userId: string;
+  submissionId: Id<"submissions">;
+}): Promise<Response | null> {
+  const submission = await args.ctx.runQuery(internal.submissions.getByIdInternal, {
+    submissionId: args.submissionId,
+  });
+  if (!submission) return mcpError("Verification not found", 404);
+
+  const allowedAsAgent = submission.agentId === args.userId;
+  const allowedAsCreator = await isBountyCreator(
+    args.ctx,
+    args.userId,
+    submission.bountyId,
+  );
+  return !allowedAsAgent && !allowedAsCreator ? mcpError("Forbidden", 403) : null;
+}
+
+async function isApiKeyAdmin(ctx: any, userId: string): Promise<boolean> {
+  const user = await ctx.runQuery(internal.users.getByIdInternal, {
+    userId: userId as Id<"users">,
+  });
+  return user?.role === "admin";
+}
+
+async function canAccessLogsByVerification(ctx: any, userId: string, verificationId: string): Promise<{ allowed: boolean; errorResponse?: Response }> {
+  const verification = await ctx.runQuery(internal.verifications.getByIdInternal, {
+    verificationId: verificationId as Id<"verifications">,
+  });
+  if (!verification) return { allowed: false, errorResponse: mcpError("Verification not found", 404) };
+  const submission = await ctx.runQuery(internal.submissions.getByIdInternal, {
+    submissionId: verification.submissionId,
+  });
+  const creatorAccess = await isBountyCreator(ctx, userId, verification.bountyId);
+  const agentAccess = submission?.agentId === userId;
+  return { allowed: !!(creatorAccess || agentAccess) };
+}
+
+async function canAccessLogsBySubmission(ctx: any, userId: string, submissionId: string): Promise<{ allowed: boolean; errorResponse?: Response }> {
+  const submission = await ctx.runQuery(internal.submissions.getByIdInternal, {
+    submissionId: submissionId as Id<"submissions">,
+  });
+  if (!submission) return { allowed: false, errorResponse: mcpError("Submission not found", 404) };
+  const creatorAccess = await isBountyCreator(ctx, userId, submission.bountyId);
+  const agentAccess = submission.agentId === userId;
+  return { allowed: !!(creatorAccess || agentAccess) };
+}
+
+async function canAccessLogsByBounty(ctx: any, userId: string, bountyId: string): Promise<boolean> {
+  const creatorAccess = await isBountyCreator(ctx, userId, bountyId as Id<"bounties">);
+  if (creatorAccess) return true;
+  const submissions = await ctx.runQuery(internal.submissions.listByAgentId, {
+    agentId: userId as Id<"users">,
+    bountyId: bountyId as Id<"bounties">,
+  });
+  return submissions.length > 0;
+}
+
+async function enforceVerificationLogsAccessForApiKey(args: {
+  ctx: any;
+  userId: string;
+  verificationId?: string;
+  submissionId?: string;
+  bountyId?: string;
+  effectiveAgentId?: string;
+}): Promise<Response | null> {
+  const isAdmin = await isApiKeyAdmin(args.ctx, args.userId);
+  if (isAdmin) return null;
+
+  if (args.verificationId) {
+    const access = await canAccessLogsByVerification(args.ctx, args.userId, args.verificationId);
+    if (access.errorResponse) return access.errorResponse;
+    if (access.allowed) return null;
+  } else if (args.submissionId) {
+    const access = await canAccessLogsBySubmission(args.ctx, args.userId, args.submissionId);
+    if (access.errorResponse) return access.errorResponse;
+    if (access.allowed) return null;
+  } else if (args.bountyId) {
+    if (await canAccessLogsByBounty(args.ctx, args.userId, args.bountyId)) return null;
+  } else if (args.effectiveAgentId === args.userId) {
+    return null;
+  }
+
+  return mcpError(
+    "Forbidden: provide verificationId, submissionId, bountyId, or your own agentId",
+    403,
+  );
+}
+
 http.route({
   path: "/api/mcp/verifications/get",
   method: "POST",
@@ -1709,49 +1883,22 @@ http.route({
     if (!verificationId && !submissionId) {
       return mcpError("Missing verificationId or submissionId");
     }
-
-    let vId: Id<"verifications"> | undefined;
-    let resolvedSubmissionId: Id<"submissions"> | undefined;
-
-    if (verificationId) {
-      vId = verificationId as Id<"verifications">;
-      const verification = await ctx.runQuery(internal.verifications.getByIdInternal, {
-        verificationId: vId,
-      });
-      if (!verification) return mcpError("Verification not found", 404);
-      resolvedSubmissionId = verification.submissionId;
-    } else if (submissionId) {
-      const verification = await ctx.runQuery(
-        internal.verifications.getBySubmissionInternal,
-        { submissionId: submissionId as Id<"submissions"> }
-      );
-      if (!verification) return mcpError("Verification not found", 404);
-      vId = verification._id;
-      resolvedSubmissionId = verification.submissionId;
-    }
-
-    if (!vId) return mcpError("Verification not found", 404);
-    if (!resolvedSubmissionId) return mcpError("Verification not found", 404);
+    const resolved = await resolveVerificationLookup({ ctx, verificationId, submissionId });
+    if (resolved.errorResponse) return resolved.errorResponse;
+    if (!resolved.verificationId || !resolved.submissionId) return mcpError("Verification not found", 404);
 
     if (auth.authMethod === "api_key") {
-      const submission = await ctx.runQuery(internal.submissions.getByIdInternal, {
-        submissionId: resolvedSubmissionId,
-      });
-      if (!submission) return mcpError("Verification not found", 404);
-
-      const userId = auth.userId as string;
-      const allowedAsAgent = submission.agentId === userId;
-      const allowedAsCreator = await isBountyCreator(
+      const forbidden = await enforceVerificationReadAccessForApiKey({
         ctx,
-        userId,
-        submission.bountyId,
-      );
-      if (!allowedAsAgent && !allowedAsCreator) return mcpError("Forbidden", 403);
+        userId: auth.userId as string,
+        submissionId: resolved.submissionId,
+      });
+      if (forbidden) return forbidden;
     }
 
     // Use getAgentStatus for agent-facing verification output.
     const result = await ctx.runQuery(internal.verifications.getAgentStatus, {
-      verificationId: vId,
+      verificationId: resolved.verificationId,
     });
 
     if (!result) return mcpError("Verification not found", 404);
@@ -1795,52 +1942,15 @@ http.route({
     const effectiveAgentId = auth.authMethod === "api_key" ? auth.userId! : bodyAgentId;
 
     if (auth.authMethod === "api_key" && auth.userId) {
-      const user = await ctx.runQuery(internal.users.getByIdInternal, {
-        userId: auth.userId as Id<"users">,
+      const forbidden = await enforceVerificationLogsAccessForApiKey({
+        ctx,
+        userId: auth.userId,
+        verificationId,
+        submissionId,
+        bountyId,
+        effectiveAgentId,
       });
-      const isAdmin = user?.role === "admin";
-
-      let allowed = false;
-      if (verificationId) {
-        const verification = await ctx.runQuery(internal.verifications.getByIdInternal, {
-          verificationId: verificationId as Id<"verifications">,
-        });
-        if (!verification) return mcpError("Verification not found", 404);
-        const submission = await ctx.runQuery(internal.submissions.getByIdInternal, {
-          submissionId: verification.submissionId,
-        });
-        const creatorAccess = await isBountyCreator(ctx, auth.userId, verification.bountyId);
-        const agentAccess = submission?.agentId === auth.userId;
-        allowed = !!(isAdmin || creatorAccess || agentAccess);
-      } else if (submissionId) {
-        const submission = await ctx.runQuery(internal.submissions.getByIdInternal, {
-          submissionId: submissionId as Id<"submissions">,
-        });
-        if (!submission) return mcpError("Submission not found", 404);
-        const creatorAccess = await isBountyCreator(ctx, auth.userId, submission.bountyId);
-        const agentAccess = submission.agentId === auth.userId;
-        allowed = !!(isAdmin || creatorAccess || agentAccess);
-      } else if (bountyId) {
-        const creatorAccess = await isBountyCreator(ctx, auth.userId, bountyId as Id<"bounties">);
-        if (creatorAccess || isAdmin) {
-          allowed = true;
-        } else {
-          const submissions = await ctx.runQuery(internal.submissions.listByAgentId, {
-            agentId: auth.userId as Id<"users">,
-            bountyId: bountyId as Id<"bounties">,
-          });
-          allowed = submissions.length > 0;
-        }
-      } else if (effectiveAgentId) {
-        allowed = isAdmin || effectiveAgentId === auth.userId;
-      }
-
-      if (!allowed && !isAdmin) {
-        return mcpError(
-          "Forbidden: provide verificationId, submissionId, bountyId, or your own agentId",
-          403,
-        );
-      }
+      if (forbidden) return forbidden;
     }
 
     const logs = await ctx.runQuery(internal.verifications.searchLogsInternal, {
@@ -1941,7 +2051,7 @@ http.route({
     const body = await request.json();
     const {
       bountyId,
-      creatorId,
+      creatorId: bodyCreatorId,
       codeQuality,
       speed,
       mergedWithoutChanges,
@@ -1950,7 +2060,7 @@ http.route({
       comment,
     } = body as {
       bountyId: string;
-      creatorId: string;
+      creatorId?: string;
       codeQuality: number;
       speed: number;
       mergedWithoutChanges: number;
@@ -1958,6 +2068,17 @@ http.route({
       testCoverage: number;
       comment?: string;
     };
+
+    // SECURITY (P0): API key auth must bind creator identity to authenticated user.
+    if (
+      auth.authMethod === "api_key" &&
+      bodyCreatorId &&
+      auth.userId &&
+      bodyCreatorId !== auth.userId
+    ) {
+      return mcpError("creatorId cannot override authenticated user", 403);
+    }
+    const creatorId = auth.authMethod === "api_key" ? auth.userId : bodyCreatorId;
 
     if (!bountyId || !creatorId || !codeQuality || !speed || !mergedWithoutChanges || !communication || !testCoverage) {
       return mcpError("Missing required fields");
@@ -2047,10 +2168,32 @@ http.route({
     if (!auth.authenticated) return mcpUnauthorized();
 
     const body = await request.json();
-    const { limit } = body as { limit?: number };
+    const {
+      limit,
+      rankedOnly,
+      includeUnranked: bodyIncludeUnranked,
+    } = body as {
+      limit?: number;
+      rankedOnly?: boolean;
+      includeUnranked?: boolean;
+    };
+
+    let includeUnranked = false;
+    if (bodyIncludeUnranked) {
+      if (auth.authMethod === "shared_secret") {
+        includeUnranked = true;
+      } else if (auth.authMethod === "api_key" && auth.userId) {
+        const user = await ctx.runQuery(internal.users.getByIdInternal, {
+          userId: auth.userId as Id<"users">,
+        });
+        includeUnranked = user?.role === "admin";
+      }
+    }
 
     const leaderboard = await ctx.runQuery(internal.agentStats.getLeaderboardInternal, {
       limit: limit ?? 50,
+      rankedOnly: rankedOnly ?? true,
+      includeUnranked,
     });
 
     return mcpJson({ leaderboard });
@@ -2340,6 +2483,139 @@ http.route({
   }),
 });
 
+type StartupLogLookup = {
+  bountyId?: string;
+  workspaceId?: string;
+  claimId?: string;
+};
+
+type StartupWorkspace = {
+  workspaceId: string;
+  claimId: Id<"bountyClaims">;
+  bountyId: Id<"bounties">;
+  agentId: Id<"users">;
+  status: "provisioning" | "ready" | "error" | "destroyed";
+  workerHost: string;
+  errorMessage?: string;
+  expiresAt: number;
+};
+
+type StartupWorkspaceResolution = {
+  workspace: StartupWorkspace | null;
+  errorResponse?: Response;
+};
+
+function parseStartupLogLookup(body: unknown): StartupLogLookup {
+  if (!body || typeof body !== "object") return {};
+  const record = body as Record<string, unknown>;
+  return {
+    bountyId: typeof record.bountyId === "string" ? record.bountyId : undefined,
+    workspaceId: typeof record.workspaceId === "string" ? record.workspaceId : undefined,
+    claimId: typeof record.claimId === "string" ? record.claimId : undefined,
+  };
+}
+
+async function resolveActiveClaimWorkspace(
+  ctx: any,
+  bountyId: Id<"bounties">,
+): Promise<StartupWorkspace | null> {
+  const activeClaim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
+    bountyId,
+  });
+  if (!activeClaim) return null;
+  return ctx.runQuery(internal.devWorkspaces.getByClaimId, { claimId: activeClaim._id });
+}
+
+async function resolveWorkspaceByBountyForApiKey(
+  ctx: any,
+  auth: McpAuthResult,
+  bountyId: Id<"bounties">,
+): Promise<StartupWorkspaceResolution> {
+  if (!auth.userId) return { workspace: null };
+  const userId = auth.userId as Id<"users">;
+  const ownClaim = await ctx.runQuery(internal.bountyClaims.getByAgentAndBountyAnyStatus, {
+    agentId: userId,
+    bountyId,
+  });
+  if (ownClaim) {
+    return {
+      workspace: await ctx.runQuery(internal.devWorkspaces.getByClaimId, {
+        claimId: ownClaim._id,
+      }),
+    };
+  }
+  const creatorAccess = await isBountyCreator(ctx, auth.userId, bountyId);
+  if (!creatorAccess) return { workspace: null, errorResponse: mcpError("Forbidden", 403) };
+  return { workspace: await resolveActiveClaimWorkspace(ctx, bountyId) };
+}
+
+async function resolveWorkspaceForStartupLog(
+  ctx: any,
+  auth: McpAuthResult,
+  lookup: StartupLogLookup,
+): Promise<StartupWorkspaceResolution> {
+  if (lookup.workspaceId) {
+    return {
+      workspace: await ctx.runQuery(internal.devWorkspaces.getByWorkspaceId, {
+        workspaceId: lookup.workspaceId,
+      }),
+    };
+  }
+  if (lookup.claimId) {
+    return {
+      workspace: await ctx.runQuery(internal.devWorkspaces.getByClaimId, {
+        claimId: lookup.claimId as Id<"bountyClaims">,
+      }),
+    };
+  }
+  if (!lookup.bountyId) return { workspace: null };
+  const bountyId = lookup.bountyId as Id<"bounties">;
+  if (auth.authMethod === "api_key") {
+    return resolveWorkspaceByBountyForApiKey(ctx, auth, bountyId);
+  }
+  return { workspace: await resolveActiveClaimWorkspace(ctx, bountyId) };
+}
+
+async function fetchStartupWorkerHealth(workerHost: string): Promise<{
+  reachable: boolean;
+  httpStatus?: number;
+  status?: string;
+  checks?: Record<string, string>;
+  error?: string;
+}> {
+  if (!workerHost || !/^https?:\/\//i.test(workerHost)) {
+    return {
+      reachable: false,
+      error: "Worker host is not available yet",
+    };
+  }
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const controller = new AbortController();
+    timeout = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(`${workerHost.replace(/\/+$/, "")}/api/health`, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => ({} as Record<string, unknown>));
+    return {
+      reachable: response.ok,
+      httpStatus: response.status,
+      status: typeof body.status === "string" ? body.status : "unknown",
+      checks: typeof body.checks === "object" && body.checks
+        ? (body.checks as Record<string, string>)
+        : undefined,
+    };
+  } catch (err) {
+    return {
+      reachable: false,
+      error: err instanceof Error ? err.message : "Failed to reach worker health endpoint",
+    };
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 // --- Workspace: Startup diagnostics (shared worker + execution env health) ---
 http.route({
   path: "/api/mcp/workspace/startup-log",
@@ -2348,119 +2624,19 @@ http.route({
     const auth = await verifyMcpAuth(ctx, request);
     if (!auth.authenticated) return mcpUnauthorized();
 
-    const body = await request.json();
-    const { bountyId, workspaceId, claimId } = body as {
-      bountyId?: string;
-      workspaceId?: string;
-      claimId?: string;
-    };
-
-    if (!workspaceId && !claimId && !bountyId) {
+    const lookup = parseStartupLogLookup(await request.json());
+    if (!lookup.workspaceId && !lookup.claimId && !lookup.bountyId) {
       return mcpError("Missing workspaceId, claimId, or bountyId");
     }
 
-    let ws:
-      | {
-          workspaceId: string;
-          claimId: Id<"bountyClaims">;
-          bountyId: Id<"bounties">;
-          agentId: Id<"users">;
-          status: "provisioning" | "ready" | "error" | "destroyed";
-          workerHost: string;
-          errorMessage?: string;
-          expiresAt: number;
-        }
-      | null = null;
-
-    if (workspaceId) {
-      ws = await ctx.runQuery(internal.devWorkspaces.getByWorkspaceId, {
-        workspaceId,
-      });
-    } else if (claimId) {
-      ws = await ctx.runQuery(internal.devWorkspaces.getByClaimId, {
-        claimId: claimId as Id<"bountyClaims">,
-      });
-    } else if (bountyId) {
-      const typedBountyId = bountyId as Id<"bounties">;
-      if (auth.authMethod === "api_key" && auth.userId) {
-        const userId = auth.userId as Id<"users">;
-        const ownClaim = await ctx.runQuery(internal.bountyClaims.getByAgentAndBountyAnyStatus, {
-          agentId: userId,
-          bountyId: typedBountyId,
-        });
-        if (ownClaim) {
-          ws = await ctx.runQuery(internal.devWorkspaces.getByClaimId, {
-            claimId: ownClaim._id,
-          });
-        } else {
-          const creatorAccess = await isBountyCreator(ctx, auth.userId, typedBountyId);
-          if (!creatorAccess) return mcpError("Forbidden", 403);
-          const activeClaim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
-            bountyId: typedBountyId,
-          });
-          if (activeClaim) {
-            ws = await ctx.runQuery(internal.devWorkspaces.getByClaimId, {
-              claimId: activeClaim._id,
-            });
-          }
-        }
-      } else {
-        const activeClaim = await ctx.runQuery(internal.bountyClaims.getActiveByClaim, {
-          bountyId: typedBountyId,
-        });
-        if (activeClaim) {
-          ws = await ctx.runQuery(internal.devWorkspaces.getByClaimId, {
-            claimId: activeClaim._id,
-          });
-        }
-      }
-    }
+    const resolved = await resolveWorkspaceForStartupLog(ctx, auth, lookup);
+    if (resolved.errorResponse) return resolved.errorResponse;
+    const ws = resolved.workspace;
 
     if (!ws) {
       return mcpJson({ found: false, message: "Workspace not found" }, 404);
     }
-
-    let workerHealth: {
-      reachable: boolean;
-      httpStatus?: number;
-      status?: string;
-      checks?: Record<string, string>;
-      error?: string;
-    } | null = null;
-
-    if (ws.workerHost && /^https?:\/\//i.test(ws.workerHost)) {
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      try {
-        const controller = new AbortController();
-        timeout = setTimeout(() => controller.abort(), 5000);
-        const response = await fetch(`${ws.workerHost.replace(/\/+$/, "")}/api/health`, {
-          method: "GET",
-          signal: controller.signal,
-        });
-        clearTimeout(timeout);
-        const body = await response.json().catch(() => ({} as Record<string, unknown>));
-        workerHealth = {
-          reachable: response.ok,
-          httpStatus: response.status,
-          status: typeof body.status === "string" ? body.status : "unknown",
-          checks: typeof body.checks === "object" && body.checks
-            ? (body.checks as Record<string, string>)
-            : undefined,
-        };
-      } catch (err) {
-        workerHealth = {
-          reachable: false,
-          error: err instanceof Error ? err.message : "Failed to reach worker health endpoint",
-        };
-      } finally {
-        if (timeout) clearTimeout(timeout);
-      }
-    } else {
-      workerHealth = {
-        reachable: false,
-        error: "Worker host is not available yet",
-      };
-    }
+    const workerHealth = await fetchStartupWorkerHealth(ws.workerHost);
 
     return mcpJson({
       found: true,
@@ -2934,6 +3110,443 @@ function stringifyLogDetails(value: unknown): string | undefined {
   }
 }
 
+async function verifyWorkerJobHmacToken(args: {
+  verificationId: Id<"verifications">;
+  jobHmac?: string;
+  submissionId: string;
+  bountyId: string;
+}): Promise<Response | null> {
+  if (!args.jobHmac) return mcpError("Missing required job HMAC token", 403);
+  const hmacValid = await verifyJobHmac(
+    args.jobHmac,
+    args.verificationId,
+    args.submissionId,
+    args.bountyId,
+  );
+  return hmacValid ? null : mcpError("Invalid job HMAC token", 403);
+}
+
+async function verifyWorkerCallbackEnvelope(args: {
+  callbackTimestampMs?: number;
+  callbackNonce?: string;
+  callbackSignature?: string;
+  payload: {
+    submissionId: string;
+    bountyId: string;
+    jobId: string;
+    overallStatus: string;
+    jobHmac: string;
+  };
+}): Promise<Response | null> {
+  if (
+    args.callbackTimestampMs === undefined ||
+    !args.callbackNonce ||
+    !args.callbackSignature
+  ) {
+    return mcpError(
+      "Missing callback auth envelope fields: callbackTimestampMs, callbackNonce, callbackSignature",
+      403,
+    );
+  }
+  if (!isFreshWorkerCallbackTimestamp(args.callbackTimestampMs)) {
+    return mcpError("Stale or invalid callback timestamp", 403);
+  }
+  const callbackSignatureValid = await verifyWorkerCallbackSignature(
+    args.callbackSignature,
+    {
+      ...args.payload,
+      callbackTimestampMs: args.callbackTimestampMs,
+      callbackNonce: args.callbackNonce,
+    },
+  );
+  return callbackSignatureValid ? null : mcpError("Invalid callback signature", 403);
+}
+
+async function consumeWorkerCallbackNonce(args: {
+  ctx: any;
+  callbackNonce: string;
+  verificationId: Id<"verifications">;
+}): Promise<Response | null> {
+  const callbackNonceApi = internal as unknown as {
+    workerCallbackNonces: { consume: unknown };
+  };
+  const nonceResult = await args.ctx.runMutation(
+    callbackNonceApi.workerCallbackNonces.consume as never,
+    {
+      nonce: args.callbackNonce,
+      verificationId: args.verificationId,
+      ttlMs: 10 * 60 * 1000,
+    },
+  );
+  return nonceResult.accepted ? null : mcpError("Callback nonce already used", 409);
+}
+
+type VerificationResultGate = {
+  gate: string;
+  status: string;
+  durationMs: number;
+  summary: string;
+  details?: Record<string, unknown>;
+};
+
+type VerificationResultReceipt = {
+  verificationId?: string;
+  attemptNumber: number;
+  legKey: string;
+  orderIndex: number;
+  status: string;
+  blocking: boolean;
+  unreachedByLegKey?: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  summaryLine: string;
+  rawBody?: string;
+  sarifJson?: string;
+  policyJson?: string;
+  metadataJson?: string;
+  normalizedJson?: string;
+};
+
+type VerificationResultStep = {
+  scenarioName: string;
+  featureName: string;
+  status: "pass" | "fail" | "skip" | "error";
+  executionTimeMs: number;
+  output?: string;
+  stepNumber: number;
+  visibility: "public" | "hidden";
+};
+
+type VerificationResultCallbackBody = {
+  submissionId: string;
+  bountyId: string;
+  jobId: string;
+  overallStatus: "pass" | "fail" | "error";
+  jobHmac?: string;
+  callbackTimestampMs?: number;
+  callbackNonce?: string;
+  callbackSignature?: string;
+  gates: VerificationResultGate[];
+  totalDurationMs: number;
+  feedbackJson?: string;
+  validationReceipts?: VerificationResultReceipt[];
+  steps?: VerificationResultStep[];
+};
+
+type VerificationResultLogContext = {
+  verificationId: Id<"verifications">;
+  submissionId: Id<"submissions">;
+  bountyId: Id<"bounties">;
+  agentId?: Id<"users">;
+  claimId?: Id<"bountyClaims">;
+};
+
+type VerificationResultContext = {
+  verification: { _id: Id<"verifications">; status: string };
+  submission: { agentId: Id<"users"> } | null;
+  activeClaimId?: Id<"bountyClaims">;
+  baseLog: VerificationResultLogContext;
+};
+
+async function loadVerificationResultContext(
+  ctx: any,
+  submissionId: Id<"submissions">,
+  bountyId: Id<"bounties">,
+): Promise<VerificationResultContext | null> {
+  const verification = await ctx.runQuery(
+    internal.verifications.getBySubmissionInternal,
+    { submissionId },
+  );
+  if (!verification) return null;
+  const submission = await ctx.runQuery(
+    internal.submissions.getByIdInternal,
+    { submissionId },
+  );
+  const activeClaim = submission
+    ? await ctx.runQuery(internal.bountyClaims.getByAgentAndBounty, {
+        agentId: submission.agentId,
+        bountyId,
+      })
+    : null;
+  return {
+    verification,
+    submission,
+    activeClaimId: activeClaim?._id,
+    baseLog: {
+      verificationId: verification._id,
+      submissionId,
+      bountyId,
+      agentId: submission?.agentId,
+      claimId: activeClaim?._id,
+    },
+  };
+}
+
+async function verifyVerificationResultCallbackAuth(args: {
+  ctx: any;
+  verificationId: Id<"verifications">;
+  body: VerificationResultCallbackBody;
+}): Promise<Response | null> {
+  const hmacError = await verifyWorkerJobHmacToken({
+    verificationId: args.verificationId,
+    jobHmac: args.body.jobHmac,
+    submissionId: args.body.submissionId,
+    bountyId: args.body.bountyId,
+  });
+  if (hmacError) return hmacError;
+  const callbackEnvelopeError = await verifyWorkerCallbackEnvelope({
+    callbackTimestampMs: args.body.callbackTimestampMs,
+    callbackNonce: args.body.callbackNonce,
+    callbackSignature: args.body.callbackSignature,
+    payload: {
+      submissionId: args.body.submissionId,
+      bountyId: args.body.bountyId,
+      jobId: args.body.jobId,
+      overallStatus: args.body.overallStatus,
+      jobHmac: args.body.jobHmac!,
+    },
+  });
+  if (callbackEnvelopeError) return callbackEnvelopeError;
+  return consumeWorkerCallbackNonce({
+    ctx: args.ctx,
+    callbackNonce: args.body.callbackNonce!,
+    verificationId: args.verificationId,
+  });
+}
+
+async function persistVerificationResultReceipts(args: {
+  ctx: any;
+  body: VerificationResultCallbackBody;
+  verificationId: Id<"verifications">;
+  submissionId: Id<"submissions">;
+  bountyId: Id<"bounties">;
+  submission: { agentId: Id<"users"> } | null;
+  activeClaimId?: Id<"bountyClaims">;
+}): Promise<void> {
+  const receipts = args.body.validationReceipts ?? [];
+  if (receipts.length === 0) return;
+  const receiptApi = internal as unknown as {
+    verificationReceipts: { recordInternal: unknown };
+  };
+  for (const receipt of receipts) {
+    const mappedStatus = RECEIPT_STATUS_MAP[receipt.status];
+    if (!mappedStatus) continue;
+    await args.ctx.runMutation(receiptApi.verificationReceipts.recordInternal as never, {
+      verificationId: args.verificationId,
+      submissionId: args.submissionId,
+      bountyId: args.bountyId,
+      agentId: args.submission?.agentId,
+      claimId: args.activeClaimId,
+      attemptNumber: receipt.attemptNumber,
+      legKey: receipt.legKey,
+      orderIndex: receipt.orderIndex,
+      status: mappedStatus,
+      blocking: receipt.blocking,
+      unreachedByLegKey: receipt.unreachedByLegKey,
+      startedAt: receipt.startedAt,
+      completedAt: receipt.completedAt,
+      durationMs: receipt.durationMs,
+      summaryLine: receipt.summaryLine,
+      rawBody: receipt.rawBody,
+      sarifJson: receipt.sarifJson,
+      policyJson: receipt.policyJson,
+      metadataJson: receipt.metadataJson,
+      normalizedJson: receipt.normalizedJson,
+      createdAt: Date.now(),
+    });
+  }
+}
+
+function mapGateLogLevel(status: string): "info" | "warning" | "error" {
+  if (status === "pass" || status === "passed") return "info";
+  if (status === "warning" || status === "warn") return "warning";
+  return "error";
+}
+
+async function persistVerificationResultGates(args: {
+  ctx: any;
+  gates: VerificationResultGate[];
+  verificationId: Id<"verifications">;
+  baseLog: VerificationResultLogContext;
+}): Promise<void> {
+  const gateLogs: Array<{
+    verificationId: Id<"verifications">;
+    submissionId: Id<"submissions">;
+    bountyId: Id<"bounties">;
+    agentId?: Id<"users">;
+    claimId?: Id<"bountyClaims">;
+    source: "verification_result_callback";
+    level: "info" | "warning" | "error";
+    eventType: string;
+    gate?: string;
+    message: string;
+    detailsJson?: string;
+  }> = [];
+  for (const gate of args.gates) {
+    const gateType = GATE_TYPE_MAP[gate.gate];
+    const gateStatus = GATE_STATUS_MAP[gate.status];
+    if (gateType && gateStatus) {
+      const issues = gate.summary ? [gate.summary] : undefined;
+      const detailsJson = gate.details ? JSON.stringify(gate.details) : undefined;
+      await args.ctx.runMutation(internal.sanityGates.record, {
+        verificationId: args.verificationId,
+        gateType: gateType as "build" | "lint" | "typecheck" | "security" | "sonarqube" | "snyk" | "memory",
+        tool: gate.summary || gate.gate,
+        status: gateStatus as "passed" | "failed" | "warning",
+        issues,
+        detailsJson,
+      });
+    }
+    gateLogs.push({
+      ...args.baseLog,
+      source: "verification_result_callback",
+      level: mapGateLogLevel(gate.status),
+      eventType: "gate_result",
+      gate: gate.gate,
+      message: `${gate.gate} => ${gate.status}: ${gate.summary}`,
+      detailsJson: stringifyLogDetails({
+        durationMs: gate.durationMs,
+        details: gate.details,
+      }),
+    });
+  }
+  if (gateLogs.length === 0) return;
+  await args.ctx.runMutation(internal.verifications.recordLogsBatchInternal, {
+    logs: gateLogs,
+  });
+}
+
+async function persistVerificationResultSteps(args: {
+  ctx: any;
+  steps: VerificationResultStep[];
+  verificationId: Id<"verifications">;
+  baseLog: VerificationResultLogContext;
+}): Promise<void> {
+  if (args.steps.length === 0) return;
+  await args.ctx.runMutation(internal.verificationSteps.createInternal, {
+    steps: args.steps.map((step) => ({
+      verificationId: args.verificationId,
+      scenarioName: step.scenarioName,
+      featureName: step.featureName,
+      status: step.status,
+      executionTimeMs: step.executionTimeMs,
+      output: step.output,
+      stepNumber: step.stepNumber,
+      visibility: step.visibility,
+    })),
+  });
+  await args.ctx.runMutation(internal.verifications.recordLogsBatchInternal, {
+    logs: args.steps.map((step) => ({
+      ...args.baseLog,
+      source: "verification_result_callback" as const,
+      level: step.status === "pass" || step.status === "skip" ? "info" : "error",
+      eventType: "test_step_result",
+      visibility: step.visibility,
+      message: `${step.featureName} > ${step.scenarioName} => ${step.status}`,
+      detailsJson: stringifyLogDetails({
+        executionTimeMs: step.executionTimeMs,
+        stepNumber: step.stepNumber,
+        output: step.output,
+      }),
+    })),
+  });
+}
+
+function summarizeHiddenVerificationSteps(steps: VerificationResultStep[]): {
+  total: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+} {
+  const hiddenSteps = steps.filter((step) => step.visibility === "hidden");
+  return {
+    total: hiddenSteps.length,
+    passed: hiddenSteps.filter((step) => step.status === "pass").length,
+    failed: hiddenSteps.filter((step) => step.status === "fail" || step.status === "error").length,
+    skipped: hiddenSteps.filter((step) => step.status === "skip").length,
+  };
+}
+
+async function updateVerificationJobStatusFromResult(args: {
+  ctx: any;
+  verificationId: Id<"verifications">;
+  body: VerificationResultCallbackBody;
+}): Promise<void> {
+  const job = await args.ctx.runQuery(
+    internal.verificationJobs.getByVerificationIdInternal,
+    { verificationId: args.verificationId },
+  );
+  if (!job) return;
+  const lastReceipt = args.body.validationReceipts && args.body.validationReceipts.length > 0
+    ? [...args.body.validationReceipts].sort((a, b) => b.orderIndex - a.orderIndex)[0]
+    : undefined;
+  await args.ctx.runMutation(internal.verificationJobs.updateStatus, {
+    jobId: job._id,
+    status: args.body.overallStatus === "pass" ? "completed" : "failed",
+    currentGate: lastReceipt?.legKey,
+    completedAt: Date.now(),
+  });
+}
+
+async function finalizeVerificationResult(args: {
+  ctx: any;
+  body: VerificationResultCallbackBody;
+  baseLog: VerificationResultLogContext;
+}): Promise<void> {
+  const verificationStatus = args.body.overallStatus === "pass" ? "passed" : "failed";
+  await args.ctx.runMutation(internal.verifications.updateResult, {
+    verificationId: args.baseLog.verificationId,
+    status: verificationStatus as "passed" | "failed",
+    completedAt: Date.now(),
+    feedbackJson: args.body.feedbackJson,
+  });
+  await args.ctx.runMutation(internal.submissions.updateStatus, {
+    submissionId: args.baseLog.submissionId,
+    status: verificationStatus as "passed" | "failed",
+  });
+  await updateVerificationJobStatusFromResult({
+    ctx: args.ctx,
+    verificationId: args.baseLog.verificationId,
+    body: args.body,
+  });
+  await args.ctx.runMutation(internal.verifications.recordLogInternal, {
+    ...args.baseLog,
+    source: "verification_lifecycle",
+    level: args.body.overallStatus === "pass" ? "info" : "error",
+    eventType: "verification_result_persisted",
+    message: `Verification persisted with status=${verificationStatus}`,
+    detailsJson: stringifyLogDetails({
+      overallStatus: args.body.overallStatus,
+      totalDurationMs: args.body.totalDurationMs,
+      hiddenSummary: summarizeHiddenVerificationSteps(args.body.steps ?? []),
+      feedbackJson: args.body.feedbackJson,
+    }),
+  });
+  if (args.body.overallStatus !== "pass") return;
+  await args.ctx.runMutation(internal.verifications.recordLogInternal, {
+    ...args.baseLog,
+    source: "verification_lifecycle",
+    level: "info",
+    eventType: "payout_trigger_scheduled",
+    message: "Scheduled triggerPayoutOnVerificationPass after passed verification",
+    detailsJson: stringifyLogDetails({
+      verificationId: args.baseLog.verificationId,
+      submissionId: args.baseLog.submissionId,
+      bountyId: args.baseLog.bountyId,
+    }),
+  });
+  await args.ctx.scheduler.runAfter(
+    0,
+    internal.verifications.triggerPayoutOnVerificationPass,
+    {
+      verificationId: args.baseLog.verificationId,
+      bountyId: args.baseLog.bountyId,
+      submissionId: args.baseLog.submissionId,
+    },
+  );
+}
+
 http.route({
   path: "/api/verification/result",
   method: "POST",
@@ -2945,164 +3558,36 @@ http.route({
       });
     }
 
-    let body: {
-      submissionId: string;
-      bountyId: string;
-      jobId: string;
-      overallStatus: "pass" | "fail" | "error";
-      jobHmac?: string;
-      callbackTimestampMs?: number;
-      callbackNonce?: string;
-      callbackSignature?: string;
-      gates: Array<{
-        gate: string;
-        status: string;
-        durationMs: number;
-        summary: string;
-        details?: Record<string, unknown>;
-      }>;
-      totalDurationMs: number;
-      feedbackJson?: string;
-      validationReceipts?: Array<{
-        verificationId?: string;
-        attemptNumber: number;
-        legKey: string;
-        orderIndex: number;
-        status: string;
-        blocking: boolean;
-        unreachedByLegKey?: string;
-        startedAt: number;
-        completedAt: number;
-        durationMs: number;
-        summaryLine: string;
-        rawBody?: string;
-        sarifJson?: string;
-        policyJson?: string;
-        metadataJson?: string;
-        normalizedJson?: string;
-      }>;
-      steps?: Array<{
-        scenarioName: string;
-        featureName: string;
-        status: "pass" | "fail" | "skip" | "error";
-        executionTimeMs: number;
-        output?: string;
-        stepNumber: number;
-        visibility: "public" | "hidden";
-      }>;
-    };
-
+    let body: VerificationResultCallbackBody;
     try {
       body = await request.json();
     } catch {
       return mcpError("Invalid JSON body", 400);
     }
-
     if (!body.submissionId || !body.bountyId || !body.overallStatus) {
       return mcpError("Missing required fields: submissionId, bountyId, overallStatus");
     }
 
     const submissionId = body.submissionId as Id<"submissions">;
     const bountyId = body.bountyId as Id<"bounties">;
-
     try {
-      // Look up the verification for this submission
-      const verification = await ctx.runQuery(
-        internal.verifications.getBySubmissionInternal,
-        { submissionId }
-      );
-      if (!verification) {
-        return mcpError("Verification not found for submission", 404);
-      }
-      const verificationId = verification._id;
-      const submission = await ctx.runQuery(
-        internal.submissions.getByIdInternal,
-        { submissionId }
-      );
-      const activeClaim = submission
-        ? await ctx.runQuery(internal.bountyClaims.getByAgentAndBounty, {
-            agentId: submission.agentId,
-            bountyId,
-          })
-        : null;
-      const activeClaimId = activeClaim?._id;
-      const baseLog = {
-        verificationId,
-        submissionId,
-        bountyId,
-        agentId: submission?.agentId,
-        claimId: activeClaimId,
-      };
+      const context = await loadVerificationResultContext(ctx, submissionId, bountyId);
+      if (!context) return mcpError("Verification not found for submission", 404);
 
-      // SECURITY (H6): Verify per-job HMAC token — mandatory.
-      // This prevents forged results even if WORKER_SHARED_SECRET is compromised.
-      if (!body.jobHmac) {
-        return mcpError("Missing required job HMAC token", 403);
-      }
-      const hmacValid = await verifyJobHmac(
-        body.jobHmac,
-        verificationId,
-        body.submissionId,
-        body.bountyId,
-      );
-      if (!hmacValid) {
-        return mcpError("Invalid job HMAC token", 403);
-      }
+      const callbackAuthError = await verifyVerificationResultCallbackAuth({
+        ctx,
+        verificationId: context.verification._id,
+        body,
+      });
+      if (callbackAuthError) return callbackAuthError;
 
-      // SECURITY (H7): Verify signed callback envelope (timestamp + nonce).
-      if (
-        body.callbackTimestampMs === undefined ||
-        !body.callbackNonce ||
-        !body.callbackSignature
-      ) {
-        return mcpError(
-          "Missing callback auth envelope fields: callbackTimestampMs, callbackNonce, callbackSignature",
-          403,
-        );
-      }
-      if (!isFreshWorkerCallbackTimestamp(body.callbackTimestampMs)) {
-        return mcpError("Stale or invalid callback timestamp", 403);
-      }
-      const callbackSignatureValid = await verifyWorkerCallbackSignature(
-        body.callbackSignature,
-        {
-          submissionId: body.submissionId,
-          bountyId: body.bountyId,
-          jobId: body.jobId,
-          overallStatus: body.overallStatus,
-          jobHmac: body.jobHmac,
-          callbackTimestampMs: body.callbackTimestampMs,
-          callbackNonce: body.callbackNonce,
-        },
-      );
-      if (!callbackSignatureValid) {
-        return mcpError("Invalid callback signature", 403);
-      }
-      const callbackNonceApi = internal as unknown as {
-        workerCallbackNonces: { consume: unknown };
-      };
-      const nonceResult = await ctx.runMutation(
-        callbackNonceApi.workerCallbackNonces.consume as never,
-        {
-          nonce: body.callbackNonce,
-          verificationId,
-          ttlMs: 10 * 60 * 1000,
-        },
-      );
-      if (!nonceResult.accepted) {
-        return mcpError("Callback nonce already used", 409);
-      }
-
-      // SECURITY (M12): Reject late results for verifications that have
-      // already been timed out by the cron. This closes the race window
-      // between worker result arrival and cron timeout marking.
-      if (verification.status === "failed" || verification.status === "passed") {
+      if (context.verification.status === "failed" || context.verification.status === "passed") {
         await ctx.runMutation(internal.verifications.recordLogInternal, {
-          ...baseLog,
+          ...context.baseLog,
           source: "verification_result_callback",
           level: "warning",
           eventType: "callback_ignored_terminal_verification",
-          message: `Ignored callback because verification is already terminal: ${verification.status}`,
+          message: `Ignored callback because verification is already terminal: ${context.verification.status}`,
           detailsJson: stringifyLogDetails({
             jobId: body.jobId,
             overallStatus: body.overallStatus,
@@ -3110,13 +3595,13 @@ http.route({
         });
         return mcpJson({
           success: false,
-          reason: `Verification already in terminal state: ${verification.status}`,
-          verificationId,
+          reason: `Verification already in terminal state: ${context.verification.status}`,
+          verificationId: context.verification._id,
         });
       }
 
       await ctx.runMutation(internal.verifications.recordLogInternal, {
-        ...baseLog,
+        ...context.baseLog,
         source: "verification_result_callback",
         level: "info",
         eventType: "callback_received",
@@ -3130,203 +3615,34 @@ http.route({
         }),
       });
 
-      if (body.validationReceipts && body.validationReceipts.length > 0) {
-        const receiptApi = internal as unknown as {
-          verificationReceipts: { recordInternal: unknown };
-        };
-
-        for (const receipt of body.validationReceipts) {
-          const mappedStatus = RECEIPT_STATUS_MAP[receipt.status];
-          if (!mappedStatus) continue;
-          await ctx.runMutation(receiptApi.verificationReceipts.recordInternal as never, {
-            verificationId,
-            submissionId,
-            bountyId,
-            agentId: submission?.agentId,
-            claimId: activeClaimId,
-            attemptNumber: receipt.attemptNumber,
-            legKey: receipt.legKey,
-            orderIndex: receipt.orderIndex,
-            status: mappedStatus,
-            blocking: receipt.blocking,
-            unreachedByLegKey: receipt.unreachedByLegKey,
-            startedAt: receipt.startedAt,
-            completedAt: receipt.completedAt,
-            durationMs: receipt.durationMs,
-            summaryLine: receipt.summaryLine,
-            rawBody: receipt.rawBody,
-            sarifJson: receipt.sarifJson,
-            policyJson: receipt.policyJson,
-            metadataJson: receipt.metadataJson,
-            normalizedJson: receipt.normalizedJson,
-            createdAt: Date.now(),
-          });
-        }
-      }
-
-      // 1. Record each gate result (skip "test" gate — those are steps)
-      const gateLogs: Array<{
-        verificationId: Id<"verifications">;
-        submissionId: Id<"submissions">;
-        bountyId: Id<"bounties">;
-        agentId?: Id<"users">;
-        claimId?: Id<"bountyClaims">;
-        source: "verification_result_callback";
-        level: "info" | "warning" | "error";
-        eventType: string;
-        gate?: string;
-        message: string;
-        detailsJson?: string;
-      }> = [];
-      for (const gate of body.gates) {
-        const gateType = GATE_TYPE_MAP[gate.gate];
-        const gateStatus = GATE_STATUS_MAP[gate.status];
-        if (gateType && gateStatus) {
-          const issues: string[] = [];
-          if (gate.summary) issues.push(gate.summary);
-          const detailsJson = gate.details ? JSON.stringify(gate.details) : undefined;
-          await ctx.runMutation(internal.sanityGates.record, {
-            verificationId,
-            gateType: gateType as "build" | "lint" | "typecheck" | "security" | "sonarqube" | "snyk" | "memory",
-            tool: gate.summary || gate.gate,
-            status: gateStatus as "passed" | "failed" | "warning",
-            issues: issues.length > 0 ? issues : undefined,
-            detailsJson,
-          });
-        }
-        gateLogs.push({
-          ...baseLog,
-          source: "verification_result_callback",
-          level: gate.status === "pass" || gate.status === "passed"
-            ? "info"
-            : gate.status === "warning" || gate.status === "warn"
-              ? "warning"
-              : "error",
-          eventType: "gate_result",
-          gate: gate.gate,
-          message: `${gate.gate} => ${gate.status}: ${gate.summary}`,
-          detailsJson: stringifyLogDetails({
-            durationMs: gate.durationMs,
-            details: gate.details,
-          }),
-        });
-      }
-      if (gateLogs.length > 0) {
-        await ctx.runMutation(internal.verifications.recordLogsBatchInternal, {
-          logs: gateLogs,
-        });
-      }
-
-      // 2. Record step results (batch insert)
-      if (body.steps && body.steps.length > 0) {
-        await ctx.runMutation(internal.verificationSteps.createInternal, {
-          steps: body.steps.map((step) => ({
-            verificationId,
-            scenarioName: step.scenarioName,
-            featureName: step.featureName,
-            status: step.status,
-            executionTimeMs: step.executionTimeMs,
-            output: step.output,
-            stepNumber: step.stepNumber,
-            visibility: step.visibility,
-          })),
-        });
-
-        await ctx.runMutation(internal.verifications.recordLogsBatchInternal, {
-          logs: body.steps.map((step) => ({
-            ...baseLog,
-            source: "verification_result_callback" as const,
-            level: step.status === "pass" || step.status === "skip" ? "info" : "error",
-            eventType: "test_step_result",
-            visibility: step.visibility,
-            message: `${step.featureName} > ${step.scenarioName} => ${step.status}`,
-            detailsJson: stringifyLogDetails({
-              executionTimeMs: step.executionTimeMs,
-              stepNumber: step.stepNumber,
-              output: step.output,
-            }),
-          })),
-        });
-      }
-
-      // 3. Update verification status
-      const verificationStatus = body.overallStatus === "pass" ? "passed" : "failed";
-      await ctx.runMutation(internal.verifications.updateResult, {
-        verificationId,
-        status: verificationStatus as "passed" | "failed",
-        completedAt: Date.now(),
-        feedbackJson: body.feedbackJson,
-      });
-
-      // 4. Update submission status
-      await ctx.runMutation(internal.submissions.updateStatus, {
+      await persistVerificationResultReceipts({
+        ctx,
+        body,
+        verificationId: context.verification._id,
         submissionId,
-        status: verificationStatus as "passed" | "failed",
+        bountyId,
+        submission: context.submission,
+        activeClaimId: context.activeClaimId,
+      });
+      await persistVerificationResultGates({
+        ctx,
+        gates: body.gates,
+        verificationId: context.verification._id,
+        baseLog: context.baseLog,
+      });
+      await persistVerificationResultSteps({
+        ctx,
+        steps: body.steps ?? [],
+        verificationId: context.verification._id,
+        baseLog: context.baseLog,
+      });
+      await finalizeVerificationResult({
+        ctx,
+        body,
+        baseLog: context.baseLog,
       });
 
-      // 5. Update verificationJob status (if exists)
-      const job = await ctx.runQuery(
-        internal.verificationJobs.getByVerificationIdInternal,
-        { verificationId }
-      );
-      if (job) {
-        const lastReceipt = body.validationReceipts && body.validationReceipts.length > 0
-          ? [...body.validationReceipts].sort((a, b) => b.orderIndex - a.orderIndex)[0]
-          : undefined;
-        await ctx.runMutation(internal.verificationJobs.updateStatus, {
-          jobId: job._id,
-          status: body.overallStatus === "pass" ? "completed" : "failed",
-          currentGate: lastReceipt?.legKey,
-          completedAt: Date.now(),
-        });
-      }
-
-      const hiddenSteps = (body.steps ?? []).filter((step) => step.visibility === "hidden");
-      await ctx.runMutation(internal.verifications.recordLogInternal, {
-        ...baseLog,
-        source: "verification_lifecycle",
-        level: body.overallStatus === "pass" ? "info" : "error",
-        eventType: "verification_result_persisted",
-        message: `Verification persisted with status=${verificationStatus}`,
-        detailsJson: stringifyLogDetails({
-          overallStatus: body.overallStatus,
-          totalDurationMs: body.totalDurationMs,
-          hiddenSummary: {
-            total: hiddenSteps.length,
-            passed: hiddenSteps.filter((step) => step.status === "pass").length,
-            failed: hiddenSteps.filter((step) => step.status === "fail" || step.status === "error").length,
-            skipped: hiddenSteps.filter((step) => step.status === "skip").length,
-          },
-          feedbackJson: body.feedbackJson,
-        }),
-      });
-
-      // 6. If passed, trigger payout
-      if (body.overallStatus === "pass") {
-        await ctx.runMutation(internal.verifications.recordLogInternal, {
-          ...baseLog,
-          source: "verification_lifecycle",
-          level: "info",
-          eventType: "payout_trigger_scheduled",
-          message: "Scheduled triggerPayoutOnVerificationPass after passed verification",
-          detailsJson: stringifyLogDetails({
-            verificationId,
-            submissionId,
-            bountyId,
-          }),
-        });
-        await ctx.scheduler.runAfter(
-          0,
-          internal.verifications.triggerPayoutOnVerificationPass,
-          {
-            verificationId,
-            bountyId,
-            submissionId,
-          }
-        );
-      }
-
-      return mcpJson({ success: true, verificationId });
+      return mcpJson({ success: true, verificationId: context.verification._id });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to process verification result";
       console.error(`[verification/result] Error: ${message}`);
@@ -3334,6 +3650,164 @@ http.route({
     }
   }),
 });
+
+type VerificationReceiptCallbackBody = {
+  verificationId?: string;
+  submissionId: string;
+  bountyId: string;
+  jobId: string;
+  attemptNumber: number;
+  legKey: string;
+  orderIndex: number;
+  status: string;
+  blocking: boolean;
+  unreachedByLegKey?: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  summaryLine: string;
+  rawBody?: string;
+  sarifJson?: string;
+  policyJson?: string;
+  metadataJson?: string;
+  normalizedJson?: string;
+  jobHmac?: string;
+  callbackTimestampMs?: number;
+  callbackNonce?: string;
+  callbackSignature?: string;
+};
+
+async function processVerificationReceiptCallback(args: {
+  ctx: any;
+  body: VerificationReceiptCallbackBody;
+  receiptStatus:
+    | "pass"
+    | "fail"
+    | "error"
+    | "warning"
+    | "unreached"
+    | "skipped_policy"
+    | "skipped_policy_due_process";
+}): Promise<Response> {
+  const submissionId = args.body.submissionId as Id<"submissions">;
+  const bountyId = args.body.bountyId as Id<"bounties">;
+  const verification = await args.ctx.runQuery(internal.verifications.getBySubmissionInternal, {
+    submissionId,
+  });
+  if (!verification) return mcpError("Verification not found for submission", 404);
+  const verificationId = verification._id;
+
+  const hmacError = await verifyWorkerJobHmacToken({
+    verificationId,
+    jobHmac: args.body.jobHmac,
+    submissionId: args.body.submissionId,
+    bountyId: args.body.bountyId,
+  });
+  if (hmacError) return hmacError;
+
+  const callbackEnvelopeError = await verifyWorkerCallbackEnvelope({
+    callbackTimestampMs: args.body.callbackTimestampMs,
+    callbackNonce: args.body.callbackNonce,
+    callbackSignature: args.body.callbackSignature,
+    payload: {
+      submissionId: args.body.submissionId,
+      bountyId: args.body.bountyId,
+      jobId: args.body.jobId,
+      overallStatus: args.body.status,
+      jobHmac: args.body.jobHmac!,
+    },
+  });
+  if (callbackEnvelopeError) return callbackEnvelopeError;
+
+  const nonceError = await consumeWorkerCallbackNonce({
+    ctx: args.ctx,
+    callbackNonce: args.body.callbackNonce!,
+    verificationId,
+  });
+  if (nonceError) return nonceError;
+
+  if (verification.status === "failed" || verification.status === "passed") {
+    return mcpJson({
+      success: false,
+      reason: `Verification already in terminal state: ${verification.status}`,
+      verificationId,
+    });
+  }
+
+  const submission = await args.ctx.runQuery(internal.submissions.getByIdInternal, {
+    submissionId,
+  });
+  const activeClaim = submission
+    ? await args.ctx.runQuery(internal.bountyClaims.getByAgentAndBounty, {
+        agentId: submission.agentId,
+        bountyId,
+      })
+    : null;
+
+  const receiptApi = internal as unknown as {
+    verificationReceipts: { recordInternal: unknown };
+  };
+  await args.ctx.runMutation(receiptApi.verificationReceipts.recordInternal as never, {
+    verificationId,
+    submissionId,
+    bountyId,
+    agentId: submission?.agentId,
+    claimId: activeClaim?._id,
+    attemptNumber: args.body.attemptNumber,
+    legKey: args.body.legKey,
+    orderIndex: args.body.orderIndex,
+    status: args.receiptStatus,
+    blocking: args.body.blocking,
+    unreachedByLegKey: args.body.unreachedByLegKey,
+    startedAt: args.body.startedAt,
+    completedAt: args.body.completedAt,
+    durationMs: args.body.durationMs,
+    summaryLine: args.body.summaryLine,
+    rawBody: args.body.rawBody,
+    sarifJson: args.body.sarifJson,
+    policyJson: args.body.policyJson,
+    metadataJson: args.body.metadataJson,
+    normalizedJson: args.body.normalizedJson,
+    createdAt: Date.now(),
+  });
+
+  const verificationJob = await args.ctx.runQuery(
+    internal.verificationJobs.getByVerificationIdInternal,
+    { verificationId },
+  );
+  if (verificationJob) {
+    await args.ctx.runMutation(internal.verificationJobs.updateStatus, {
+      jobId: verificationJob._id,
+      status: "running",
+      currentGate: args.body.legKey,
+      startedAt: verificationJob.startedAt ?? Date.now(),
+    });
+  }
+
+  await args.ctx.runMutation(internal.verifications.recordLogInternal, {
+    verificationId,
+    submissionId,
+    bountyId,
+    agentId: submission?.agentId,
+    claimId: activeClaim?._id,
+    source: "verification_result_callback",
+    level: args.receiptStatus === "pass"
+      ? "info"
+      : args.receiptStatus === "warning"
+        ? "warning"
+        : "error",
+    eventType: "validation_receipt",
+    gate: args.body.legKey,
+    message: `${args.body.legKey} => ${args.receiptStatus}: ${args.body.summaryLine}`,
+    detailsJson: stringifyLogDetails({
+      orderIndex: args.body.orderIndex,
+      blocking: args.body.blocking,
+      unreachedByLegKey: args.body.unreachedByLegKey,
+    }),
+  });
+
+  return mcpJson({ success: true, verificationId });
+}
 
 http.route({
   path: "/api/verification/receipt",
@@ -3346,31 +3820,7 @@ http.route({
       });
     }
 
-    let body: {
-      verificationId?: string;
-      submissionId: string;
-      bountyId: string;
-      jobId: string;
-      attemptNumber: number;
-      legKey: string;
-      orderIndex: number;
-      status: string;
-      blocking: boolean;
-      unreachedByLegKey?: string;
-      startedAt: number;
-      completedAt: number;
-      durationMs: number;
-      summaryLine: string;
-      rawBody?: string;
-      sarifJson?: string;
-      policyJson?: string;
-      metadataJson?: string;
-      normalizedJson?: string;
-      jobHmac?: string;
-      callbackTimestampMs?: number;
-      callbackNonce?: string;
-      callbackSignature?: string;
-    };
+    let body: VerificationReceiptCallbackBody;
 
     try {
       body = await request.json();
@@ -3386,148 +3836,11 @@ http.route({
     if (!receiptStatus) return mcpError("Invalid receipt status", 400);
 
     try {
-      const submissionId = body.submissionId as Id<"submissions">;
-      const bountyId = body.bountyId as Id<"bounties">;
-      const verification = await ctx.runQuery(internal.verifications.getBySubmissionInternal, {
-        submissionId,
+      return await processVerificationReceiptCallback({
+        ctx,
+        body,
+        receiptStatus,
       });
-      if (!verification) return mcpError("Verification not found for submission", 404);
-      const verificationId = verification._id;
-
-      if (!body.jobHmac) return mcpError("Missing required job HMAC token", 403);
-      const hmacValid = await verifyJobHmac(
-        body.jobHmac,
-        verificationId,
-        body.submissionId,
-        body.bountyId,
-      );
-      if (!hmacValid) return mcpError("Invalid job HMAC token", 403);
-
-      if (
-        body.callbackTimestampMs === undefined ||
-        !body.callbackNonce ||
-        !body.callbackSignature
-      ) {
-        return mcpError(
-          "Missing callback auth envelope fields: callbackTimestampMs, callbackNonce, callbackSignature",
-          403,
-        );
-      }
-      if (!isFreshWorkerCallbackTimestamp(body.callbackTimestampMs)) {
-        return mcpError("Stale or invalid callback timestamp", 403);
-      }
-      const callbackSignatureValid = await verifyWorkerCallbackSignature(
-        body.callbackSignature,
-        {
-          submissionId: body.submissionId,
-          bountyId: body.bountyId,
-          jobId: body.jobId,
-          overallStatus: body.status,
-          jobHmac: body.jobHmac,
-          callbackTimestampMs: body.callbackTimestampMs,
-          callbackNonce: body.callbackNonce,
-        },
-      );
-      if (!callbackSignatureValid) {
-        return mcpError("Invalid callback signature", 403);
-      }
-
-      const callbackNonceApi = internal as unknown as {
-        workerCallbackNonces: { consume: unknown };
-      };
-      const nonceResult = await ctx.runMutation(
-        callbackNonceApi.workerCallbackNonces.consume as never,
-        {
-          nonce: body.callbackNonce,
-          verificationId,
-          ttlMs: 10 * 60 * 1000,
-        },
-      );
-      if (!nonceResult.accepted) {
-        return mcpError("Callback nonce already used", 409);
-      }
-
-      if (verification.status === "failed" || verification.status === "passed") {
-        return mcpJson({
-          success: false,
-          reason: `Verification already in terminal state: ${verification.status}`,
-          verificationId,
-        });
-      }
-
-      const submission = await ctx.runQuery(internal.submissions.getByIdInternal, {
-        submissionId,
-      });
-      const activeClaim = submission
-        ? await ctx.runQuery(internal.bountyClaims.getByAgentAndBounty, {
-            agentId: submission.agentId,
-            bountyId,
-          })
-        : null;
-
-      const receiptApi = internal as unknown as {
-        verificationReceipts: { recordInternal: unknown };
-      };
-      await ctx.runMutation(receiptApi.verificationReceipts.recordInternal as never, {
-        verificationId,
-        submissionId,
-        bountyId,
-        agentId: submission?.agentId,
-        claimId: activeClaim?._id,
-        attemptNumber: body.attemptNumber,
-        legKey: body.legKey,
-        orderIndex: body.orderIndex,
-        status: receiptStatus,
-        blocking: body.blocking,
-        unreachedByLegKey: body.unreachedByLegKey,
-        startedAt: body.startedAt,
-        completedAt: body.completedAt,
-        durationMs: body.durationMs,
-        summaryLine: body.summaryLine,
-        rawBody: body.rawBody,
-        sarifJson: body.sarifJson,
-        policyJson: body.policyJson,
-        metadataJson: body.metadataJson,
-        normalizedJson: body.normalizedJson,
-        createdAt: Date.now(),
-      });
-
-      const verificationJob = await ctx.runQuery(
-        internal.verificationJobs.getByVerificationIdInternal,
-        { verificationId },
-      );
-      if (verificationJob) {
-        await ctx.runMutation(internal.verificationJobs.updateStatus, {
-          jobId: verificationJob._id,
-          status: "running",
-          currentGate: body.legKey,
-          startedAt: verificationJob.startedAt ?? Date.now(),
-        });
-      }
-
-      await ctx.runMutation(internal.verifications.recordLogInternal, {
-        verificationId,
-        submissionId,
-        bountyId,
-        agentId: submission?.agentId,
-        claimId: activeClaim?._id,
-        source: "verification_result_callback",
-        level: receiptStatus === "pass"
-          ? "info"
-          : receiptStatus === "warning"
-            ? "warning"
-            : "error",
-        eventType: "validation_receipt",
-        gate: body.legKey,
-        message: `${body.legKey} => ${receiptStatus}: ${body.summaryLine}`,
-        detailsJson: stringifyLogDetails({
-          orderIndex: body.orderIndex,
-          blocking: body.blocking,
-          unreachedByLegKey: body.unreachedByLegKey,
-        }),
-      });
-
-      return mcpJson({ success: true, verificationId });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to process verification receipt";
       return mcpError(message, 500);
@@ -3688,6 +4001,76 @@ http.route({
 // Stripe Webhook
 // ---------------------------------------------------------------------------
 
+async function constructStripeWebhookEvent(payload: string, signature: string, webhookSecret: string): Promise<{
+  type: string;
+  data: { object: Record<string, unknown> };
+}> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const Stripe = require("stripe");
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+  return stripe.webhooks.constructEventAsync(payload, signature, webhookSecret);
+}
+
+async function handleStripeWebhookEvent(ctx: any, event: { type: string; data: { object: Record<string, unknown> } }): Promise<void> {
+  switch (event.type) {
+    case "payment_intent.succeeded": {
+      const pi = event.data.object as { id: string; metadata?: { bountyId?: string } };
+      if (pi.metadata?.bountyId) {
+        await ctx.runMutation(internal.stripe.updateBountyEscrow, {
+          bountyId: pi.metadata.bountyId as Id<"bounties">,
+          stripePaymentIntentId: pi.id,
+          escrowStatus: "funded",
+        });
+      }
+      return;
+    }
+    case "payment_intent.payment_failed": {
+      const pi = event.data.object as { id: string; metadata?: { bountyId?: string; convexUserId?: string } };
+      if (pi.metadata?.bountyId) {
+        console.warn(
+          `Payment failed for bounty ${pi.metadata.bountyId}: ${pi.id}`
+        );
+        const failedBounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+          bountyId: pi.metadata.bountyId as Id<"bounties">,
+        });
+        if (failedBounty) {
+          await ctx.runMutation(internal.notifications.createPaymentFailed, {
+            userId: failedBounty.creatorId,
+            bountyId: failedBounty._id,
+            title: failedBounty.title,
+            paymentIntentId: pi.id,
+          });
+        }
+      }
+      return;
+    }
+    case "setup_intent.succeeded": {
+      const si = event.data.object as { metadata?: { convexUserId?: string } };
+      if (si.metadata?.convexUserId) {
+        await ctx.runMutation(internal.users.markHasPaymentMethod, {
+          userId: si.metadata.convexUserId as Id<"users">,
+        });
+      }
+      return;
+    }
+    case "account.updated": {
+      const account = event.data.object as {
+        id: string;
+        charges_enabled: boolean;
+        payouts_enabled: boolean;
+      };
+      const onboardingComplete = account.charges_enabled && account.payouts_enabled;
+      await ctx.runMutation(internal.stripe.updateConnectOnboardingStatus, {
+        stripeConnectAccountId: account.id,
+        onboardingComplete,
+      });
+      return;
+    }
+    default:
+      console.log(`Unhandled Stripe event: ${event.type}`);
+  }
+}
+
 http.route({
   path: "/stripe-webhook",
   method: "POST",
@@ -3705,90 +4088,16 @@ http.route({
 
     const payload = await request.text();
 
-    let event: {
-      type: string;
-      data: {
-        object: Record<string, unknown>;
-      };
-    };
-
+    let event: { type: string; data: { object: Record<string, unknown> } };
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const Stripe = require("stripe");
-      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-      event = await stripe.webhooks.constructEventAsync(
-        payload,
-        signature,
-        webhookSecret
-      ) as typeof event;
+      event = await constructStripeWebhookEvent(payload, signature, webhookSecret);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       console.error("Stripe webhook verification failed:", message);
       return new Response(`Webhook Error: ${message}`, { status: 400 });
     }
 
-    switch (event.type) {
-      case "payment_intent.succeeded": {
-        const pi = event.data.object as { id: string; metadata?: { bountyId?: string } };
-        if (pi.metadata?.bountyId) {
-          await ctx.runMutation(internal.stripe.updateBountyEscrow, {
-            bountyId: pi.metadata.bountyId as Id<"bounties">,
-            stripePaymentIntentId: pi.id,
-            escrowStatus: "funded",
-          });
-        }
-        break;
-      }
-      case "payment_intent.payment_failed": {
-        const pi = event.data.object as { id: string; metadata?: { bountyId?: string; convexUserId?: string } };
-        if (pi.metadata?.bountyId) {
-          console.warn(
-            `Payment failed for bounty ${pi.metadata.bountyId}: ${pi.id}`
-          );
-          // Look up bounty to get creator and title for the notification
-          const failedBounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
-            bountyId: pi.metadata.bountyId as Id<"bounties">,
-          });
-          if (failedBounty) {
-            await ctx.runMutation(internal.notifications.createPaymentFailed, {
-              userId: failedBounty.creatorId,
-              bountyId: failedBounty._id,
-              title: failedBounty.title,
-              paymentIntentId: pi.id,
-            });
-          }
-        }
-        break;
-      }
-      case "setup_intent.succeeded": {
-        const si = event.data.object as { metadata?: { convexUserId?: string } };
-        if (si.metadata?.convexUserId) {
-          await ctx.runMutation(internal.users.markHasPaymentMethod, {
-            userId: si.metadata.convexUserId as Id<"users">,
-          });
-        }
-        break;
-      }
-      case "account.updated": {
-        const account = event.data.object as {
-          id: string;
-          charges_enabled: boolean;
-          payouts_enabled: boolean;
-        };
-        const onboardingComplete =
-          account.charges_enabled && account.payouts_enabled;
-        await ctx.runMutation(
-          internal.stripe.updateConnectOnboardingStatus,
-          {
-            stripeConnectAccountId: account.id,
-            onboardingComplete,
-          }
-        );
-        break;
-      }
-      default:
-        console.log(`Unhandled Stripe event: ${event.type}`);
-    }
+    await handleStripeWebhookEvent(ctx, event);
 
     return new Response("OK", { status: 200 });
   }),

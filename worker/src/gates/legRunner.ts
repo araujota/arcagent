@@ -92,427 +92,29 @@ export async function runVerificationLegs(args: RunLegsArgs): Promise<LegRunnerR
   const progressPerLeg = (progressEnd - progressStart) / LEG_SPECS.length;
 
   let abortedByLeg: string | null = null;
-  let bddPublicSteps: StepResult[] = [];
-  let bddHiddenSteps: StepResult[] = [];
+  const state: {
+    bddPublicSteps: StepResult[];
+    bddHiddenSteps: StepResult[];
+    allSteps: StepResult[];
+  } = {
+    bddPublicSteps: [],
+    bddHiddenSteps: [],
+    allSteps,
+  };
 
   for (let i = 0; i < LEG_SPECS.length; i++) {
     const spec = LEG_SPECS[i]!;
-
-    if (abortedByLeg && !ALWAYS_RUN_LEGS_AFTER_ABORT.has(spec.key)) {
-      const now = Date.now();
-      const unreached = makeReceipt({
-        args,
-        spec,
-        orderIndex: i,
-        status: "unreached",
-        startedAt: now,
-        completedAt: now,
-        summaryLine: "UNREACHED",
-        blocking: spec.blocking,
-        unreachedByLegKey: abortedByLeg,
-      });
-      receipts.push(unreached);
-      if (args.onReceipt) await args.onReceipt(unreached);
-      await args.job.updateProgress(Math.round(progressStart + progressPerLeg * (i + 1)));
-      continue;
-    }
-
-    const startedAt = Date.now();
-    let receipt: ValidationReceipt;
-
-    try {
-      switch (spec.key) {
-        case "prepare_environment": {
-          // Keep prepare leg explicit for standardized ordering/auditing.
-          receipt = makeReceipt({
-            args,
-            spec,
-            orderIndex: i,
-            status: "pass",
-            startedAt,
-            completedAt: Date.now(),
-            summaryLine: "PASS",
-            blocking: spec.blocking,
-            policyJson: JSON.stringify({ mode: "standardized_prepare" }),
-          });
-          break;
-        }
-        case "build": {
-          const gate = await runBuildGate(args.vm, args.language, vmConfig.defaultGateTimeoutMs, args.diff);
-          legacyGates.push(gate);
-          receipt = gateToReceipt(args, spec, i, gate, startedAt);
-          break;
-        }
-        case "lint_no_new_errors": {
-          const gate = await runLintGate(args.vm, args.language, vmConfig.defaultGateTimeoutMs, args.diff);
-          legacyGates.push(gate);
-          receipt = gateToReceipt(args, spec, i, gate, startedAt, {
-            mode: "no_new_errors",
-            strategy: "diff_scoped",
-          });
-          break;
-        }
-        case "typecheck_no_new_errors": {
-          const gate = await runTypecheckGate(args.vm, args.language, vmConfig.defaultGateTimeoutMs, args.diff);
-          legacyGates.push(gate);
-          receipt = gateToReceipt(args, spec, i, gate, startedAt, {
-            mode: "no_new_errors",
-            strategy: "diff_scoped",
-          });
-          break;
-        }
-        case "security_no_new_high_critical": {
-          const gate = await runSecurityGate(args.vm, args.language, vmConfig.defaultGateTimeoutMs, args.diff);
-          legacyGates.push(gate);
-          receipt = gateToReceipt(args, spec, i, gate, startedAt, {
-            mode: "no_new_high_critical",
-            strategy: "diff_scoped_plus_dependency_scanners",
-          });
-          break;
-        }
-        case "memory": {
-          const gate = await runMemoryGate(args.vm, args.language, vmConfig.defaultGateTimeoutMs, args.diff);
-          legacyGates.push(gate);
-          receipt = gateToReceipt(args, spec, i, gate, startedAt);
-          break;
-        }
-        case "snyk_no_new_high_critical": {
-          const gate = await runSnykGate(args.vm, args.language, vmConfig.defaultGateTimeoutMs, args.diff);
-          const policy: Record<string, unknown> = {
-            mode: "no_new_high_critical",
-            strategy: "baseline_delta",
-          };
-
-          let receiptStatus = mapGateStatus(gate.status);
-          let summaryLine = receiptStatus === "pass" ? "PASS" : gate.summary;
-          let rawBody = receiptStatus === "pass" ? undefined : extractRawBody(gate);
-          let blocking = receiptStatus === "skipped_policy" ? false : spec.blocking;
-          let processFailureReason = extractAdvisoryProcessFailureReason(spec, gate);
-
-          const candidateCounts = extractSnykSeverityCounts(gate);
-          let introducedCounts = candidateCounts;
-          let baselineCounts: SnykSeverityCounts | undefined;
-          let comparedToBaseline = false;
-
-          if (!processFailureReason && candidateCounts) {
-            const baselineCommit = await resolveBaselineCommit(args.vm, args.baseCommitSha, args.candidateCommitSha);
-            if (baselineCommit) {
-              policy.baselineCommit = baselineCommit;
-              const baseline = await runSnykBaselineComparison({
-                vm: args.vm,
-                language: args.language,
-                timeoutMs: vmConfig.defaultGateTimeoutMs,
-                diff: args.diff,
-                candidateCommitSha: args.candidateCommitSha,
-                baselineCommitSha: baselineCommit,
-              });
-              if (baseline.error) {
-                processFailureReason = "Snyk baseline comparison failed";
-                receiptStatus = "skipped_policy_due_process";
-                summaryLine = processFailureReason;
-                rawBody = baseline.error;
-                blocking = false;
-              } else if (baseline.counts) {
-                comparedToBaseline = true;
-                baselineCounts = baseline.counts;
-                introducedCounts = {
-                  criticalCount: Math.max(0, candidateCounts.criticalCount - baseline.counts.criticalCount),
-                  highCount: Math.max(0, candidateCounts.highCount - baseline.counts.highCount),
-                  mediumCount: Math.max(0, candidateCounts.mediumCount - baseline.counts.mediumCount),
-                  lowCount: Math.max(0, candidateCounts.lowCount - baseline.counts.lowCount),
-                };
-              }
-            } else {
-              processFailureReason = "Snyk baseline commit could not be resolved";
-              receiptStatus = "skipped_policy_due_process";
-              summaryLine = processFailureReason;
-              rawBody = processFailureReason;
-              blocking = false;
-              policy.baselineReason = "missing_baseline_commit";
-            }
-          }
-
-          if (!processFailureReason && introducedCounts) {
-            const deltaHighCritical = introducedCounts.highCount + introducedCounts.criticalCount;
-            const deltaMinor = introducedCounts.mediumCount + introducedCounts.lowCount;
-            policy.candidate = candidateCounts;
-            if (baselineCounts) policy.baseline = baselineCounts;
-            policy.deltaCounts = introducedCounts;
-            policy.deltaHighCritical = deltaHighCritical;
-            policy.deltaMinor = deltaMinor;
-
-            if (deltaHighCritical > 0) {
-              receiptStatus = "fail";
-              summaryLine = `Snyk introduced ${deltaHighCritical} new high/critical issue(s)`;
-              blocking = true;
-            } else {
-              receiptStatus = "pass";
-              summaryLine = "PASS";
-              blocking = false;
-              rawBody = undefined;
-            }
-          } else if (processFailureReason) {
-            receiptStatus = "skipped_policy_due_process";
-            blocking = false;
-            policy.processFailureReason = processFailureReason;
-          }
-
-          const snykFindings = extractSnykFindings(gate);
-          const normalized = normalizeSnykOutput({
-            introducedCounts: processFailureReason
-              ? {
-                  criticalCount: 0,
-                  highCount: 0,
-                  mediumCount: 0,
-                  lowCount: 0,
-                }
-              : introducedCounts ?? {
-                  criticalCount: 0,
-                  highCount: 0,
-                  mediumCount: 0,
-                  lowCount: 0,
-                },
-            comparedToBaseline,
-            scaFindings: snykFindings.scaFindings,
-            sastFindings: snykFindings.sastFindings,
-            processFailureReason,
-            summaryLine,
-            issueBudget: 20,
-          });
-
-          const legacyStatus = receiptStatusToLegacyGateStatus(receiptStatus);
-          legacyGates.push({
-            ...gate,
-            status: legacyStatus,
-            summary: summaryLine,
-            details: {
-              ...(gate.details ?? {}),
-              normalized,
-            },
-          });
-
-          receipt = makeReceipt({
-            args,
-            spec,
-            orderIndex: i,
-            status: receiptStatus,
-            startedAt,
-            completedAt: Date.now(),
-            summaryLine,
-            blocking,
-            rawBody,
-            sarifJson: buildGateSarif({
-              ...gate,
-              status: legacyStatus,
-              summary: summaryLine,
-            }),
-            policyJson: JSON.stringify(policy),
-            metadataJson: safeStringify(gate.details),
-            normalizedJson: JSON.stringify(normalized),
-          });
-          break;
-        }
-        case "sonarqube_new_code": {
-          const gate = await runSonarQubeGate(args.vm, args.language, vmConfig.defaultGateTimeoutMs, args.diff);
-          const processFailureReason = extractAdvisoryProcessFailureReason(spec, gate);
-          let receiptStatus = mapGateStatus(gate.status);
-          let summaryLine = receiptStatus === "pass" ? "PASS" : gate.summary;
-          let rawBody = receiptStatus === "pass" ? undefined : extractRawBody(gate);
-          let blocking = receiptStatus === "skipped_policy" ? false : spec.blocking;
-
-          if (processFailureReason) {
-            receiptStatus = "skipped_policy_due_process";
-            blocking = false;
-            summaryLine = gate.summary;
-            rawBody = extractRawBody(gate);
-          }
-
-          const normalized = normalizeSonarOutput({
-            issues: extractSonarIssues(gate),
-            metrics: extractSonarMetrics(gate),
-            processFailureReason,
-            summaryLine,
-            qualityGateFailed: receiptStatus === "fail",
-            issueBudget: 20,
-          });
-
-          legacyGates.push({
-            ...gate,
-            details: {
-              ...(gate.details ?? {}),
-              normalized,
-            },
-          });
-
-          receipt = makeReceipt({
-            args,
-            spec,
-            orderIndex: i,
-            status: receiptStatus,
-            startedAt,
-            completedAt: Date.now(),
-            summaryLine,
-            rawBody,
-            sarifJson: buildGateSarif(gate),
-            blocking,
-            policyJson: JSON.stringify({
-              mode: "new_code_only",
-              strategy: "sonar_pr_analysis",
-              ...(processFailureReason ? { processFailureReason } : {}),
-            }),
-            metadataJson: safeStringify(gate.details),
-            normalizedJson: JSON.stringify(normalized),
-          });
-          break;
-        }
-        case "bdd_public": {
-          const publicSuites = (args.testSuites ?? []).filter((s) => s.visibility === "public");
-          if (publicSuites.length === 0) {
-            receipt = makeReceipt({
-              args,
-              spec,
-              orderIndex: i,
-              status: "skipped_policy",
-              startedAt,
-              completedAt: Date.now(),
-              summaryLine: "No public suites; skipped by policy",
-              blocking: false,
-              policyJson: JSON.stringify({ reason: "no_public_suites" }),
-            });
-            break;
-          }
-
-          const gate = await runTestGate(
-            args.vm,
-            args.language,
-            vmConfig.defaultGateTimeoutMs,
-            args.diff,
-            publicSuites,
-            args.stepDefinitionsPublic,
-            undefined,
-          );
-
-          bddPublicSteps = (gate.steps ?? []).map((step) => ({ ...step, visibility: "public" }));
-          allSteps.push(...bddPublicSteps);
-
-          receipt = makeReceipt({
-            args,
-            spec,
-            orderIndex: i,
-            status: mapGateStatus(gate.status),
-            startedAt,
-            completedAt: Date.now(),
-            summaryLine: gate.status === "pass" ? "PASS" : gate.summary,
-            blocking: spec.blocking,
-            rawBody: gate.status === "pass" ? undefined : buildBddRawBody(bddPublicSteps, gate),
-            sarifJson: buildBddSarif(spec.key, bddPublicSteps),
-            policyJson: JSON.stringify({ mode: "bdd_public" }),
-            metadataJson: safeStringify(gate.details),
-          });
-          break;
-        }
-        case "bdd_hidden": {
-          const hiddenSuites = (args.testSuites ?? []).filter((s) => s.visibility === "hidden");
-          if (hiddenSuites.length === 0) {
-            receipt = makeReceipt({
-              args,
-              spec,
-              orderIndex: i,
-              status: "skipped_policy",
-              startedAt,
-              completedAt: Date.now(),
-              summaryLine: "No hidden suites; skipped by policy",
-              blocking: false,
-              policyJson: JSON.stringify({ reason: "no_hidden_suites" }),
-            });
-            break;
-          }
-
-          const gate = await runTestGate(
-            args.vm,
-            args.language,
-            vmConfig.defaultGateTimeoutMs,
-            args.diff,
-            hiddenSuites,
-            undefined,
-            args.stepDefinitionsHidden,
-          );
-
-          bddHiddenSteps = (gate.steps ?? []).map((step) => ({ ...step, visibility: "hidden" }));
-          allSteps.push(...bddHiddenSteps);
-
-          receipt = makeReceipt({
-            args,
-            spec,
-            orderIndex: i,
-            status: mapGateStatus(gate.status),
-            startedAt,
-            completedAt: Date.now(),
-            summaryLine: gate.status === "pass" ? "PASS" : gate.summary,
-            blocking: spec.blocking,
-            rawBody: gate.status === "pass" ? undefined : buildBddRawBody(bddHiddenSteps, gate),
-            sarifJson: buildBddSarif(spec.key, bddHiddenSteps),
-            policyJson: JSON.stringify({ mode: "bdd_hidden" }),
-            metadataJson: safeStringify(gate.details),
-          });
-          break;
-        }
-        case "regression_no_new_failures": {
-          const regression = await runRegressionLeg({
-            ...args,
-            candidateSteps: [...bddPublicSteps, ...bddHiddenSteps],
-            timeoutMs: vmConfig.defaultGateTimeoutMs,
-          });
-
-          receipt = makeReceipt({
-            args,
-            spec,
-            orderIndex: i,
-            status: regression.status,
-            startedAt,
-            completedAt: Date.now(),
-            summaryLine: regression.status === "pass" ? "PASS" : regression.summary,
-            blocking: spec.blocking,
-            rawBody: regression.rawBody,
-            sarifJson: regression.sarifJson,
-            policyJson: regression.policyJson,
-            metadataJson: regression.metadataJson,
-          });
-          break;
-        }
-        default: {
-          receipt = makeReceipt({
-            args,
-            spec,
-            orderIndex: i,
-            status: "error",
-            startedAt,
-            completedAt: Date.now(),
-            summaryLine: `Unhandled leg: ${spec.key}`,
-            blocking: spec.blocking,
-          });
-          break;
-        }
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      receipt = makeReceipt({
-        args,
-        spec,
-        orderIndex: i,
-        status: "error",
-        startedAt,
-        completedAt: Date.now(),
-        summaryLine: `Unexpected error in ${spec.key}`,
-        rawBody: message,
-        blocking: spec.blocking,
-      });
-    }
-
+    const receipt = await runVerificationLegIteration({
+      args,
+      spec,
+      orderIndex: i,
+      abortedByLeg,
+      vmConfig,
+      state,
+      legacyGates,
+    });
     receipts.push(receipt);
-    if (args.onReceipt) {
-      await args.onReceipt(receipt);
-    }
+    if (args.onReceipt) await args.onReceipt(receipt);
 
     if (receipt.blocking && receipt.status !== "pass") {
       abortedByLeg = spec.key;
@@ -535,11 +137,501 @@ export async function runVerificationLegs(args: RunLegsArgs): Promise<LegRunnerR
         legKey: testReceipt.legKey,
         policy: testReceipt.policyJson ? safeParse(testReceipt.policyJson) : undefined,
       },
-      steps: allSteps,
+      steps: state.allSteps,
     });
   }
 
-  return { receipts, legacyGates, steps: allSteps };
+  return { receipts, legacyGates, steps: state.allSteps };
+}
+
+type LegRuntimeState = {
+  bddPublicSteps: StepResult[];
+  bddHiddenSteps: StepResult[];
+  allSteps: StepResult[];
+};
+
+type LegExecutionParams = {
+  args: RunLegsArgs;
+  spec: LegSpec;
+  orderIndex: number;
+  startedAt: number;
+  vmConfig: ReturnType<typeof getVMConfig>;
+  state: LegRuntimeState;
+  legacyGates: GateResult[];
+};
+
+type LegExecutor = (params: LegExecutionParams) => Promise<ValidationReceipt>;
+
+const LEG_EXECUTORS: Record<string, LegExecutor> = {
+  prepare_environment: runPrepareEnvironmentLeg,
+  build: runBuildVerificationLeg,
+  lint_no_new_errors: runLintVerificationLeg,
+  typecheck_no_new_errors: runTypecheckVerificationLeg,
+  security_no_new_high_critical: runSecurityVerificationLeg,
+  memory: runMemoryVerificationLeg,
+  snyk_no_new_high_critical: runSnykVerificationLeg,
+  sonarqube_new_code: runSonarVerificationLeg,
+  bdd_public: runPublicBddLeg,
+  bdd_hidden: runHiddenBddLeg,
+  regression_no_new_failures: runRegressionVerificationLeg,
+};
+
+async function runVerificationLegIteration(args: {
+  args: RunLegsArgs;
+  spec: LegSpec;
+  orderIndex: number;
+  abortedByLeg: string | null;
+  vmConfig: ReturnType<typeof getVMConfig>;
+  state: LegRuntimeState;
+  legacyGates: GateResult[];
+}): Promise<ValidationReceipt> {
+  if (args.abortedByLeg && !ALWAYS_RUN_LEGS_AFTER_ABORT.has(args.spec.key)) {
+    const now = Date.now();
+    return makeReceipt({
+      args: args.args,
+      spec: args.spec,
+      orderIndex: args.orderIndex,
+      status: "unreached",
+      startedAt: now,
+      completedAt: now,
+      summaryLine: "UNREACHED",
+      blocking: args.spec.blocking,
+      unreachedByLegKey: args.abortedByLeg,
+    });
+  }
+  return runHandledVerificationLeg(args);
+}
+
+async function runHandledVerificationLeg(args: {
+  args: RunLegsArgs;
+  spec: LegSpec;
+  orderIndex: number;
+  vmConfig: ReturnType<typeof getVMConfig>;
+  state: LegRuntimeState;
+  legacyGates: GateResult[];
+}): Promise<ValidationReceipt> {
+  const startedAt = Date.now();
+  try {
+    return await executeVerificationLeg({
+      args: args.args,
+      spec: args.spec,
+      orderIndex: args.orderIndex,
+      startedAt,
+      vmConfig: args.vmConfig,
+      state: args.state,
+      legacyGates: args.legacyGates,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return makeReceipt({
+      args: args.args,
+      spec: args.spec,
+      orderIndex: args.orderIndex,
+      status: "error",
+      startedAt,
+      completedAt: Date.now(),
+      summaryLine: `Unexpected error in ${args.spec.key}`,
+      rawBody: message,
+      blocking: args.spec.blocking,
+    });
+  }
+}
+
+async function executeVerificationLeg(params: LegExecutionParams): Promise<ValidationReceipt> {
+  const executor = LEG_EXECUTORS[params.spec.key];
+  if (!executor) {
+    return makeReceipt({
+      args: params.args,
+      spec: params.spec,
+      orderIndex: params.orderIndex,
+      status: "error",
+      startedAt: params.startedAt,
+      completedAt: Date.now(),
+      summaryLine: `Unhandled leg: ${params.spec.key}`,
+      blocking: params.spec.blocking,
+    });
+  }
+  return executor(params);
+}
+
+async function runPrepareEnvironmentLeg(params: LegExecutionParams): Promise<ValidationReceipt> {
+  return makeReceipt({
+    args: params.args,
+    spec: params.spec,
+    orderIndex: params.orderIndex,
+    status: "pass",
+    startedAt: params.startedAt,
+    completedAt: Date.now(),
+    summaryLine: "PASS",
+    blocking: params.spec.blocking,
+    policyJson: JSON.stringify({ mode: "standardized_prepare" }),
+  });
+}
+
+async function runStandardGateLeg(
+  params: LegExecutionParams,
+  runGate: (vm: VMHandle, language: string, timeoutMs: number, diff: DiffContext | null) => Promise<GateResult>,
+  policy?: Record<string, unknown>,
+): Promise<ValidationReceipt> {
+  const gate = await runGate(
+    params.args.vm,
+    params.args.language,
+    params.vmConfig.defaultGateTimeoutMs,
+    params.args.diff,
+  );
+  params.legacyGates.push(gate);
+  return gateToReceipt(
+    params.args,
+    params.spec,
+    params.orderIndex,
+    gate,
+    params.startedAt,
+    policy,
+  );
+}
+
+async function runBuildVerificationLeg(params: LegExecutionParams): Promise<ValidationReceipt> {
+  return runStandardGateLeg(params, runBuildGate);
+}
+
+async function runLintVerificationLeg(params: LegExecutionParams): Promise<ValidationReceipt> {
+  return runStandardGateLeg(params, runLintGate, {
+    mode: "no_new_errors",
+    strategy: "diff_scoped",
+  });
+}
+
+async function runTypecheckVerificationLeg(params: LegExecutionParams): Promise<ValidationReceipt> {
+  return runStandardGateLeg(params, runTypecheckGate, {
+    mode: "no_new_errors",
+    strategy: "diff_scoped",
+  });
+}
+
+async function runSecurityVerificationLeg(params: LegExecutionParams): Promise<ValidationReceipt> {
+  return runStandardGateLeg(params, runSecurityGate, {
+    mode: "no_new_high_critical",
+    strategy: "diff_scoped_plus_dependency_scanners",
+  });
+}
+
+async function runMemoryVerificationLeg(params: LegExecutionParams): Promise<ValidationReceipt> {
+  return runStandardGateLeg(params, runMemoryGate);
+}
+
+function emptySnykCounts(): SnykSeverityCounts {
+  return {
+    criticalCount: 0,
+    highCount: 0,
+    mediumCount: 0,
+    lowCount: 0,
+  };
+}
+
+function diffSnykCounts(candidate: SnykSeverityCounts, baseline: SnykSeverityCounts): SnykSeverityCounts {
+  return {
+    criticalCount: Math.max(0, candidate.criticalCount - baseline.criticalCount),
+    highCount: Math.max(0, candidate.highCount - baseline.highCount),
+    mediumCount: Math.max(0, candidate.mediumCount - baseline.mediumCount),
+    lowCount: Math.max(0, candidate.lowCount - baseline.lowCount),
+  };
+}
+
+type SnykLegState = {
+  receiptStatus: ValidationReceipt["status"];
+  summaryLine: string;
+  rawBody?: string;
+  blocking: boolean;
+  processFailureReason?: string;
+  introducedCounts?: SnykSeverityCounts;
+  baselineCounts?: SnykSeverityCounts;
+  comparedToBaseline: boolean;
+};
+
+function initializeSnykLegState(params: LegExecutionParams, gate: GateResult): SnykLegState {
+  const mappedStatus = mapGateStatus(gate.status);
+  return {
+    receiptStatus: mappedStatus,
+    summaryLine: mappedStatus === "pass" ? "PASS" : gate.summary,
+    rawBody: mappedStatus === "pass" ? undefined : extractRawBody(gate),
+    blocking: mappedStatus === "skipped_policy" ? false : params.spec.blocking,
+    processFailureReason: extractAdvisoryProcessFailureReason(params.spec, gate),
+    introducedCounts: extractSnykSeverityCounts(gate),
+    comparedToBaseline: false,
+  };
+}
+
+async function applySnykBaselinePolicy(args: {
+  params: LegExecutionParams;
+  state: SnykLegState;
+  policy: Record<string, unknown>;
+}): Promise<void> {
+  if (args.state.processFailureReason || !args.state.introducedCounts) return;
+  const baselineCommit = await resolveBaselineCommit(
+    args.params.args.vm,
+    args.params.args.baseCommitSha,
+    args.params.args.candidateCommitSha,
+  );
+  if (!baselineCommit) {
+    args.state.processFailureReason = "Snyk baseline commit could not be resolved";
+    args.state.receiptStatus = "skipped_policy_due_process";
+    args.state.summaryLine = args.state.processFailureReason;
+    args.state.rawBody = args.state.processFailureReason;
+    args.state.blocking = false;
+    args.policy.baselineReason = "missing_baseline_commit";
+    return;
+  }
+  args.policy.baselineCommit = baselineCommit;
+  const baseline = await runSnykBaselineComparison({
+    vm: args.params.args.vm,
+    language: args.params.args.language,
+    timeoutMs: args.params.vmConfig.defaultGateTimeoutMs,
+    diff: args.params.args.diff,
+    candidateCommitSha: args.params.args.candidateCommitSha,
+    baselineCommitSha: baselineCommit,
+  });
+  if (baseline.error) {
+    args.state.processFailureReason = "Snyk baseline comparison failed";
+    args.state.receiptStatus = "skipped_policy_due_process";
+    args.state.summaryLine = args.state.processFailureReason;
+    args.state.rawBody = baseline.error;
+    args.state.blocking = false;
+    return;
+  }
+  if (!baseline.counts || !args.state.introducedCounts) return;
+  args.state.comparedToBaseline = true;
+  args.state.baselineCounts = baseline.counts;
+  args.state.introducedCounts = diffSnykCounts(args.state.introducedCounts, baseline.counts);
+}
+
+function applySnykDeltaPolicy(args: {
+  state: SnykLegState;
+  candidateCounts?: SnykSeverityCounts;
+  policy: Record<string, unknown>;
+}): void {
+  if (args.state.processFailureReason) {
+    args.state.receiptStatus = "skipped_policy_due_process";
+    args.state.blocking = false;
+    args.policy.processFailureReason = args.state.processFailureReason;
+    return;
+  }
+  if (!args.state.introducedCounts) return;
+  const deltaHighCritical = args.state.introducedCounts.highCount + args.state.introducedCounts.criticalCount;
+  const deltaMinor = args.state.introducedCounts.mediumCount + args.state.introducedCounts.lowCount;
+  args.policy.candidate = args.candidateCounts;
+  if (args.state.baselineCounts) args.policy.baseline = args.state.baselineCounts;
+  args.policy.deltaCounts = args.state.introducedCounts;
+  args.policy.deltaHighCritical = deltaHighCritical;
+  args.policy.deltaMinor = deltaMinor;
+  if (deltaHighCritical > 0) {
+    args.state.receiptStatus = "fail";
+    args.state.summaryLine = `Snyk introduced ${deltaHighCritical} new high/critical issue(s)`;
+    args.state.blocking = true;
+    return;
+  }
+  args.state.receiptStatus = "pass";
+  args.state.summaryLine = "PASS";
+  args.state.blocking = false;
+  args.state.rawBody = undefined;
+}
+
+async function runSnykVerificationLeg(params: LegExecutionParams): Promise<ValidationReceipt> {
+  const gate = await runSnykGate(
+    params.args.vm,
+    params.args.language,
+    params.vmConfig.defaultGateTimeoutMs,
+    params.args.diff,
+  );
+  const policy: Record<string, unknown> = {
+    mode: "no_new_high_critical",
+    strategy: "baseline_delta",
+  };
+  const candidateCounts = extractSnykSeverityCounts(gate);
+  const state = initializeSnykLegState(params, gate);
+  await applySnykBaselinePolicy({ params, state, policy });
+  applySnykDeltaPolicy({ state, candidateCounts, policy });
+
+  const snykFindings = extractSnykFindings(gate);
+  const normalized = normalizeSnykOutput({
+    introducedCounts: state.processFailureReason ? emptySnykCounts() : state.introducedCounts ?? emptySnykCounts(),
+    comparedToBaseline: state.comparedToBaseline,
+    scaFindings: snykFindings.scaFindings,
+    sastFindings: snykFindings.sastFindings,
+    processFailureReason: state.processFailureReason,
+    summaryLine: state.summaryLine,
+    issueBudget: 20,
+  });
+
+  const legacyStatus = receiptStatusToLegacyGateStatus(state.receiptStatus);
+  params.legacyGates.push({
+    ...gate,
+    status: legacyStatus,
+    summary: state.summaryLine,
+    details: {
+      ...(gate.details ?? {}),
+      normalized,
+    },
+  });
+
+  return makeReceipt({
+    args: params.args,
+    spec: params.spec,
+    orderIndex: params.orderIndex,
+    status: state.receiptStatus,
+    startedAt: params.startedAt,
+    completedAt: Date.now(),
+    summaryLine: state.summaryLine,
+    blocking: state.blocking,
+    rawBody: state.rawBody,
+    sarifJson: buildGateSarif({
+      ...gate,
+      status: legacyStatus,
+      summary: state.summaryLine,
+    }),
+    policyJson: JSON.stringify(policy),
+    metadataJson: safeStringify(gate.details),
+    normalizedJson: JSON.stringify(normalized),
+  });
+}
+
+async function runSonarVerificationLeg(params: LegExecutionParams): Promise<ValidationReceipt> {
+  const gate = await runSonarQubeGate(
+    params.args.vm,
+    params.args.language,
+    params.vmConfig.defaultGateTimeoutMs,
+    params.args.diff,
+  );
+  const processFailureReason = extractAdvisoryProcessFailureReason(params.spec, gate);
+  let receiptStatus = mapGateStatus(gate.status);
+  let summaryLine = receiptStatus === "pass" ? "PASS" : gate.summary;
+  let rawBody = receiptStatus === "pass" ? undefined : extractRawBody(gate);
+  let blocking = receiptStatus === "skipped_policy" ? false : params.spec.blocking;
+
+  if (processFailureReason) {
+    receiptStatus = "skipped_policy_due_process";
+    blocking = false;
+    summaryLine = gate.summary;
+    rawBody = extractRawBody(gate);
+  }
+
+  const normalized = normalizeSonarOutput({
+    issues: extractSonarIssues(gate),
+    metrics: extractSonarMetrics(gate),
+    processFailureReason,
+    summaryLine,
+    qualityGateFailed: receiptStatus === "fail",
+    issueBudget: 20,
+  });
+
+  params.legacyGates.push({
+    ...gate,
+    details: {
+      ...(gate.details ?? {}),
+      normalized,
+    },
+  });
+
+  return makeReceipt({
+    args: params.args,
+    spec: params.spec,
+    orderIndex: params.orderIndex,
+    status: receiptStatus,
+    startedAt: params.startedAt,
+    completedAt: Date.now(),
+    summaryLine,
+    rawBody,
+    sarifJson: buildGateSarif(gate),
+    blocking,
+    policyJson: JSON.stringify({
+      mode: "new_code_only",
+      strategy: "sonar_pr_analysis",
+      ...(processFailureReason ? { processFailureReason } : {}),
+    }),
+    metadataJson: safeStringify(gate.details),
+    normalizedJson: JSON.stringify(normalized),
+  });
+}
+
+async function runBddLeg(
+  params: LegExecutionParams,
+  visibility: "public" | "hidden",
+): Promise<ValidationReceipt> {
+  const suites = (params.args.testSuites ?? []).filter((suite) => suite.visibility === visibility);
+  if (suites.length === 0) {
+    return makeReceipt({
+      args: params.args,
+      spec: params.spec,
+      orderIndex: params.orderIndex,
+      status: "skipped_policy",
+      startedAt: params.startedAt,
+      completedAt: Date.now(),
+      summaryLine: visibility === "public" ? "No public suites; skipped by policy" : "No hidden suites; skipped by policy",
+      blocking: false,
+      policyJson: JSON.stringify({
+        reason: visibility === "public" ? "no_public_suites" : "no_hidden_suites",
+      }),
+    });
+  }
+  const gate = await runTestGate(
+    params.args.vm,
+    params.args.language,
+    params.vmConfig.defaultGateTimeoutMs,
+    params.args.diff,
+    suites,
+    visibility === "public" ? params.args.stepDefinitionsPublic : undefined,
+    visibility === "hidden" ? params.args.stepDefinitionsHidden : undefined,
+  );
+  const bddSteps = (gate.steps ?? []).map((step) => ({ ...step, visibility }));
+  params.state.allSteps.push(...bddSteps);
+  if (visibility === "public") {
+    params.state.bddPublicSteps = bddSteps;
+  } else {
+    params.state.bddHiddenSteps = bddSteps;
+  }
+  return makeReceipt({
+    args: params.args,
+    spec: params.spec,
+    orderIndex: params.orderIndex,
+    status: mapGateStatus(gate.status),
+    startedAt: params.startedAt,
+    completedAt: Date.now(),
+    summaryLine: gate.status === "pass" ? "PASS" : gate.summary,
+    blocking: params.spec.blocking,
+    rawBody: gate.status === "pass" ? undefined : buildBddRawBody(bddSteps, gate),
+    sarifJson: buildBddSarif(params.spec.key, bddSteps),
+    policyJson: JSON.stringify({ mode: visibility === "public" ? "bdd_public" : "bdd_hidden" }),
+    metadataJson: safeStringify(gate.details),
+  });
+}
+
+async function runPublicBddLeg(params: LegExecutionParams): Promise<ValidationReceipt> {
+  return runBddLeg(params, "public");
+}
+
+async function runHiddenBddLeg(params: LegExecutionParams): Promise<ValidationReceipt> {
+  return runBddLeg(params, "hidden");
+}
+
+async function runRegressionVerificationLeg(params: LegExecutionParams): Promise<ValidationReceipt> {
+  const regression = await runRegressionLeg({
+    ...params.args,
+    candidateSteps: [...params.state.bddPublicSteps, ...params.state.bddHiddenSteps],
+    timeoutMs: params.vmConfig.defaultGateTimeoutMs,
+  });
+  return makeReceipt({
+    args: params.args,
+    spec: params.spec,
+    orderIndex: params.orderIndex,
+    status: regression.status,
+    startedAt: params.startedAt,
+    completedAt: Date.now(),
+    summaryLine: regression.status === "pass" ? "PASS" : regression.summary,
+    blocking: params.spec.blocking,
+    rawBody: regression.rawBody,
+    sarifJson: regression.sarifJson,
+    policyJson: regression.policyJson,
+    metadataJson: regression.metadataJson,
+  });
 }
 
 function gateToReceipt(

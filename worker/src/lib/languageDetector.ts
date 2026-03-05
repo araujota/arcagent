@@ -36,6 +36,11 @@ interface LanguageIndicator {
   weight: number;
 }
 
+interface WeightedLanguage {
+  language: SupportedLanguage;
+  weight: number;
+}
+
 // ---------------------------------------------------------------------------
 // Indicator registry
 // ---------------------------------------------------------------------------
@@ -168,33 +173,41 @@ export function detectLanguageFromFiles(files: string[]): SupportedLanguage {
 // ---------------------------------------------------------------------------
 
 function matchIndicators(files: string[]): SupportedLanguage {
-  const fileSet = new Set(files.map((f) => f.toLowerCase()));
-  let best: { language: SupportedLanguage; weight: number } = {
+  const normalizedFiles = files.map((f) => f.toLowerCase());
+  const fileSet = new Set(normalizedFiles);
+  let best: WeightedLanguage = {
     language: "unknown",
     weight: -1,
   };
 
   // Check exact file name indicators
   for (const indicator of INDICATORS) {
-    if (fileSet.has(indicator.file.toLowerCase())) {
-      if (indicator.weight > best.weight) {
-        best = { language: indicator.language, weight: indicator.weight };
-      }
-    }
+    if (!fileSet.has(indicator.file.toLowerCase())) continue;
+    best = chooseHigherWeight(best, {
+      language: indicator.language,
+      weight: indicator.weight,
+    });
   }
 
   // Check extension-based indicators
-  for (const file of files) {
+  for (const file of normalizedFiles) {
     for (const extInd of EXTENSION_INDICATORS) {
-      if (file.toLowerCase().endsWith(extInd.ext)) {
-        if (extInd.weight > best.weight) {
-          best = { language: extInd.language, weight: extInd.weight };
-        }
-      }
+      if (!file.endsWith(extInd.ext)) continue;
+      best = chooseHigherWeight(best, {
+        language: extInd.language,
+        weight: extInd.weight,
+      });
     }
   }
 
   return best.language;
+}
+
+function chooseHigherWeight(
+  current: WeightedLanguage,
+  candidate: WeightedLanguage,
+): WeightedLanguage {
+  return candidate.weight > current.weight ? candidate : current;
 }
 
 /**

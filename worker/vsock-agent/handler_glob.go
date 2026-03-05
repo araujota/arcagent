@@ -10,6 +10,34 @@ import (
 
 const defaultGlobMaxResults = 500
 
+type globFileEntry struct {
+	path    string
+	modTime int64
+}
+
+func matchToGlobEntry(match string) (globFileEntry, bool) {
+	absPath := "/" + match
+
+	// Verify the matched file is within workspace after symlink resolution.
+	resolved, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return globFileEntry{}, false
+	}
+	if resolved != workspaceRoot && !hasPrefix(resolved, workspaceRoot+"/") {
+		return globFileEntry{}, false
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil || info.IsDir() {
+		return globFileEntry{}, false
+	}
+
+	return globFileEntry{
+		path:    absPath,
+		modTime: info.ModTime().UnixNano(),
+	}, true
+}
+
 // handleFileGlob handles "file_glob" requests: glob pattern file search.
 func handleFileGlob(req *Request) *Response {
 	if req.Pattern == "" {
@@ -52,37 +80,13 @@ func handleFileGlob(req *Request) *Response {
 	}
 
 	// Convert back to absolute paths and filter to regular files within workspace.
-	type fileEntry struct {
-		path    string
-		modTime int64
-	}
-
-	var entries []fileEntry
+	var entries []globFileEntry
 	for _, match := range matches {
-		absPath := "/" + match
-
-		// Verify the matched file is within workspace after symlink resolution.
-		resolved, err := filepath.EvalSymlinks(absPath)
-		if err != nil {
+		entry, ok := matchToGlobEntry(match)
+		if !ok {
 			continue
 		}
-		if resolved != workspaceRoot && !hasPrefix(resolved, workspaceRoot+"/") {
-			continue
-		}
-
-		info, err := os.Stat(absPath)
-		if err != nil {
-			continue
-		}
-		// Only include regular files.
-		if info.IsDir() {
-			continue
-		}
-
-		entries = append(entries, fileEntry{
-			path:    absPath,
-			modTime: info.ModTime().UnixNano(),
-		})
+		entries = append(entries, entry)
 	}
 
 	// Sort by modification time descending (most recently modified first).

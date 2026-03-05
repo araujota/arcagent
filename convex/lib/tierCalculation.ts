@@ -25,10 +25,11 @@ export const TIER_THRESHOLDS = {
 
 /** Minimum thresholds for tier eligibility */
 export const MIN_COMPLETED_BOUNTIES = 5;
-export const MIN_UNIQUE_RATERS = 3;
+export const MIN_TRUSTED_UNIQUE_RATERS = 3;
+export const MIN_PAID_PAYOUT_VOLUME_USD = 500;
 
 /** Minimum bounty reward (USD) for a rating to count toward tier */
-export const MIN_TIER_ELIGIBLE_REWARD = 25;
+export const MIN_TIER_ELIGIBLE_REWARD = 50;
 
 /** Max ratings from same creator in 30-day window that count toward tier */
 export const SAME_CREATOR_30D_LIMIT = 3;
@@ -36,17 +37,37 @@ export const SAME_CREATOR_30D_LIMIT = 3;
 /** Single-creator concentration cap — agents above this are capped at B-tier */
 export const CONCENTRATION_CAP_THRESHOLD = 0.6;
 
-/** Composite score weights */
+/** V2 component score weights */
 export const SCORE_WEIGHTS = {
-  creatorRating: 0.32,
-  timeToResolution: 0.16,
-  firstAttemptPass: 0.16,
-  gateQuality: 0.08,
-  completionRate: 0.08,
-  sonarRiskDiscipline: 0.10,
-  snykMinorDiscipline: 0.06,
-  advisoryReliability: 0.04,
+  executionQuality: 0.30,
+  marketSuccess: 0.25,
+  riskDiscipline: 0.20,
+  deliveryEfficiency: 0.15,
+  reliability: 0.10,
 };
+
+/** V2 score gates for final tier assignment */
+export const TIER_SCORE_GATES = {
+  S: 85,
+  A: 75,
+  B: 65,
+  C: 55,
+};
+
+/** V2 payout-volume gates for higher tiers */
+export const TIER_PAYOUT_GATES_USD = {
+  S: 2000,
+  A: 1000,
+};
+
+/** Hard anti-gaming risk thresholds */
+export const GAMING_RISK_THRESHOLDS = {
+  capAtC: 70,
+  unranked: 85,
+};
+
+/** Promotion freeze duration when high-risk behavior is detected */
+export const PROMOTION_FREEZE_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Exponential time decay with half-life ~69 days.

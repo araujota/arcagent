@@ -46,6 +46,7 @@ const MAX_LIST_FILES_DEPTH = 20;
 const MAX_STREAM_JOBS_PER_SESSION = 3;
 const STREAM_JOB_TIMEOUT_MS = 5 * 60 * 1000; // 5 min
 const STREAM_JOB_CLEANUP_MS = 5 * 60 * 1000; // remove finished job records after 5 min
+const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 // ---------------------------------------------------------------------------
 // Streaming exec job tracking (per-session, not global)
@@ -78,6 +79,13 @@ function cleanupStreamJobs(workspaceId: string): void {
 
 function getWorkerHost(): string {
   return process.env.WORKER_HOST_URL || `http://localhost:${process.env.PORT ?? "3001"}`;
+}
+
+function validateWorkspaceId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!WORKSPACE_ID_PATTERN.test(trimmed)) return null;
+  return trimmed;
 }
 
 interface WorkspaceStatusRecord {
@@ -159,8 +167,21 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   router.post("/workspace/provision", async (req: Request, res: ExpressResponse) => {
     try {
+      const body = req.body as {
+        workspaceId?: unknown;
+        claimId?: string;
+        bountyId?: string;
+        agentId?: string;
+        repoUrl?: string;
+        repoAuthToken?: string;
+        repoAuthUsername?: string;
+        commitSha?: string;
+        language?: string;
+        expiresAt?: number;
+      };
+      const rawWorkspaceId = body.workspaceId;
+      const workspaceId = typeof rawWorkspaceId === "string" ? rawWorkspaceId.trim() : "";
       const {
-        workspaceId,
         claimId,
         bountyId,
         agentId,
@@ -170,20 +191,17 @@ export function createWorkspaceRoutes(): Router {
         commitSha,
         language,
         expiresAt,
-      } = req.body as {
-        workspaceId: string;
-        claimId: string;
-        bountyId: string;
-        agentId: string;
-        repoUrl: string;
-        repoAuthToken?: string;
-        repoAuthUsername?: string;
-        commitSha: string;
-        language: string;
-        expiresAt: number;
-      };
+      } = body;
 
-      if (!workspaceId || !claimId || !bountyId || !agentId || !repoUrl || !commitSha) {
+      if (
+        !workspaceId ||
+        !WORKSPACE_ID_PATTERN.test(workspaceId) ||
+        !claimId ||
+        !bountyId ||
+        !agentId ||
+        !repoUrl ||
+        !commitSha
+      ) {
         res.status(400).json({ error: "Missing required fields" });
         return;
       }
@@ -243,7 +261,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }
@@ -287,7 +305,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }
@@ -374,7 +392,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }
@@ -410,7 +428,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }
@@ -466,10 +484,12 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   router.post("/workspace/destroy", async (req: Request, res: ExpressResponse) => {
     try {
-      const { workspaceId, reason } = req.body as {
-        workspaceId: string;
+      const body = req.body as {
+        workspaceId?: unknown;
         reason?: string;
       };
+      const workspaceId = validateWorkspaceId(body.workspaceId);
+      const { reason } = body;
       if (!workspaceId) {
         res.status(400).json({ error: "Missing workspaceId" });
         return;
@@ -488,10 +508,12 @@ export function createWorkspaceRoutes(): Router {
   // -------------------------------------------------------------------------
   router.post("/workspace/extend-ttl", async (req: Request, res: ExpressResponse) => {
     try {
-      const { workspaceId, newExpiresAt } = req.body as {
-        workspaceId: string;
-        newExpiresAt: number;
+      const body = req.body as {
+        workspaceId?: unknown;
+        newExpiresAt?: number;
       };
+      const workspaceId = validateWorkspaceId(body.workspaceId);
+      const { newExpiresAt } = body;
       if (!workspaceId || !newExpiresAt) {
         res.status(400).json({ error: "Missing workspaceId or newExpiresAt" });
         return;
@@ -527,7 +549,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }
@@ -615,7 +637,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }
@@ -676,7 +698,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }
@@ -751,7 +773,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }
@@ -810,7 +832,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }
@@ -832,8 +854,9 @@ export function createWorkspaceRoutes(): Router {
 
       // Start command as background process in VM, redirect output to temp files
       // SECURITY (W2): Commands always run as non-root "agent" user
+      const redirectCommand = `${command} > /tmp/exec-${jobId}.out 2> /tmp/exec-${jobId}.err; echo $? > /tmp/exec-${jobId}.rc`;
       const startCmd =
-        `nohup sh -c ${shellEscape(`${command} > /tmp/exec-${jobId}.out 2> /tmp/exec-${jobId}.err; echo $? > /tmp/exec-${jobId}.rc`)} ` +
+        `nohup sh -c ${shellEscape(redirectCommand)} ` +
         `> /dev/null 2>&1 & echo $!`;
 
       const startResult = await session.vmHandle.exec(startCmd, 10_000, "agent");
@@ -857,7 +880,7 @@ export function createWorkspaceRoutes(): Router {
           // Kill the process in the VM
           try {
             const s = getSession(workspaceId);
-            if (s && s.status === "ready") {
+            if (s?.status === "ready") {
               await s.vmHandle.exec(`kill -9 ${pid} 2>/dev/null || true`, 5_000, "agent");
             }
           } catch { /* ignore */ }
@@ -869,7 +892,7 @@ export function createWorkspaceRoutes(): Router {
         jobs.delete(jobId);
         // Clean up temp files
         const s = getSession(workspaceId);
-        if (s && s.status === "ready") {
+        if (s?.status === "ready") {
           s.vmHandle.exec(
             `rm -f /tmp/exec-${jobId}.out /tmp/exec-${jobId}.err /tmp/exec-${jobId}.rc`,
             5_000,
@@ -902,7 +925,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }
@@ -980,7 +1003,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }
@@ -1048,7 +1071,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }
@@ -1104,7 +1127,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }
@@ -1165,7 +1188,7 @@ export function createWorkspaceRoutes(): Router {
       }
 
       const session = getSession(workspaceId);
-      if (!session || session.status !== "ready") {
+      if (session?.status !== "ready") {
         res.status(404).json({ error: "Workspace not found or not ready" });
         return;
       }

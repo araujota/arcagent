@@ -26,6 +26,64 @@ interface GenerationStatus {
   overallReady: boolean;
 }
 
+function renderRepoIndexing(status: GenerationStatus["repoIndexing"]): string {
+  if (!status) {
+    return "## Repo Indexing\nNo repository connected.\n";
+  }
+
+  const lines = [
+    "## Repo Indexing",
+    `- **Status:** ${status.status}`,
+  ];
+  if (status.totalFiles) {
+    lines.push(`- **Files:** ${status.totalFiles}`);
+  }
+  if (status.languages?.length) {
+    lines.push(`- **Languages:** ${status.languages.join(", ")}`);
+  }
+  if (status.errorMessage) {
+    lines.push(`- **Error:** ${status.errorMessage}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function renderConversation(status: GenerationStatus["conversation"]): string {
+  if (!status) {
+    return "## Conversation\nNo conversation created.\n";
+  }
+
+  return [
+    "## Conversation",
+    `- **Status:** ${status.status}`,
+    `- **Autonomous:** ${status.autonomous ? "Yes" : "No"}`,
+    `- **Messages:** ${status.messageCount}`,
+    "",
+  ].join("\n");
+}
+
+function renderGeneratedTests(status: GenerationStatus["generatedTest"]): string {
+  if (!status) {
+    return "## Generated Tests\nNot yet generated.\n";
+  }
+
+  return [
+    "## Generated Tests",
+    `- **Status:** ${status.status}`,
+    `- **Version:** ${status.version}`,
+    `- **Framework:** ${status.testFramework}`,
+    `- **Language:** ${status.testLanguage}`,
+    "",
+  ].join("\n");
+}
+
+function renderOverallReady(overallReady: boolean): string {
+  const lines = [`## Overall Ready: ${overallReady ? "YES" : "NO"}`];
+  if (!overallReady) {
+    lines.push("", "Pipeline is still in progress. Poll again in a few seconds.");
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 export function registerGetBountyGenerationStatus(server: McpServer): void {
   registerTool(
     server,
@@ -43,54 +101,16 @@ export function registerGetBountyGenerationStatus(server: McpServer): void {
           { bountyId: args.bountyId },
         );
 
-        let text = `# Bounty Generation Status\n\n`;
-
-        if (status.repoIndexing) {
-          text += `## Repo Indexing\n`;
-          text += `- **Status:** ${status.repoIndexing.status}\n`;
-          if (status.repoIndexing.totalFiles) {
-            text += `- **Files:** ${status.repoIndexing.totalFiles}\n`;
-          }
-          if (status.repoIndexing.languages?.length) {
-            text += `- **Languages:** ${status.repoIndexing.languages.join(", ")}\n`;
-          }
-          if (status.repoIndexing.errorMessage) {
-            text += `- **Error:** ${status.repoIndexing.errorMessage}\n`;
-          }
-        } else {
-          text += `## Repo Indexing\nNo repository connected.\n`;
-        }
-
-        text += `\n`;
-
-        if (status.conversation) {
-          text += `## Conversation\n`;
-          text += `- **Status:** ${status.conversation.status}\n`;
-          text += `- **Autonomous:** ${status.conversation.autonomous ? "Yes" : "No"}\n`;
-          text += `- **Messages:** ${status.conversation.messageCount}\n`;
-        } else {
-          text += `## Conversation\nNo conversation created.\n`;
-        }
-
-        text += `\n`;
-
-        if (status.generatedTest) {
-          text += `## Generated Tests\n`;
-          text += `- **Status:** ${status.generatedTest.status}\n`;
-          text += `- **Version:** ${status.generatedTest.version}\n`;
-          text += `- **Framework:** ${status.generatedTest.testFramework}\n`;
-          text += `- **Language:** ${status.generatedTest.testLanguage}\n`;
-        } else {
-          text += `## Generated Tests\nNot yet generated.\n`;
-        }
-
-        text += `\n`;
-        text += `## Test Suites: ${status.testSuitesCount}\n\n`;
-        text += `## Overall Ready: ${status.overallReady ? "YES" : "NO"}\n`;
-
-        if (!status.overallReady) {
-          text += `\nPipeline is still in progress. Poll again in a few seconds.`;
-        }
+        const text = [
+          "# Bounty Generation Status",
+          "",
+          renderRepoIndexing(status.repoIndexing),
+          renderConversation(status.conversation),
+          renderGeneratedTests(status.generatedTest),
+          `## Test Suites: ${status.testSuitesCount}`,
+          "",
+          renderOverallReady(status.overallReady),
+        ].join("\n");
 
         return { content: [{ type: "text" as const, text }] };
       } catch (err) {

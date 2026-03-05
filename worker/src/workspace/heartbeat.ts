@@ -265,7 +265,7 @@ export class WorkspaceHeartbeat {
     try {
       const handle: VMHandle = {
         vmId,
-        jobId: workspaceId,
+        jobId: `heartbeat-${vmId}`,
         // Use the real guest IP so releaseGuestIp returns it to the pool.
         // Falling back to 0.0.0.0 only if session lacks guestIp (shouldn't happen).
         guestIp: session.guestIp ?? "0.0.0.0",

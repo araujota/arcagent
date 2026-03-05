@@ -198,9 +198,7 @@ function ProviderTab({
                 ? "PROJ-123"
                 : provider === "linear"
                   ? "TEAM-123"
-                  : provider === "asana"
-                    ? "1234567890"
-                    : "1234567890"
+                  : "1234567890"
             }
             value={issueKey}
             onChange={(e) => setIssueKey(e.target.value)}

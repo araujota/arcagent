@@ -14,6 +14,7 @@ import { sessionStore } from "./sessionStore";
 import { workspaceHeartbeat } from "./heartbeat";
 import { cleanupStreamJobs } from "./routes";
 import { buildAuthenticatedCloneRepoUrl } from "../lib/repoProviderAuth";
+import { randomUUID } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -375,8 +376,9 @@ export async function provisionWorkspace(
         vmId: vm.vmId,
       });
     } else {
+      const vmJobId = `ws-${randomUUID()}`;
       vm = await createFirecrackerVM({
-        jobId: opts.workspaceId,
+        jobId: vmJobId,
         rootfsImage: vmConfig.rootfsImage,
         vcpuCount: vmConfig.vcpuCount,
         memSizeMib: vmConfig.memSizeMib,

@@ -7,6 +7,185 @@ import {
   detectPackageManager,
 } from "../lib/languageDetector";
 
+type RepoFileData = {
+  filePath: string;
+  sha: string;
+  content: string;
+  size: number;
+};
+
+const DOCKERFILE_PATTERNS = [
+  "Dockerfile",
+  "dockerfile",
+  "Dockerfile.dev",
+  "docker/Dockerfile",
+  ".devcontainer/Dockerfile",
+];
+
+const MANIFEST_FILES = [
+  "package.json",
+  "requirements.txt",
+  "Cargo.toml",
+  "go.mod",
+  "pom.xml",
+  "pyproject.toml",
+];
+
+const ENTRY_POINTS = [
+  "src/index.ts",
+  "src/main.ts",
+  "index.ts",
+  "main.ts",
+  "src/index.js",
+  "index.js",
+  "main.py",
+  "app.py",
+  "main.go",
+  "cmd/main.go",
+  "src/main.rs",
+];
+
+type EnsureDockerfileContext = {
+  runMutation: (mutation: unknown, args: Record<string, unknown>) => Promise<unknown>;
+  scheduler: {
+    runAfter: (delayMs: number, action: unknown, args: Record<string, unknown>) => Promise<unknown>;
+  };
+};
+
+function parseFileData(fileDataJson: string): RepoFileData[] {
+  return JSON.parse(fileDataJson) as RepoFileData[];
+}
+
+function findExistingDockerfile(fileData: RepoFileData[]): { path: string; content: string } | null {
+  for (const pattern of DOCKERFILE_PATTERNS) {
+    const match = fileData.find(
+      (file) =>
+        file.filePath === pattern ||
+        file.filePath.toLowerCase() === pattern.toLowerCase(),
+    );
+    if (match) {
+      return { path: match.filePath, content: match.content };
+    }
+  }
+  return null;
+}
+
+function extractManifestContent(fileData: RepoFileData[]): string {
+  for (const manifestFile of MANIFEST_FILES) {
+    const found = fileData.find((file) => file.filePath === manifestFile);
+    if (found) {
+      return found.content.slice(0, 2000);
+    }
+  }
+  return "";
+}
+
+function detectEntryPoint(filePaths: string[]): string {
+  return ENTRY_POINTS.find((entryPoint) => filePaths.includes(entryPoint)) ?? "unknown";
+}
+
+function detectBuildScript(fileData: RepoFileData[]): boolean {
+  const packageJson = fileData.find((file) => file.filePath === "package.json");
+  if (!packageJson) return false;
+  try {
+    const parsed = JSON.parse(packageJson.content) as { scripts?: { build?: unknown } };
+    return Boolean(parsed.scripts?.build);
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeDockerfileOutput(content: string): string {
+  return content
+    .replace(/^```dockerfile\n?/i, "")
+    .replace(/^```docker\n?/i, "")
+    .replace(/^```\n?/, "")
+    .replace(/\n?```$/, "")
+    .trim();
+}
+
+function buildDockerfileSystemPrompt(params: {
+  language: string | null;
+  packageManager: string | null;
+  manifestContent: string;
+  detectedEntryPoint: string;
+  hasBuildScript: boolean;
+}): string {
+  return `Generate a production-quality Dockerfile for this project.
+
+## Project Analysis
+- Primary language: ${params.language || "unknown"}
+- Package manager: ${params.packageManager || "unknown"}
+- Package manifest: ${params.manifestContent || "not found"}
+- Entry point: ${params.detectedEntryPoint}
+- Has build step: ${params.hasBuildScript}
+
+## Requirements
+- Use official base images (node:20-slim, python:3.12-slim, golang:1.22, etc.)
+- Multi-stage build if applicable (separate build and runtime stages)
+- Install dependencies from lockfile (npm ci, pip install, etc.)
+- Include the build/compile step
+- Expose common ports if applicable
+- Do NOT include test execution (tests are run separately)
+- Pin base image versions (no :latest tags)
+
+Output ONLY the Dockerfile content, no explanation.`;
+}
+
+async function generateDockerfileContent(
+  fileData: RepoFileData[],
+  filePaths: string[],
+): Promise<string> {
+  const language = detectLanguageFromManifests(filePaths);
+  const packageManager = detectPackageManager(filePaths);
+  const systemPrompt = buildDockerfileSystemPrompt({
+    language,
+    packageManager,
+    manifestContent: extractManifestContent(fileData),
+    detectedEntryPoint: detectEntryPoint(filePaths),
+    hasBuildScript: detectBuildScript(fileData),
+  });
+
+  try {
+    const llm = createLLMClient(
+      process.env.LLM_PROVIDER,
+      process.env.LLM_MODEL,
+      process.env.ANTHROPIC_API_KEY,
+      process.env.OPENAI_API_KEY,
+    );
+    const generated = await llm.chat([
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: "Generate the Dockerfile for this project.",
+      },
+    ]);
+    return sanitizeDockerfileOutput(generated);
+  } catch (error_) {
+    console.warn(
+      `ensureDockerfile LLM generation failed, using fallback: ${
+        error_ instanceof Error ? error_.message : String(error_)
+      }`,
+    );
+    return generateFallbackDockerfile(language || "unknown", packageManager);
+  }
+}
+
+async function continueToParseStage(
+  ctx: EnsureDockerfileContext,
+  args: { repoConnectionId: string; bountyId: string; fileDataJson: string },
+): Promise<void> {
+  await ctx.runMutation(internal.repoConnections.updateStatus, {
+    repoConnectionId: args.repoConnectionId,
+    status: "parsing",
+  });
+  await ctx.scheduler.runAfter(0, internal.pipelines.parseRepo.parseRepo, {
+    repoConnectionId: args.repoConnectionId,
+    bountyId: args.bountyId,
+    fileDataJson: args.fileDataJson,
+  });
+}
+
 /**
  * Ensure a Dockerfile exists for the repository.
  * If one is found, validate it. If not, generate one via LLM.
@@ -21,46 +200,12 @@ export const ensureDockerfile = internalAction({
   },
   handler: async (ctx, args) => {
     try {
-      const fileData: Array<{
-        filePath: string;
-        sha: string;
-        content: string;
-        size: number;
-      }> = JSON.parse(args.fileDataJson);
+      const fileData = parseFileData(args.fileDataJson);
 
       const filePaths = fileData.map((f) => f.filePath);
 
       // Check for existing Dockerfile
-      const dockerfilePatterns = [
-        "Dockerfile",
-        "dockerfile",
-        "Dockerfile.dev",
-        "docker/Dockerfile",
-        ".devcontainer/Dockerfile",
-      ];
-
-      let foundDockerfile: { path: string; content: string } | null = null;
-
-      for (const pattern of dockerfilePatterns) {
-        const match = fileData.find(
-          (f) =>
-            f.filePath === pattern ||
-            f.filePath.toLowerCase() === pattern.toLowerCase()
-        );
-        if (match) {
-          foundDockerfile = { path: match.filePath, content: match.content };
-          break;
-        }
-      }
-
-      // Also check for docker-compose
-      const dockerCompose = fileData.find(
-        (f) =>
-          f.filePath === "docker-compose.yml" ||
-          f.filePath === "docker-compose.yaml" ||
-          f.filePath === "compose.yml" ||
-          f.filePath === "compose.yaml"
-      );
+      const foundDockerfile = findExistingDockerfile(fileData);
 
       if (foundDockerfile) {
         // Validate the Dockerfile has at least a FROM instruction
@@ -78,110 +223,7 @@ export const ensureDockerfile = internalAction({
           dockerfileSource: "repo",
         });
       } else {
-        // Generate a Dockerfile via LLM
-        const language = detectLanguageFromManifests(filePaths);
-        const packageManager = detectPackageManager(filePaths);
-
-        // Find manifest file content
-        const manifestFiles = [
-          "package.json",
-          "requirements.txt",
-          "Cargo.toml",
-          "go.mod",
-          "pom.xml",
-          "pyproject.toml",
-        ];
-        let manifestContent = "";
-        for (const mf of manifestFiles) {
-          const found = fileData.find((f) => f.filePath === mf);
-          if (found) {
-            manifestContent = found.content.slice(0, 2000); // Truncate long manifests
-            break;
-          }
-        }
-
-        // Detect entry point
-        const entryPoints = [
-          "src/index.ts",
-          "src/main.ts",
-          "index.ts",
-          "main.ts",
-          "src/index.js",
-          "index.js",
-          "main.py",
-          "app.py",
-          "main.go",
-          "cmd/main.go",
-          "src/main.rs",
-        ];
-        const detectedEntryPoint =
-          entryPoints.find((ep) => filePaths.includes(ep)) || "unknown";
-
-        // Check for build script
-        let hasBuildScript = false;
-        const pkgJson = fileData.find((f) => f.filePath === "package.json");
-        if (pkgJson) {
-          try {
-            const pkg = JSON.parse(pkgJson.content);
-            hasBuildScript = !!pkg.scripts?.build;
-          } catch {
-            // ignore parse errors
-          }
-        }
-
-        const systemPrompt = `Generate a production-quality Dockerfile for this project.
-
-## Project Analysis
-- Primary language: ${language || "unknown"}
-- Package manager: ${packageManager || "unknown"}
-- Package manifest: ${manifestContent || "not found"}
-- Entry point: ${detectedEntryPoint}
-- Has build step: ${hasBuildScript}
-
-## Requirements
-- Use official base images (node:20-slim, python:3.12-slim, golang:1.22, etc.)
-- Multi-stage build if applicable (separate build and runtime stages)
-- Install dependencies from lockfile (npm ci, pip install, etc.)
-- Include the build/compile step
-- Expose common ports if applicable
-- Do NOT include test execution (tests are run separately)
-- Pin base image versions (no :latest tags)
-
-Output ONLY the Dockerfile content, no explanation.`;
-
-        let dockerfileContent: string;
-
-        try {
-          const llm = createLLMClient(
-            process.env.LLM_PROVIDER,
-            process.env.LLM_MODEL,
-            process.env.ANTHROPIC_API_KEY,
-            process.env.OPENAI_API_KEY
-          );
-
-          dockerfileContent = await llm.chat([
-            { role: "system", content: systemPrompt },
-            {
-              role: "user",
-              content: "Generate the Dockerfile for this project.",
-            },
-          ]);
-
-          // Strip markdown code fences if present
-          dockerfileContent = dockerfileContent
-            .replace(/^```dockerfile\n?/i, "")
-            .replace(/^```docker\n?/i, "")
-            .replace(/^```\n?/, "")
-            .replace(/\n?```$/, "")
-            .trim();
-        } catch (llmError) {
-          // Fallback: generate a basic Dockerfile based on language
-          dockerfileContent = generateFallbackDockerfile(
-            language || "unknown",
-            packageManager
-          );
-        }
-
+        const dockerfileContent = await generateDockerfileContent(fileData, filePaths);
         await ctx.runMutation(internal.repoConnections.updateDockerfile, {
           repoConnectionId: args.repoConnectionId,
           dockerfilePath: undefined,
@@ -190,31 +232,17 @@ Output ONLY the Dockerfile content, no explanation.`;
         });
       }
 
-      // Chain to parse pipeline
-      await ctx.runMutation(internal.repoConnections.updateStatus, {
-        repoConnectionId: args.repoConnectionId,
-        status: "parsing",
-      });
-
-      await ctx.scheduler.runAfter(0, internal.pipelines.parseRepo.parseRepo, {
+      await continueToParseStage(ctx, {
         repoConnectionId: args.repoConnectionId,
         bountyId: args.bountyId,
         fileDataJson: args.fileDataJson,
       });
     } catch (error) {
-      const errorMessage =
-        error instanceof Error
-          ? error.message
-          : "Unknown error during Dockerfile check";
+      const errorMessage = error instanceof Error ? error.message : "Unknown error during Dockerfile check";
       console.error(`ensureDockerfile failed: ${errorMessage}`);
 
       // Don't fail the whole pipeline for Dockerfile issues — proceed to parse
-      await ctx.runMutation(internal.repoConnections.updateStatus, {
-        repoConnectionId: args.repoConnectionId,
-        status: "parsing",
-      });
-
-      await ctx.scheduler.runAfter(0, internal.pipelines.parseRepo.parseRepo, {
+      await continueToParseStage(ctx, {
         repoConnectionId: args.repoConnectionId,
         bountyId: args.bountyId,
         fileDataJson: args.fileDataJson,

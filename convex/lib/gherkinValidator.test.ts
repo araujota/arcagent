@@ -486,13 +486,13 @@ describe("countStepsByType", () => {
     );
     expect(counts.given).toBe(2);
     expect(counts.when).toBe(1);
-    expect(counts.then).toBe(1);
+    expect(counts.thenStep).toBe(1);
     expect(counts.and).toBe(1);
     expect(counts.but).toBe(1);
   });
 
   it("returns all zeros for empty content", () => {
     const counts = countStepsByType("");
-    expect(counts).toEqual({ given: 0, when: 0, then: 0, and: 0, but: 0 });
+    expect(counts).toEqual({ given: 0, when: 0, thenStep: 0, and: 0, but: 0 });
   });
 });

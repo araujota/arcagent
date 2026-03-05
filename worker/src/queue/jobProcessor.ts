@@ -32,6 +32,153 @@ function redactToken(value: string, token?: string): string {
   return value.split(token).join("<redacted>");
 }
 
+async function cloneWorkspaceRepo(args: {
+  vm: VMHandle;
+  cloneCommand: string;
+  redactionToken?: string;
+}): Promise<void> {
+  try {
+    await args.vm.exec(args.cloneCommand);
+  } catch (cloneErr) {
+    const rawMessage = cloneErr instanceof Error ? cloneErr.message : String(cloneErr);
+    throw new Error(`Failed to clone repo: ${redactToken(rawMessage, args.redactionToken).slice(0, 500)}`);
+  }
+  await args.vm.exec("chown -R agent:agent /workspace 2>/dev/null || true");
+}
+
+function createReceiptPoster(args: {
+  convexCallbackUrl?: string;
+  jobHmac?: string;
+  jobId: string;
+  logMessage: string;
+}): ((receipt: ValidationReceipt) => Promise<void>) | undefined {
+  if (!args.convexCallbackUrl || !args.jobHmac) return undefined;
+  return async (receipt: ValidationReceipt) => {
+    await postVerificationReceipt(args.convexCallbackUrl!, receipt, args.jobHmac!).catch((err) => {
+      logger.error(args.logMessage, {
+        jobId: args.jobId,
+        legKey: receipt.legKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  };
+}
+
+async function postResultAndArtifact(args: {
+  convexCallbackUrl?: string;
+  data: VerificationJobData;
+  result: VerificationResult;
+  attemptNumber: number;
+  resultErrorMessage: string;
+  artifactErrorMessage: string;
+}): Promise<void> {
+  if (!args.convexCallbackUrl) return;
+  await postVerificationResult(args.convexCallbackUrl, args.result).catch((err) => {
+    logger.error(args.resultErrorMessage, {
+      jobId: args.data.jobId,
+      error: err,
+    });
+  });
+
+  if (!args.data.jobHmac) return;
+  const artifact = await createArtifactBundle({
+    verificationId: args.data.verificationId,
+    result: args.result,
+  });
+  await postVerificationArtifact(args.convexCallbackUrl, {
+    verificationId: args.data.verificationId,
+    submissionId: args.data.submissionId,
+    bountyId: args.data.bountyId,
+    jobId: args.data.jobId,
+    attemptNumber: args.attemptNumber,
+    filename: artifact.filename,
+    contentType: artifact.contentType,
+    sha256: artifact.sha256,
+    bytes: artifact.bytes,
+    manifestJson: artifact.manifestJson,
+    bundleBase64: artifact.bundleBase64,
+    jobHmac: args.data.jobHmac,
+  }).catch((err) => {
+    logger.error(args.artifactErrorMessage, {
+      jobId: args.data.jobId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
+
+async function resolveEffectiveBaseCommit(args: {
+  vm: VMHandle;
+  baseCommitSha?: string;
+  safeCommitSha: string;
+  jobId: string;
+}): Promise<string | undefined> {
+  if (args.baseCommitSha) return args.baseCommitSha;
+  try {
+    const mergeBaseResult = await args.vm.exec(
+      `cd /workspace && git merge-base origin/HEAD ${args.safeCommitSha} 2>/dev/null || true`,
+      20_000,
+    );
+    const mergeBase = mergeBaseResult.stdout.trim();
+    return mergeBase || undefined;
+  } catch (err) {
+    logger.warn("Failed to resolve merge-base for diff-scoped policies", {
+      jobId: args.jobId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return undefined;
+  }
+}
+
+async function buildPatchApplyFailureResult(args: {
+  data: VerificationJobData;
+  startTime: number;
+  convexCallbackUrl?: string;
+  applyResult: { stdout: string; stderr: string; exitCode: number };
+}): Promise<VerificationResult> {
+  const patchGate: GateResult = {
+    gate: "patch-apply",
+    status: "fail",
+    durationMs: Date.now() - args.startTime,
+    summary: "Failed to apply agent's diff patch to clean repository clone",
+    details: {
+      stdout: args.applyResult.stdout?.slice(0, 5000),
+      stderr: args.applyResult.stderr?.slice(0, 5000),
+      exitCode: args.applyResult.exitCode,
+    },
+  };
+
+  const feedback = generateFeedback([patchGate], args.data.attemptNumber ?? 1);
+  const receipt = makeTopLevelErrorReceipt(
+    args.data,
+    "patch_apply",
+    `${patchGate.summary}\n${args.applyResult.stderr || args.applyResult.stdout || ""}`,
+    args.data.attemptNumber ?? 1,
+  );
+
+  const result: VerificationResult = {
+    jobId: args.data.jobId,
+    submissionId: args.data.submissionId,
+    bountyId: args.data.bountyId,
+    overallStatus: "fail",
+    gates: [patchGate],
+    totalDurationMs: Date.now() - args.startTime,
+    feedbackJson: JSON.stringify(feedback),
+    jobHmac: args.data.jobHmac,
+    validationReceipts: [receipt],
+  };
+
+  if (args.convexCallbackUrl) {
+    if (args.data.jobHmac) {
+      await postVerificationReceipt(args.convexCallbackUrl, receipt, args.data.jobHmac).catch(() => {});
+    }
+    await postVerificationResult(args.convexCallbackUrl, result).catch((err) => {
+      logger.error("Failed to post patch-apply failure to Convex", { jobId: args.data.jobId, error: err });
+    });
+  }
+
+  return result;
+}
+
 export async function processVerificationJob(
   job: Job<VerificationJobData, VerificationResult>,
 ): Promise<VerificationResult> {
@@ -75,35 +222,20 @@ export async function processVerificationJob(
     const cloneCmd = safeBaseCommitSha
       ? `git clone ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`
       : `git clone --depth 1 ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`;
-
-    try {
-      await vm.exec(cloneCmd);
-    } catch (cloneErr) {
-      const rawMessage = cloneErr instanceof Error ? cloneErr.message : String(cloneErr);
-      throw new Error(`Failed to clone repo: ${redactToken(rawMessage, cloneRepo.tokenForRedaction).slice(0, 500)}`);
-    }
-    await vm.exec("chown -R agent:agent /workspace 2>/dev/null || true");
+    await cloneWorkspaceRepo({
+      vm,
+      cloneCommand: cloneCmd,
+      redactionToken: cloneRepo.tokenForRedaction,
+    });
 
     await job.updateProgress(20);
 
-    let effectiveBaseCommitSha = data.baseCommitSha;
-    if (!effectiveBaseCommitSha) {
-      try {
-        const mergeBaseResult = await vm.exec(
-          `cd /workspace && git merge-base origin/HEAD ${safeCommitSha} 2>/dev/null || true`,
-          20_000,
-        );
-        const mergeBase = mergeBaseResult.stdout.trim();
-        if (mergeBase) {
-          effectiveBaseCommitSha = mergeBase;
-        }
-      } catch (err) {
-        logger.warn("Failed to resolve merge-base for diff-scoped policies", {
-          jobId: data.jobId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
+    const effectiveBaseCommitSha = await resolveEffectiveBaseCommit({
+      vm,
+      baseCommitSha: data.baseCommitSha,
+      safeCommitSha,
+      jobId: data.jobId,
+    });
 
     let diffContext: DiffContext | null = null;
     if (effectiveBaseCommitSha) {
@@ -120,6 +252,12 @@ export async function processVerificationJob(
     await job.updateProgress(25);
 
     const attemptNumber = data.attemptNumber ?? 1;
+    const onReceipt = createReceiptPoster({
+      convexCallbackUrl,
+      jobHmac: data.jobHmac,
+      jobId: data.jobId,
+      logMessage: "Failed to post verification receipt",
+    });
 
     const legOutput = await withTimeout(
       () => runVerificationLegs({
@@ -133,16 +271,7 @@ export async function processVerificationJob(
         attemptNumber,
         candidateCommitSha: data.commitSha,
         baseCommitSha: effectiveBaseCommitSha,
-        onReceipt: async (receipt) => {
-          if (!convexCallbackUrl || !data.jobHmac) return;
-          await postVerificationReceipt(convexCallbackUrl, receipt, data.jobHmac).catch((err) => {
-            logger.error("Failed to post verification receipt", {
-              jobId: data.jobId,
-              legKey: receipt.legKey,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          });
-        },
+        onReceipt,
       }),
       data.timeoutSeconds * 1_000,
       `Verification timed out after ${data.timeoutSeconds}s`,
@@ -167,40 +296,14 @@ export async function processVerificationJob(
       validationReceipts: legOutput.receipts,
     };
 
-    if (convexCallbackUrl) {
-      await postVerificationResult(convexCallbackUrl, result).catch((err) => {
-        logger.error("Failed to post result to Convex", {
-          jobId: data.jobId,
-          error: err,
-        });
-      });
-
-      if (data.jobHmac) {
-        const artifact = await createArtifactBundle({
-          verificationId: data.verificationId,
-          result,
-        });
-        await postVerificationArtifact(convexCallbackUrl, {
-          verificationId: data.verificationId,
-          submissionId: data.submissionId,
-          bountyId: data.bountyId,
-          jobId: data.jobId,
-          attemptNumber,
-          filename: artifact.filename,
-          contentType: artifact.contentType,
-          sha256: artifact.sha256,
-          bytes: artifact.bytes,
-          manifestJson: artifact.manifestJson,
-          bundleBase64: artifact.bundleBase64,
-          jobHmac: data.jobHmac,
-        }).catch((err) => {
-          logger.error("Failed to post verification artifact", {
-            jobId: data.jobId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
-      }
-    }
+    await postResultAndArtifact({
+      convexCallbackUrl,
+      data,
+      result,
+      attemptNumber,
+      resultErrorMessage: "Failed to post result to Convex",
+      artifactErrorMessage: "Failed to post verification artifact",
+    });
 
     await job.updateProgress(100);
 
@@ -282,13 +385,11 @@ export async function processVerificationFromDiff(
     await job.updateProgress(15);
 
     const cloneCmd = `git clone ${safeRepoUrl} /workspace && cd /workspace && git checkout ${safeCommitSha}`;
-    try {
-      await vm.exec(cloneCmd);
-    } catch (cloneErr) {
-      const rawMessage = cloneErr instanceof Error ? cloneErr.message : String(cloneErr);
-      throw new Error(`Failed to clone repo: ${redactToken(rawMessage, cloneRepo.tokenForRedaction).slice(0, 500)}`);
-    }
-    await vm.exec("chown -R agent:agent /workspace 2>/dev/null || true");
+    await cloneWorkspaceRepo({
+      vm,
+      cloneCommand: cloneCmd,
+      redactionToken: cloneRepo.tokenForRedaction,
+    });
 
     await job.updateProgress(20);
 
@@ -306,48 +407,12 @@ export async function processVerificationFromDiff(
     );
 
     if (applyResult.exitCode !== 0) {
-      const patchGate: GateResult = {
-        gate: "patch-apply",
-        status: "fail",
-        durationMs: Date.now() - startTime,
-        summary: "Failed to apply agent's diff patch to clean repository clone",
-        details: {
-          stdout: applyResult.stdout?.slice(0, 5000),
-          stderr: applyResult.stderr?.slice(0, 5000),
-          exitCode: applyResult.exitCode,
-        },
-      };
-
-      const feedback = generateFeedback([patchGate], data.attemptNumber ?? 1);
-      const receipt = makeTopLevelErrorReceipt(
+      return buildPatchApplyFailureResult({
         data,
-        "patch_apply",
-        `${patchGate.summary}\n${applyResult.stderr || applyResult.stdout || ""}`,
-        data.attemptNumber ?? 1,
-      );
-
-      const result: VerificationResult = {
-        jobId: data.jobId,
-        submissionId: data.submissionId,
-        bountyId: data.bountyId,
-        overallStatus: "fail",
-        gates: [patchGate],
-        totalDurationMs: Date.now() - startTime,
-        feedbackJson: JSON.stringify(feedback),
-        jobHmac: data.jobHmac,
-        validationReceipts: [receipt],
-      };
-
-      if (convexCallbackUrl) {
-        if (data.jobHmac) {
-          await postVerificationReceipt(convexCallbackUrl, receipt, data.jobHmac).catch(() => {});
-        }
-        await postVerificationResult(convexCallbackUrl, result).catch((err) => {
-          logger.error("Failed to post patch-apply failure to Convex", { jobId: data.jobId, error: err });
-        });
-      }
-
-      return result;
+        startTime,
+        convexCallbackUrl,
+        applyResult,
+      });
     }
 
     await vm.exec(`rm ${patchPath}`);
@@ -366,6 +431,12 @@ export async function processVerificationFromDiff(
     await job.updateProgress(30);
 
     const attemptNumber = data.attemptNumber ?? 1;
+    const onReceipt = createReceiptPoster({
+      convexCallbackUrl,
+      jobHmac: data.jobHmac,
+      jobId: data.jobId,
+      logMessage: "Failed to post diff verification receipt",
+    });
     const legOutput = await withTimeout(
       () => runVerificationLegs({
         vm: vm!,
@@ -378,16 +449,7 @@ export async function processVerificationFromDiff(
         attemptNumber,
         candidateCommitSha: data.commitSha,
         baseCommitSha: data.commitSha,
-        onReceipt: async (receipt) => {
-          if (!convexCallbackUrl || !data.jobHmac) return;
-          await postVerificationReceipt(convexCallbackUrl, receipt, data.jobHmac).catch((err) => {
-            logger.error("Failed to post diff verification receipt", {
-              jobId: data.jobId,
-              legKey: receipt.legKey,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          });
-        },
+        onReceipt,
       }),
       data.timeoutSeconds * 1_000,
       `Verification timed out after ${data.timeoutSeconds}s`,
@@ -411,40 +473,14 @@ export async function processVerificationFromDiff(
       validationReceipts: legOutput.receipts,
     };
 
-    if (convexCallbackUrl) {
-      await postVerificationResult(convexCallbackUrl, result).catch((err) => {
-        logger.error("Failed to post diff verification result to Convex", {
-          jobId: data.jobId,
-          error: err,
-        });
-      });
-
-      if (data.jobHmac) {
-        const artifact = await createArtifactBundle({
-          verificationId: data.verificationId,
-          result,
-        });
-        await postVerificationArtifact(convexCallbackUrl, {
-          verificationId: data.verificationId,
-          submissionId: data.submissionId,
-          bountyId: data.bountyId,
-          jobId: data.jobId,
-          attemptNumber,
-          filename: artifact.filename,
-          contentType: artifact.contentType,
-          sha256: artifact.sha256,
-          bytes: artifact.bytes,
-          manifestJson: artifact.manifestJson,
-          bundleBase64: artifact.bundleBase64,
-          jobHmac: data.jobHmac,
-        }).catch((err) => {
-          logger.error("Failed to post diff verification artifact", {
-            jobId: data.jobId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
-      }
-    }
+    await postResultAndArtifact({
+      convexCallbackUrl,
+      data,
+      result,
+      attemptNumber,
+      resultErrorMessage: "Failed to post diff verification result to Convex",
+      artifactErrorMessage: "Failed to post diff verification artifact",
+    });
 
     await job.updateProgress(100);
     return result;

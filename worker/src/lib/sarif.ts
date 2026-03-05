@@ -51,67 +51,65 @@ function extractIssues(details: Record<string, unknown> | undefined): Array<Reco
   return normalized.filter((x) => x && typeof x === "object") as Array<Record<string, unknown>>;
 }
 
+function buildLocations(file?: string, line?: number, column?: number): SarifResultItem["locations"] {
+  if (!file) {
+    return undefined;
+  }
+  return [
+    {
+      physicalLocation: {
+        artifactLocation: { uri: file },
+        region: {
+          startLine: line,
+          startColumn: column,
+        },
+      },
+    },
+  ];
+}
+
+function buildIssueResult(issue: Record<string, unknown>, gate: GateResult): SarifResultItem {
+  const file = typeof issue.file === "string" ? issue.file : undefined;
+  const line = typeof issue.line === "number" ? issue.line : undefined;
+  const column = typeof issue.column === "number" ? issue.column : undefined;
+  const message = typeof issue.message === "string" ? issue.message : gate.summary;
+  const ruleId = typeof issue.rule === "string" ? issue.rule : `${gate.gate}.issue`;
+  const severity = typeof issue.severity === "string" ? issue.severity : gate.status;
+
+  return {
+    ruleId,
+    level: severity === "warning" ? "warning" : "error",
+    message: { text: message },
+    locations: buildLocations(file, line, column),
+    properties: { gate: gate.gate },
+  };
+}
+
+function buildGateRun(gateName: string, results: SarifResultItem[]): SarifRun {
+  return {
+    tool: { driver: { name: gateName } },
+    results,
+  };
+}
+
+function buildSummaryResult(gate: GateResult): SarifResultItem {
+  return {
+    ruleId: `${gate.gate}.summary`,
+    level: toLevel(gate.status),
+    message: { text: gate.summary },
+    properties: { gate: gate.gate },
+  };
+}
+
 export function buildGateSarif(gate: GateResult): string | undefined {
   const issues = extractIssues(gate.details);
-  const results: SarifResultItem[] = [];
-
-  for (const issue of issues) {
-    const file = typeof issue.file === "string" ? issue.file : undefined;
-    const line = typeof issue.line === "number" ? issue.line : undefined;
-    const column = typeof issue.column === "number" ? issue.column : undefined;
-    const message = typeof issue.message === "string" ? issue.message : gate.summary;
-    const ruleId = typeof issue.rule === "string" ? issue.rule : `${gate.gate}.issue`;
-    const severity = typeof issue.severity === "string" ? issue.severity : gate.status;
-
-    results.push({
-      ruleId,
-      level: severity === "warning" ? "warning" : "error",
-      message: { text: message },
-      locations: file
-        ? [
-            {
-              physicalLocation: {
-                artifactLocation: { uri: file },
-                region: {
-                  startLine: line,
-                  startColumn: column,
-                },
-              },
-            },
-          ]
-        : undefined,
-      properties: {
-        gate: gate.gate,
-      },
-    });
-  }
+  const results = issues.map((issue) => buildIssueResult(issue, gate));
 
   if (results.length === 0 && gate.status !== "pass") {
-    results.push({
-      ruleId: `${gate.gate}.summary`,
-      level: toLevel(gate.status),
-      message: { text: gate.summary },
-      properties: {
-        gate: gate.gate,
-      },
-    });
+    results.push(buildSummaryResult(gate));
   }
 
-  if (results.length === 0) {
-    return JSON.stringify(
-      baseLog({
-        tool: { driver: { name: gate.gate } },
-        results: [],
-      }),
-    );
-  }
-
-  return JSON.stringify(
-    baseLog({
-      tool: { driver: { name: gate.gate } },
-      results,
-    }),
-  );
+  return JSON.stringify(baseLog(buildGateRun(gate.gate, results)));
 }
 
 export function buildBddSarif(legKey: string, steps: StepResult[]): string {
@@ -138,9 +136,6 @@ export function buildBddSarif(legKey: string, steps: StepResult[]): string {
   }
 
   return JSON.stringify(
-    baseLog({
-      tool: { driver: { name: legKey } },
-      results,
-    }),
+    baseLog(buildGateRun(legKey, results)),
   );
 }

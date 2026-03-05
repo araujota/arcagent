@@ -109,31 +109,7 @@ export function generateFeedback(
     issues: g.details?.normalizedIssues as GateIssue[] ?? [],
   }));
 
-  // Collect all test results (public + hidden). Hidden Gherkin remains
-  // unreadable to agents, but verification feedback should be explicit.
-  const testResults: TestFeedback[] = [];
-  let hiddenFailures = 0;
-  const hiddenFailureOutputs: string[] = [];
-  for (const g of gateResults) {
-    if (g.steps) {
-      for (const step of g.steps) {
-        const visibility = step.visibility ?? "public";
-        if (step.visibility === "hidden") {
-          if (step.status === "fail" || step.status === "error") {
-            hiddenFailures += 1;
-            if (step.output) hiddenFailureOutputs.push(step.output);
-          }
-        }
-        testResults.push({
-          scenarioName: step.scenarioName,
-          featureName: step.featureName,
-          status: step.status,
-          visibility,
-          output: step.output,
-        });
-      }
-    }
-  }
+  const { testResults, hiddenFailures, hiddenFailureOutputs } = collectTestFeedback(gateResults);
 
   const hiddenFailureMechanisms = summarizeHiddenFailureMechanisms(
     hiddenFailureOutputs,
@@ -169,6 +145,105 @@ function computeStatus(gates: GateResult[]): "pass" | "fail" | "error" {
   return "pass";
 }
 
+function collectTestFeedback(gateResults: GateResult[]): {
+  testResults: TestFeedback[];
+  hiddenFailures: number;
+  hiddenFailureOutputs: string[];
+} {
+  const testResults: TestFeedback[] = [];
+  let hiddenFailures = 0;
+  const hiddenFailureOutputs: string[] = [];
+
+  for (const gateResult of gateResults) {
+    for (const step of gateResult.steps ?? []) {
+      const visibility = step.visibility ?? "public";
+      if (visibility === "hidden" && (step.status === "fail" || step.status === "error")) {
+        hiddenFailures += 1;
+        if (step.output) {
+          hiddenFailureOutputs.push(step.output);
+        }
+      }
+      testResults.push({
+        scenarioName: step.scenarioName,
+        featureName: step.featureName,
+        status: step.status,
+        visibility,
+        output: step.output,
+      });
+    }
+  }
+
+  return { testResults, hiddenFailures, hiddenFailureOutputs };
+}
+
+function addGateIssueItems(
+  items: Array<{ priority: number; text: string }>,
+  gate: GateFeedback,
+): void {
+  const byFile = new Map<string, GateIssue[]>();
+  for (const issue of gate.issues) {
+    const key = issue.file ?? "(unknown file)";
+    const existing = byFile.get(key) ?? [];
+    existing.push(issue);
+    byFile.set(key, existing);
+  }
+
+  for (const [file, issues] of byFile) {
+    const errorCount = issues.filter((issue) => issue.severity === "error").length;
+    const warningCount = issues.filter((issue) => issue.severity === "warning").length;
+    const parts: string[] = [];
+    if (errorCount > 0) parts.push(`${errorCount} error(s)`);
+    if (warningCount > 0) parts.push(`${warningCount} warning(s)`);
+    items.push({
+      priority: CATEGORY_PRIORITY[gate.gate] ?? 99,
+      text: `[${gate.gate}] ${file}: ${parts.join(", ")} — ${issues[0].message}${issues.length > 1 ? ` (and ${issues.length - 1} more)` : ""}`,
+    });
+  }
+}
+
+function addGateActionItems(
+  items: Array<{ priority: number; text: string }>,
+  gates: GateFeedback[],
+): void {
+  for (const gate of gates) {
+    if (gate.status === "pass" || gate.status === "skipped") continue;
+    const priority = CATEGORY_PRIORITY[gate.gate] ?? 99;
+
+    if (gate.issues.length > 0) {
+      addGateIssueItems(items, gate);
+      continue;
+    }
+
+    items.push({
+      priority,
+      text: `[${gate.gate}] ${gate.summary}`,
+    });
+  }
+}
+
+function addFailedTestActionItems(
+  items: Array<{ priority: number; text: string }>,
+  testResults: TestFeedback[],
+): void {
+  const failedTests = testResults.filter((test) => test.status === "fail");
+  if (failedTests.length === 0) return;
+
+  const priority = CATEGORY_PRIORITY.test ?? 99;
+  for (const test of failedTests.slice(0, 20)) {
+    const outputSuffix = test.output ? `: ${test.output.slice(0, 200)}` : "";
+    items.push({
+      priority,
+      text: `[test] Scenario "${test.scenarioName}" (${test.featureName}, ${test.visibility}) failed${outputSuffix}`,
+    });
+  }
+  if (failedTests.length > 20) {
+    items.push({
+      priority,
+      text: `[test] ... and ${failedTests.length - 20} more failed scenarios`,
+    });
+  }
+}
+
 /**
  * Build a prioritized list of action items from gate feedback.
  * Items are ordered: build > typecheck > lint > security > test failures.
@@ -180,59 +255,8 @@ function buildActionItems(
   hiddenFailureMechanisms: HiddenFailureMechanism[],
 ): string[] {
   const items: { priority: number; text: string }[] = [];
-
-  for (const gate of gates) {
-    if (gate.status === "pass" || gate.status === "skipped") continue;
-
-    const priority = CATEGORY_PRIORITY[gate.gate] ?? 99;
-
-    if (gate.issues.length > 0) {
-      // Group issues by file for concise reporting
-      const byFile = new Map<string, GateIssue[]>();
-      for (const issue of gate.issues) {
-        const key = issue.file ?? "(unknown file)";
-        const existing = byFile.get(key) ?? [];
-        existing.push(issue);
-        byFile.set(key, existing);
-      }
-
-      for (const [file, issues] of byFile) {
-        const errorCount = issues.filter((i) => i.severity === "error").length;
-        const warnCount = issues.filter((i) => i.severity === "warning").length;
-        const parts: string[] = [];
-        if (errorCount > 0) parts.push(`${errorCount} error(s)`);
-        if (warnCount > 0) parts.push(`${warnCount} warning(s)`);
-        items.push({
-          priority,
-          text: `[${gate.gate}] ${file}: ${parts.join(", ")} — ${issues[0].message}${issues.length > 1 ? ` (and ${issues.length - 1} more)` : ""}`,
-        });
-      }
-    } else {
-      // Gate failed but no structured issues — use summary
-      items.push({
-        priority,
-        text: `[${gate.gate}] ${gate.summary}`,
-      });
-    }
-  }
-
-  // Add failed test scenarios
-  const failedTests = testResults.filter((t) => t.status === "fail");
-  if (failedTests.length > 0) {
-    const priority = CATEGORY_PRIORITY["test"] ?? 99;
-    for (const t of failedTests.slice(0, 20)) {
-      items.push({
-        priority,
-        text: `[test] Scenario "${t.scenarioName}" (${t.featureName}, ${t.visibility}) failed${t.output ? `: ${t.output.slice(0, 200)}` : ""}`,
-      });
-    }
-    if (failedTests.length > 20) {
-      items.push({
-        priority,
-        text: `[test] ... and ${failedTests.length - 20} more failed scenarios`,
-      });
-    }
-  }
+  addGateActionItems(items, gates);
+  addFailedTestActionItems(items, testResults);
 
   // Sort by priority
   items.sort((a, b) => a.priority - b.priority);

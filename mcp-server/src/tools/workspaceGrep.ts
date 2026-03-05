@@ -5,6 +5,162 @@ import { getWorkspaceForAgent } from "../workspace/cache";
 import { callWorker } from "../worker/client";
 import { registerTool } from "../lib/toolHelper";
 
+interface GrepMatch {
+  file: string;
+  line: number;
+  text: string;
+  contextBefore?: string[];
+  contextAfter?: string[];
+}
+
+interface GrepResult {
+  matches: GrepMatch[];
+  fileMatches?: Array<{ file: string; count: number }>;
+  totalMatches: number;
+  truncated: boolean;
+  outputMode: string;
+}
+
+function parseContextLines(raw?: string): number {
+  if (!raw) {
+    return 0;
+  }
+  return Math.min(Number.parseInt(raw, 10), 10);
+}
+
+function renderWorkspaceUnavailable(ws: {
+  found: boolean;
+  status?: string;
+}) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: ws.found
+          ? `Workspace is not ready (status: ${ws.status ?? "unknown"}).`
+          : "No workspace found. Claim the bounty first.",
+      },
+    ],
+    isError: true,
+  };
+}
+
+function renderFilesWithMatches(pattern: string, result: GrepResult) {
+  if (!result.fileMatches || result.fileMatches.length === 0) {
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `No files found matching pattern: ${pattern}`,
+        },
+      ],
+    };
+  }
+
+  const listing = result.fileMatches.map((fileMatch) => `  ${fileMatch.file}`).join("\n");
+  const footer = result.truncated
+    ? `\n\n(${result.fileMatches.length} files shown, results truncated)`
+    : `\n\n(${result.fileMatches.length} files)`;
+
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: `**Files matching \`${pattern}\`:**\n${listing}${footer}`,
+      },
+    ],
+  };
+}
+
+function renderCountMode(pattern: string, result: GrepResult) {
+  if (!result.fileMatches || result.fileMatches.length === 0) {
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `No matches found for pattern: ${pattern}`,
+        },
+      ],
+    };
+  }
+
+  const listing = result.fileMatches.map((fileMatch) => `  ${fileMatch.file}: ${fileMatch.count}`).join("\n");
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: `**Match counts for \`${pattern}\`:**\n${listing}\n\n(${result.totalMatches} total matches)`,
+      },
+    ],
+  };
+}
+
+function formatMatchBlock(matches: GrepMatch[]): string {
+  const lines: string[] = [];
+  for (const match of matches) {
+    if (match.contextBefore && match.contextBefore.length > 0) {
+      for (const contextLine of match.contextBefore) {
+        lines.push(`       ${contextLine}`);
+      }
+    }
+    lines.push(`  ${String(match.line).padStart(5)}  ${match.text}`);
+    if (match.contextAfter && match.contextAfter.length > 0) {
+      for (const contextLine of match.contextAfter) {
+        lines.push(`       ${contextLine}`);
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
+function renderContentMode(pattern: string, result: GrepResult) {
+  if (result.matches.length === 0) {
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `No matches found for pattern: ${pattern}`,
+        },
+      ],
+    };
+  }
+
+  const byFile = new Map<string, GrepMatch[]>();
+  for (const match of result.matches) {
+    const existing = byFile.get(match.file) ?? [];
+    existing.push(match);
+    byFile.set(match.file, existing);
+  }
+
+  const parts: string[] = [];
+  for (const [file, fileMatches] of byFile) {
+    parts.push(`**${file}**\n${formatMatchBlock(fileMatches)}`);
+  }
+
+  const header = result.truncated
+    ? `Found ${result.totalMatches}+ matches (truncated):`
+    : `Found ${result.totalMatches} matches:`;
+
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: `${header}\n\n${parts.join("\n\n")}`,
+      },
+    ],
+  };
+}
+
+function renderSearchResult(pattern: string, result: GrepResult) {
+  if (result.outputMode === "files_with_matches") {
+    return renderFilesWithMatches(pattern, result);
+  }
+  if (result.outputMode === "count") {
+    return renderCountMode(pattern, result);
+  }
+  return renderContentMode(pattern, result);
+}
+
 export function registerWorkspaceGrep(server: McpServer): void {
   registerTool(
     server,
@@ -48,37 +204,13 @@ export function registerWorkspaceGrep(server: McpServer): void {
 
       const ws = await getWorkspaceForAgent(user.userId, args.bountyId);
       if (!ws.found || ws.status !== "ready") {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: ws.found
-                ? `Workspace is not ready (status: ${ws.status}).`
-                : "No workspace found. Claim the bounty first.",
-            },
-          ],
-          isError: true,
-        };
+        return renderWorkspaceUnavailable(ws);
       }
 
       try {
-        const contextLines = args.contextLines
-          ? Math.min(parseInt(args.contextLines, 10), 10)
-          : 0;
+        const contextLines = parseContextLines(args.contextLines);
 
-        const result = await callWorker<{
-          matches: Array<{
-            file: string;
-            line: number;
-            text: string;
-            contextBefore?: string[];
-            contextAfter?: string[];
-          }>;
-          fileMatches?: Array<{ file: string; count: number }>;
-          totalMatches: number;
-          truncated: boolean;
-          outputMode: string;
-        }>(ws.workerHost, "/api/workspace/grep", {
+        const result = await callWorker<GrepResult>(ws.workerHost, "/api/workspace/grep", {
           workspaceId: ws.workspaceId,
           pattern: args.pattern,
           glob: args.glob,
@@ -87,128 +219,7 @@ export function registerWorkspaceGrep(server: McpServer): void {
           contextLines,
           outputMode: args.outputMode ?? "content",
         });
-
-        // Handle files_with_matches mode
-        if (result.outputMode === "files_with_matches" && result.fileMatches) {
-          if (result.fileMatches.length === 0) {
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: `No files found matching pattern: ${args.pattern}`,
-                },
-              ],
-            };
-          }
-
-          const listing = result.fileMatches
-            .map((f) => `  ${f.file}`)
-            .join("\n");
-          const footer = result.truncated
-            ? `\n\n(${result.fileMatches.length} files shown, results truncated)`
-            : `\n\n(${result.fileMatches.length} files)`;
-
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `**Files matching \`${args.pattern}\`:**\n${listing}${footer}`,
-              },
-            ],
-          };
-        }
-
-        // Handle count mode
-        if (result.outputMode === "count" && result.fileMatches) {
-          if (result.fileMatches.length === 0) {
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: `No matches found for pattern: ${args.pattern}`,
-                },
-              ],
-            };
-          }
-
-          const listing = result.fileMatches
-            .map((f) => `  ${f.file}: ${f.count}`)
-            .join("\n");
-
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `**Match counts for \`${args.pattern}\`:**\n${listing}\n\n(${result.totalMatches} total matches)`,
-              },
-            ],
-          };
-        }
-
-        // Default: content mode
-        if (result.matches.length === 0) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `No matches found for pattern: ${args.pattern}`,
-              },
-            ],
-          };
-        }
-
-        // Group by file for readability
-        const byFile = new Map<
-          string,
-          Array<{
-            line: number;
-            text: string;
-            contextBefore?: string[];
-            contextAfter?: string[];
-          }>
-        >();
-        for (const m of result.matches) {
-          const arr = byFile.get(m.file) ?? [];
-          arr.push({
-            line: m.line,
-            text: m.text,
-            contextBefore: m.contextBefore,
-            contextAfter: m.contextAfter,
-          });
-          byFile.set(m.file, arr);
-        }
-
-        const parts: string[] = [];
-        for (const [file, matches] of byFile) {
-          const lines: string[] = [];
-          for (const m of matches) {
-            if (m.contextBefore && m.contextBefore.length > 0) {
-              for (const ctx of m.contextBefore) {
-                lines.push(`       ${ctx}`);
-              }
-            }
-            lines.push(`  ${String(m.line).padStart(5)}  ${m.text}`);
-            if (m.contextAfter && m.contextAfter.length > 0) {
-              for (const ctx of m.contextAfter) {
-                lines.push(`       ${ctx}`);
-              }
-            }
-          }
-          parts.push(`**${file}**\n${lines.join("\n")}`);
-        }
-
-        const header = result.truncated
-          ? `Found ${result.totalMatches}+ matches (truncated):`
-          : `Found ${result.totalMatches} matches:`;
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `${header}\n\n${parts.join("\n\n")}`,
-            },
-          ],
-        };
+        return renderSearchResult(args.pattern, result);
       } catch (err) {
         const message =
           err instanceof Error ? err.message : "Grep search failed";
