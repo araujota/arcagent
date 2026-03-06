@@ -1,7 +1,15 @@
-import { SignUp } from "@clerk/nextjs";
+import { auth } from "@clerk/nextjs/server";
+import { redirect } from "next/navigation";
 import { AuthShell } from "@/components/auth/auth-shell";
+import { AuthFormGate } from "@/components/auth/auth-form-gate";
 
-export default function SignUpPage() {
+export default async function SignUpPage() {
+  const { userId } = await auth();
+
+  if (userId) {
+    redirect("/dashboard");
+  }
+
   return (
     <AuthShell
       eyebrow="Get Started"
@@ -11,11 +19,7 @@ export default function SignUpPage() {
       alternateLabel="Sign in"
       alternateText="Already have an account?"
     >
-      <SignUp
-        routing="path"
-        path="/sign-up"
-        signInUrl="/sign-in"
-      />
+      <AuthFormGate mode="sign-up" />
     </AuthShell>
   );
 }

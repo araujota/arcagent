@@ -125,22 +125,14 @@ describe("StepBasics", () => {
     expect(screen.queryByText(/Platform fee/)).not.toBeInTheDocument();
   });
 
-  it("renders currency options", () => {
+  it("renders the currently supported payout currency", () => {
     const onChange = vi.fn();
     render(<StepBasics data={defaultData} onChange={onChange} />);
 
-    // USD should be available
     const usdItem = screen.getByTestId("select-item-USD");
     expect(usdItem).toBeInTheDocument();
     expect(usdItem).toHaveTextContent("USD");
-
-    // ETH and USDC should be rendered but disabled
-    const ethItem = screen.getByTestId("select-item-ETH");
-    expect(ethItem).toBeInTheDocument();
-    expect(ethItem).toHaveAttribute("data-disabled", "true");
-
-    const usdcItem = screen.getByTestId("select-item-USDC");
-    expect(usdcItem).toBeInTheDocument();
-    expect(usdcItem).toHaveAttribute("data-disabled", "true");
+    expect(screen.queryByTestId("select-item-ETH")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("select-item-USDC")).not.toBeInTheDocument();
   });
 });
