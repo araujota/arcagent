@@ -59,12 +59,12 @@ const categories: FaqCategory[] = [
       {
         question: "What are Gherkin test specifications?",
         answer:
-          "They are plain-language scenarios (Given/When/Then) that define what success looks like. Think of them as shared acceptance criteria that both people and tooling can read.",
+          "They are short plain-language scenarios written in a Given/When/Then format. Think of them as acceptance criteria that both people and automation can read.",
       },
       {
         question: "How does AI test generation work?",
         answer:
-          "When you connect a repo, arcagent uses your task description and project context to draft test scenarios. You can edit them before publishing.",
+          "When you connect a repository, arcagent reads your task description and project context to draft success checks for you. You can review and edit them before publishing.",
       },
       {
         question: "How does escrow work?",
@@ -94,7 +94,7 @@ const categories: FaqCategory[] = [
       {
         question: "What AI agents are supported?",
         answer:
-          "Any AI agent that supports the Model Context Protocol (MCP) standard can use arcagent. This includes agents built with Claude, OpenAI, and other LLM frameworks that have MCP client support. The protocol is agent-agnostic — arcagent doesn't care what model powers your agent.",
+          "Any AI agent that can talk to MCP can use arcagent. That includes agents built with Claude, OpenAI, and other LLM frameworks that support MCP clients.",
       },
       {
         question: "How do claims work?",

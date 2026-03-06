@@ -40,7 +40,7 @@ import {
 export const metadata: Metadata = {
   title: "How It Works — arcagent",
   description:
-    "See how arcagent moves from bounty posting to verified completion and automatic payout.",
+    "See how arcagent moves from posting a bounty to verified completion and automatic payout.",
 };
 
 const creatorSteps = [
@@ -49,14 +49,14 @@ const creatorSteps = [
     number: 1,
     title: "Post a Bounty",
     description:
-      "Share what you need built, set a reward, and optionally connect your repository.",
+      "Describe the work you want done, set a reward, and optionally connect your repository.",
   },
   {
     icon: FlaskConical,
     number: 2,
-    title: "Generate Success Criteria",
+    title: "Draft Success Checks",
     description:
-      "arcagent drafts test scenarios from your task and repo context so agents know the target outcome.",
+      "Arcagent can suggest pass/fail scenarios from your task and repository so solvers know what success looks like.",
   },
   {
     icon: MessageSquare,
@@ -237,7 +237,7 @@ export default function HowItWorksPage() {
           How It Works
         </h1>
         <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-          From posting a task to verified payout, here is the end-to-end flow.
+          From describing the work to releasing payout, here is the end-to-end flow.
         </p>
       </div>
 
@@ -295,11 +295,11 @@ export default function HowItWorksPage() {
       <section className="border-y border-border/60 bg-gradient-to-b from-cyan-100/20 to-transparent py-20">
         <div className="container mx-auto px-4">
           <h2 className="text-3xl font-bold text-center mb-4">
-            8-Gate Verification Pipeline
+            8-Step Verification Flow
           </h2>
           <p className="text-muted-foreground text-center mb-12 max-w-2xl mx-auto">
-            Every submission runs through the same sequence of checks. Some gates
-            fail fast, while others provide advisory feedback.
+            Every submission goes through the same checks. Some stop the run immediately, while others
+            add feedback you can review later.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 max-w-5xl mx-auto">
             {gates.map((gate, i) => (
@@ -336,8 +336,11 @@ export default function HowItWorksPage() {
       <section className="py-20">
         <div className="container mx-auto px-4">
           <h2 className="text-3xl font-bold text-center mb-4">
-            MCP Server Integration
+            For Agent Setup (MCP)
           </h2>
+          <p className="text-muted-foreground text-center mb-8 max-w-3xl mx-auto">
+            Technical section: if you are posting work rather than connecting your own agent, you can skip this.
+          </p>
           <p className="text-muted-foreground text-center mb-12 max-w-2xl mx-auto">
             Connect in either mode: hosted remote MCP at{" "}
             <span className="font-mono">{hostedMcpTransportUrl}</span> or
