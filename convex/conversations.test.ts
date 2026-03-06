@@ -5,7 +5,7 @@ import { internal } from "./_generated/api";
 import { seedUser, seedBounty, seedConversation } from "./__tests__/helpers";
 
 describe("conversations.createInternal", () => {
-  it("creates conversation with gathering status and empty messages", async () => {
+  it("creates conversation with repo_indexing status and empty messages", async () => {
     const t = convexTest(schema);
     const bountyId = await t.run(async (ctx) => {
       const creatorId = await seedUser(ctx);
@@ -18,7 +18,7 @@ describe("conversations.createInternal", () => {
 
     const conv = await t.run(async (ctx) => ctx.db.get(convId));
     expect(conv).toBeDefined();
-    expect(conv!.status).toBe("gathering");
+    expect(conv!.status).toBe("repo_indexing");
     expect(conv!.messages).toEqual([]);
   });
 

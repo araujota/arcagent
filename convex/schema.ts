@@ -87,6 +87,13 @@ export default defineSchema({
     isTestBounty: v.optional(v.boolean()),
     testBountyKind: v.optional(v.union(v.literal("agenthello_v1"))),
     testBountyAgentIdentifier: v.optional(v.string()),
+    creationStage: v.optional(v.union(
+      v.literal("requirements"),
+      v.literal("tests"),
+      v.literal("publish"),
+      v.literal("done"),
+    )),
+    commercialConfigPending: v.optional(v.boolean()),
   })
     .index("by_status", ["status"])
     .index("by_creatorId", ["creatorId"])
@@ -458,7 +465,14 @@ export default defineSchema({
       v.literal("generating_bdd"),
       v.literal("generating_tdd"),
       v.literal("review"),
-      v.literal("finalized")
+      v.literal("finalized"),
+      v.literal("repo_indexing"),
+      v.literal("requirements_generation"),
+      v.literal("requirements_review"),
+      v.literal("tests_generation"),
+      v.literal("tests_review"),
+      v.literal("ready_to_publish"),
+      v.literal("failed")
     ),
     messages: v.array(
       v.object({
@@ -484,6 +498,8 @@ export default defineSchema({
     stepDefinitions: v.string(),
     stepDefinitionsPublic: v.optional(v.string()),
     stepDefinitionsHidden: v.optional(v.string()),
+    nativeTestFilesPublic: v.optional(v.string()),
+    nativeTestFilesHidden: v.optional(v.string()),
     testFramework: v.string(),
     testLanguage: v.string(),
     status: v.union(
@@ -492,6 +508,35 @@ export default defineSchema({
       v.literal("published")
     ),
     llmModel: v.string(),
+    nativeTestsStale: v.optional(v.boolean()),
+    lastValidatedAt: v.optional(v.number()),
+  })
+    .index("by_bountyId", ["bountyId"])
+    .index("by_conversationId", ["conversationId"]),
+
+  generatedRequirements: defineTable({
+    bountyId: v.id("bounties"),
+    conversationId: v.id("conversations"),
+    version: v.number(),
+    sourceTitle: v.string(),
+    sourceBrief: v.string(),
+    requirementsMarkdown: v.string(),
+    acceptanceCriteria: v.array(v.object({
+      id: v.string(),
+      text: v.string(),
+    })),
+    openQuestions: v.array(v.string()),
+    citationsJson: v.optional(v.string()),
+    reviewScoreJson: v.optional(v.string()),
+    status: v.union(
+      v.literal("draft"),
+      v.literal("approved"),
+      v.literal("superseded"),
+    ),
+    llmProvider: v.string(),
+    llmModel: v.string(),
+    editedAt: v.optional(v.number()),
+    approvedAt: v.optional(v.number()),
   })
     .index("by_bountyId", ["bountyId"])
     .index("by_conversationId", ["conversationId"]),

@@ -1,9 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createSign } from "node:crypto";
+import Anthropic from "@anthropic-ai/sdk";
 
 const DEFAULT_TIMEOUT_MS = Number(process.env.ENV_SMOKE_TIMEOUT_MS ?? "15000");
 const USER_AGENT = "arcagent-env-smoke/1.0";
+
+function resolveAnthropicModel() {
+  return (
+    process.env.ENHANCED_REQUIREMENTS_MODEL ||
+    process.env.LLM_MODEL ||
+    "claude-sonnet-4-5-20250929"
+  );
+}
 
 function readEnv(name) {
   const value = process.env[name];
@@ -464,6 +473,107 @@ test("Anthropic API key authenticates", async (t) => {
     },
   });
   assert.equal(response.status, 200, "Expected ANTHROPIC_API_KEY to authenticate via /v1/models");
+});
+
+test("Anthropic messages endpoint accepts ArcAgent raw payload shape", async (t) => {
+  const key = requireSingleEnvOrSkip(t, "ANTHROPIC_API_KEY");
+  if (!key) return;
+
+  const model = resolveAnthropicModel();
+  const requestBody = {
+    model,
+    max_tokens: 32,
+    temperature: 0,
+    system: "You are a smoke test. Reply with exactly OK.",
+    messages: [
+      {
+        role: "user",
+        content: "Reply with exactly OK.",
+      },
+    ],
+  };
+
+  const response = await fetchWithTimeout("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "User-Agent": USER_AGENT,
+    },
+    body: JSON.stringify(requestBody),
+  }, 30000);
+
+  assert.equal(
+    response.status,
+    200,
+    `Expected ArcAgent raw Anthropic payload to succeed for model ${model}`,
+  );
+
+  const payload = await assertJsonResponse(
+    response,
+    "Anthropic /v1/messages raw payload smoke test",
+  );
+  assert.equal(payload.model, model);
+  assert.ok(Array.isArray(payload.content), "Expected content array in Anthropic response");
+  assert.ok(payload.content.some((block) => block.type === "text"), "Expected text block");
+  assert.equal(typeof payload.usage?.input_tokens, "number");
+  assert.equal(typeof payload.usage?.output_tokens, "number");
+});
+
+test("Anthropic SDK accepts ArcAgent enhanced-requirements document payload shape", async (t) => {
+  const key = requireSingleEnvOrSkip(t, "ANTHROPIC_API_KEY");
+  if (!key) return;
+
+  const model = resolveAnthropicModel();
+  const client = new Anthropic({ apiKey: key });
+  const ticketDocument = Buffer.from(
+    "Title: Anthropic smoke test\n\nValidate ArcAgent's enhanced requirements request shape.",
+    "utf8",
+  ).toString("base64");
+
+  const response = await client.messages.create({
+    model,
+    max_tokens: 48,
+    temperature: 0,
+    system: "You validate request formatting. Reply with exactly VALID.",
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            title: "Ticket",
+            source: {
+              type: "text",
+              media_type: "text/plain",
+              data: ticketDocument,
+            },
+            citations: { enabled: true },
+            cache_control: { type: "ephemeral" },
+          },
+          {
+            type: "text",
+            text: "Use the document context and reply with exactly VALID.",
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(response.model, model);
+  assert.equal(response.type, "message");
+  assert.equal(response.role, "assistant");
+  assert.ok(Array.isArray(response.content), "Expected content array in SDK response");
+  assert.equal(typeof response.usage?.input_tokens, "number");
+  assert.equal(typeof response.usage?.output_tokens, "number");
+  assert.ok(
+    response.stop_reason === "end_turn" ||
+      response.stop_reason === "max_tokens" ||
+      response.stop_reason === "refusal",
+    `Unexpected stop_reason from Anthropic SDK smoke test: ${response.stop_reason}`,
+  );
 });
 
 test("OpenAI API key authenticates", async (t) => {

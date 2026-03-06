@@ -47,7 +47,7 @@ describe("create_bounty tool", () => {
     handler = server.tools["create_bounty"].handler;
   });
 
-  it("success with repo URL -> output contains 'Autonomous Pipeline Started'", async () => {
+  it("success with repo URL -> output contains staged generation messaging", async () => {
     mockCallConvex.mockResolvedValue({
       bountyId: "b1",
       repoConnectionId: "rc1",
@@ -59,7 +59,7 @@ describe("create_bounty tool", () => {
     );
 
     expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toContain("Autonomous Pipeline Started");
+    expect(result.content[0].text).toContain("Staged Generation Started");
     expect(result.content[0].text).toContain("rc1");
   });
 

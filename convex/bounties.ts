@@ -19,6 +19,8 @@ type BountyUpdateValidationArgs = {
   description?: string;
   reward?: number;
   requiredTier?: BountyTier;
+  creationStage?: "requirements" | "tests" | "publish" | "done";
+  commercialConfigPending?: boolean;
 } & Partial<Record<FrozenUpdateField, unknown>>;
 
 type BountyUpdateValidationRecord = {
@@ -256,6 +258,13 @@ export const create = mutation({
       v.literal("S"), v.literal("A"), v.literal("B"),
       v.literal("C"), v.literal("D")
     )),
+    creationStage: v.optional(v.union(
+      v.literal("requirements"),
+      v.literal("tests"),
+      v.literal("publish"),
+      v.literal("done"),
+    )),
+    commercialConfigPending: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
@@ -303,6 +312,8 @@ export const create = mutation({
       pmIssueKey: args.pmIssueKey,
       pmProvider: args.pmProvider,
       requiredTier: args.requiredTier,
+      creationStage: args.creationStage,
+      commercialConfigPending: args.commercialConfigPending,
     });
   },
 });
@@ -324,6 +335,13 @@ export const update = mutation({
       v.literal("S"), v.literal("A"), v.literal("B"),
       v.literal("C"), v.literal("D")
     )),
+    creationStage: v.optional(v.union(
+      v.literal("requirements"),
+      v.literal("tests"),
+      v.literal("publish"),
+      v.literal("done"),
+    )),
+    commercialConfigPending: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const user = requireAuth(await getCurrentUser(ctx));
@@ -342,6 +360,122 @@ export const update = mutation({
 
     await ctx.db.patch(bountyId, filteredUpdates);
     return bountyId;
+  },
+});
+
+export const updateInternal = internalMutation({
+  args: {
+    bountyId: v.id("bounties"),
+    title: v.optional(v.string()),
+    description: v.optional(v.string()),
+    reward: v.optional(v.number()),
+    rewardCurrency: v.optional(v.string()),
+    paymentMethod: v.optional(
+      v.union(v.literal("stripe"), v.literal("web3"))
+    ),
+    deadline: v.optional(v.number()),
+    repositoryUrl: v.optional(v.string()),
+    tags: v.optional(v.array(v.string())),
+    requiredTier: v.optional(v.union(
+      v.literal("S"), v.literal("A"), v.literal("B"),
+      v.literal("C"), v.literal("D")
+    )),
+    creationStage: v.optional(v.union(
+      v.literal("requirements"),
+      v.literal("tests"),
+      v.literal("publish"),
+      v.literal("done"),
+    )),
+    commercialConfigPending: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const bounty = await ctx.db.get(args.bountyId);
+    if (!bounty) throw new Error("Bounty not found");
+
+    validateUpdateTextFields(args);
+    validateUpdateRewardRules(args, bounty as BountyUpdateValidationRecord);
+    assertUpdateAllowedForStatus(args, bounty as BountyUpdateValidationRecord);
+
+    const { bountyId, ...updates } = args;
+    const filteredUpdates = filterDefinedUpdateValues(updates);
+
+    await ctx.db.patch(bountyId, filteredUpdates);
+    return bountyId;
+  },
+});
+
+export const finalizeDraftCreation = mutation({
+  args: {
+    bountyId: v.id("bounties"),
+    reward: v.number(),
+    rewardCurrency: v.string(),
+    paymentMethod: v.union(v.literal("stripe"), v.literal("web3")),
+    deadline: v.optional(v.number()),
+    tags: v.optional(v.array(v.string())),
+    requiredTier: v.optional(v.union(
+      v.literal("S"), v.literal("A"), v.literal("B"),
+      v.literal("C"), v.literal("D")
+    )),
+    tosAccepted: v.boolean(),
+    tosAcceptedAt: v.number(),
+    tosVersion: v.string(),
+    publishNow: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const user = requireAuth(await getCurrentUser(ctx));
+    const bounty = await ctx.db.get(args.bountyId);
+    if (!bounty) throw new Error("Bounty not found");
+    if (bounty.creatorId !== user._id && user.role !== "admin") {
+      throw new Error("Unauthorized");
+    }
+
+    validateUpdateRewardRules(args, bounty as BountyUpdateValidationRecord);
+    if (args.paymentMethod === "web3") {
+      throw new Error("Web3 payments are coming soon. Please use Stripe.");
+    }
+
+    await ctx.db.patch(args.bountyId, {
+      reward: args.reward,
+      rewardCurrency: args.rewardCurrency,
+      paymentMethod: args.paymentMethod,
+      deadline: args.deadline,
+      tags: args.tags,
+      requiredTier: args.requiredTier,
+      tosAccepted: args.tosAccepted,
+      tosAcceptedAt: args.tosAcceptedAt,
+      tosVersion: args.tosVersion,
+      commercialConfigPending: false,
+      creationStage: "done",
+    });
+
+    if (args.publishNow) {
+      const refreshed = await ctx.db.get(args.bountyId);
+      if (!refreshed) throw new Error("Bounty not found");
+      const allowed = VALID_STATUS_TRANSITIONS[refreshed.status] ?? [];
+      if (!allowed.includes("active")) {
+        throw new Error(`Cannot transition from "${refreshed.status}" to "active"`);
+      }
+      if (refreshed.paymentMethod === "stripe" && refreshed.escrowStatus !== "funded") {
+        throw new Error("Cannot activate: escrow must be funded first");
+      }
+      await ctx.db.patch(args.bountyId, { status: "active" });
+      await ctx.scheduler.runAfter(0, internal.notifications.createForNewBounty, {
+        bountyId: args.bountyId,
+        title: refreshed.title,
+        reward: args.reward,
+        rewardCurrency: args.rewardCurrency,
+        tags: args.tags,
+      });
+      await ctx.scheduler.runAfter(0, internal.activityFeed.record, {
+        type: "bounty_posted",
+        bountyId: args.bountyId,
+        bountyTitle: refreshed.title,
+        amount: args.reward,
+        currency: args.rewardCurrency,
+      });
+    }
+
+    return args.bountyId;
   },
 });
 
@@ -392,6 +526,16 @@ export const updateStatus = mutation({
     // because drafts don't require TOS — it's enforced at publish time)
     if (args.status === "active" && !bounty.tosAccepted) {
       throw new Error("You must accept the Bounty Creation Terms of Service before publishing");
+    }
+    if (args.status === "active" && bounty.commercialConfigPending) {
+      throw new Error("Finalize pricing, funding settings, and terms before publishing this bounty");
+    }
+    if (
+      args.status === "active" &&
+      bounty.creationStage &&
+      bounty.creationStage !== "done"
+    ) {
+      throw new Error("Complete requirements and test approvals before publishing this bounty");
     }
 
     await ctx.db.patch(args.bountyId, { status: args.status });
@@ -587,6 +731,13 @@ export const createFromMcp = internalMutation({
       v.literal("S"), v.literal("A"), v.literal("B"),
       v.literal("C"), v.literal("D")
     )),
+    creationStage: v.optional(v.union(
+      v.literal("requirements"),
+      v.literal("tests"),
+      v.literal("publish"),
+      v.literal("done"),
+    )),
+    commercialConfigPending: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     // Input validation
@@ -632,6 +783,8 @@ export const createFromMcp = internalMutation({
       pmProvider: args.pmProvider,
       pmConnectionId: args.pmConnectionId,
       requiredTier: args.requiredTier,
+      creationStage: args.creationStage,
+      commercialConfigPending: args.commercialConfigPending,
     });
 
     if (status === "active") {
@@ -690,6 +843,16 @@ export const updateStatusInternal = internalMutation({
       bounty.escrowStatus !== "funded"
     ) {
       throw new Error("Cannot activate: escrow must be funded first");
+    }
+    if (args.status === "active" && bounty.commercialConfigPending) {
+      throw new Error("Cannot activate: finalize pricing, funding settings, and terms first");
+    }
+    if (
+      args.status === "active" &&
+      bounty.creationStage &&
+      bounty.creationStage !== "done"
+    ) {
+      throw new Error("Cannot activate: bounty creation is still awaiting requirements or test approval");
     }
 
     await ctx.db.patch(args.bountyId, { status: args.status });

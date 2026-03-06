@@ -99,6 +99,61 @@ export const createInternal = internalMutation({
   },
 });
 
+export const upsertGeneratedDraftSuitesInternal = internalMutation({
+  args: {
+    bountyId: v.id("bounties"),
+    title: v.string(),
+    gherkinPublic: v.string(),
+    gherkinHidden: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("testSuites")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .collect();
+
+    const publicSuite = existing.find((suite) => suite.visibility === "public");
+    const hiddenSuite = existing.find((suite) => suite.visibility === "hidden");
+
+    if (publicSuite) {
+      await ctx.db.patch(publicSuite._id, {
+        title: `${args.title} - Public Tests`,
+        gherkinContent: args.gherkinPublic,
+      });
+    } else {
+      const maxVersion = existing.reduce((max, suite) => Math.max(max, suite.version), 0);
+      await ctx.db.insert("testSuites", {
+        bountyId: args.bountyId,
+        title: `${args.title} - Public Tests`,
+        version: maxVersion + 1,
+        gherkinContent: args.gherkinPublic,
+        visibility: "public",
+      });
+    }
+
+    const refreshed = await ctx.db
+      .query("testSuites")
+      .withIndex("by_bountyId", (q) => q.eq("bountyId", args.bountyId))
+      .collect();
+    const nextVersion = refreshed.reduce((max, suite) => Math.max(max, suite.version), 0);
+
+    if (hiddenSuite) {
+      await ctx.db.patch(hiddenSuite._id, {
+        title: `${args.title} - Hidden Tests`,
+        gherkinContent: args.gherkinHidden,
+      });
+    } else {
+      await ctx.db.insert("testSuites", {
+        bountyId: args.bountyId,
+        title: `${args.title} - Hidden Tests`,
+        version: nextVersion + 1,
+        gherkinContent: args.gherkinHidden,
+        visibility: "hidden",
+      });
+    }
+  },
+});
+
 export const create = mutation({
   args: {
     bountyId: v.id("bounties"),

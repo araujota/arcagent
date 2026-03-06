@@ -96,6 +96,17 @@ function StructuredContent({ data }: { data: StructuredData }) {
     );
   }
 
+  if (data.type === "requirements_generated") {
+    return (
+      <div className="space-y-2">
+        <p className="text-sm font-medium">Enhanced requirements draft generated.</p>
+        <p className="text-xs text-muted-foreground">
+          Review the requirements editor before continuing to test generation.
+        </p>
+      </div>
+    );
+  }
+
   if (data.type === "tdd_generated") {
     return (
       <div className="space-y-2">

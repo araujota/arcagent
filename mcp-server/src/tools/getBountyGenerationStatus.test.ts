@@ -40,10 +40,14 @@ describe("get_bounty_generation_status tool", () => {
 
   it("full status ready -> 'Overall Ready: YES'", async () => {
     mockCallConvex.mockResolvedValue({
-      repoIndexing: { status: "completed", totalFiles: 42, languages: ["typescript"] },
-      conversation: { status: "completed", autonomous: true, messageCount: 10 },
-      generatedTest: { status: "approved", version: 1, testFramework: "vitest", testLanguage: "typescript" },
+      repoIndexing: { status: "ready", totalFiles: 42, languages: ["typescript"] },
+      conversation: { status: "finalized", autonomous: false, messageCount: 10 },
+      requirementsDraft: { status: "approved", version: 2, acceptanceCriteriaCount: 5, openQuestionsCount: 0 },
+      generatedTest: { status: "published", version: 1, testFramework: "vitest", testLanguage: "typescript", nativeTestsStale: false },
       testSuitesCount: 3,
+      creationStage: "done",
+      nextAction: "fund_or_publish",
+      publishReady: true,
       overallReady: true,
     });
 
@@ -52,6 +56,7 @@ describe("get_bounty_generation_status tool", () => {
     );
 
     expect(result.content[0].text).toContain("Overall Ready: YES");
+    expect(result.content[0].text).toContain("Requirements Draft");
     expect(result.content[0].text).toContain("42");
     expect(result.content[0].text).toContain("vitest");
   });
@@ -60,8 +65,12 @@ describe("get_bounty_generation_status tool", () => {
     mockCallConvex.mockResolvedValue({
       repoIndexing: { status: "indexing", totalFiles: 10 },
       conversation: null,
+      requirementsDraft: null,
       generatedTest: null,
       testSuitesCount: 0,
+      creationStage: "requirements",
+      nextAction: "wait_for_repo_indexing",
+      publishReady: false,
       overallReady: false,
     });
 
@@ -70,6 +79,7 @@ describe("get_bounty_generation_status tool", () => {
     );
 
     expect(result.content[0].text).toContain("Overall Ready: NO");
+    expect(result.content[0].text).toContain("Next Action: wait_for_repo_indexing");
     expect(result.content[0].text).toContain("Poll again");
   });
 

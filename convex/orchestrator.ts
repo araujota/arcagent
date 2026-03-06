@@ -2,6 +2,57 @@ import { internalAction, action } from "./_generated/server";
 import { v } from "convex/values";
 import { internal, api } from "./_generated/api";
 
+async function refreshRepoContextSnapshot(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ctx: any,
+  args: { bountyId: any; conversationId: any; query: string },
+): Promise<string | undefined> {
+  try {
+    const context = await ctx.runAction(
+      internal.pipelines.retrieveContext.retrieveContext,
+      {
+        bountyId: args.bountyId,
+        query: args.query,
+      },
+    );
+    const snapshot = JSON.stringify(context);
+    await ctx.runMutation(internal.conversations.updateRepoContext, {
+      conversationId: args.conversationId,
+      repoContextSnapshot: snapshot,
+    });
+    return snapshot;
+  } catch (error) {
+    console.warn("Failed to retrieve repo context:", error);
+    return undefined;
+  }
+}
+
+async function generateRequirementsDraft(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ctx: any,
+  args: { bountyId: any; conversationId: any },
+  bounty: { title: string; description: string },
+  currentDraft?: string,
+) {
+  const repoContext = await refreshRepoContextSnapshot(ctx, {
+    bountyId: args.bountyId,
+    conversationId: args.conversationId,
+    query: `${bounty.title}\n${bounty.description}`,
+  });
+
+  return await ctx.runAction(
+    internal.pipelines.generateEnhancedRequirements.generateEnhancedRequirements,
+    {
+      bountyId: args.bountyId,
+      conversationId: args.conversationId,
+      sourceTitle: bounty.title,
+      sourceBrief: bounty.description,
+      repoContext,
+      currentDraft,
+    },
+  );
+}
+
 /**
  * Start the AI-assisted generation pipeline.
  * Called from the frontend when the user initiates generation.
@@ -12,56 +63,51 @@ export const startGenerationPipeline = action({
     conversationId: v.id("conversations"),
   },
   handler: async (ctx, args) => {
-    // Get bounty details
     const bounty = await ctx.runQuery(api.bounties.getById, {
       bountyId: args.bountyId,
     });
-
     if (!bounty) {
       throw new Error("Bounty not found");
     }
 
-    // Try to retrieve repo context if a repo is connected
-    let repoContext: string | null = null;
     const repoConnection = await ctx.runQuery(api.repoConnections.getByBountyId, {
       bountyId: args.bountyId,
     });
 
-    if (repoConnection && repoConnection.status === "ready") {
-      try {
-        const context = await ctx.runAction(
-          internal.pipelines.retrieveContext.retrieveContext,
-          {
-            bountyId: args.bountyId,
-            query: `${bounty.title}\n${bounty.description}`,
-          }
-        );
-
-        repoContext = JSON.stringify(context);
-
-        // Store repo context snapshot on conversation
-        await ctx.runMutation(internal.conversations.updateRepoContext, {
-          conversationId: args.conversationId,
-          repoContextSnapshot: repoContext,
-        });
-      } catch (error) {
-        console.warn("Failed to retrieve repo context:", error);
-      }
+    if (!repoConnection) {
+      await ctx.runMutation(internal.conversations.updateStatus, {
+        conversationId: args.conversationId,
+        status: "requirements_generation",
+      });
+      return await generateRequirementsDraft(ctx, args, bounty);
     }
 
-    // Start with requirements analysis
-    const result = await ctx.runAction(
-      internal.pipelines.analyzeRequirements.analyzeRequirements,
-      {
-        bountyId: args.bountyId,
+    if (repoConnection.status === "ready") {
+      await ctx.runMutation(internal.conversations.updateStatus, {
         conversationId: args.conversationId,
-        description: bounty.description,
-        requirements: bounty.title,
-        repoContext: repoContext || undefined,
-      }
-    );
+        status: "requirements_generation",
+      });
+      return await generateRequirementsDraft(ctx, args, bounty);
+    }
 
-    return result;
+    if (repoConnection.status === "failed") {
+      await ctx.runMutation(internal.conversations.updateStatus, {
+        conversationId: args.conversationId,
+        status: "failed",
+      });
+      throw new Error(repoConnection.errorMessage || "Repository indexing failed");
+    }
+
+    await ctx.runMutation(internal.conversations.updateStatus, {
+      conversationId: args.conversationId,
+      status: "repo_indexing",
+    });
+    await ctx.scheduler.runAfter(0, internal.orchestrator.checkRepoAndGenerateRequirements, {
+      bountyId: args.bountyId,
+      conversationId: args.conversationId,
+      attempt: 0,
+    });
+    return { status: "repo_indexing" as const };
   },
 });
 
@@ -208,6 +254,615 @@ export const connectAndIndexRepo = action({
       bountyId: args.bountyId,
       repositoryUrl: args.repositoryUrl,
     });
+  },
+});
+
+export const regenerateRequirements = action({
+  args: {
+    bountyId: v.id("bounties"),
+    conversationId: v.id("conversations"),
+    currentDraft: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const bounty = await ctx.runQuery(api.bounties.getById, {
+      bountyId: args.bountyId,
+    });
+    if (!bounty) throw new Error("Bounty not found");
+
+    return await generateRequirementsDraft(ctx, args, bounty, args.currentDraft);
+  },
+});
+
+export const regenerateRequirementsInternal = internalAction({
+  args: {
+    bountyId: v.id("bounties"),
+    conversationId: v.id("conversations"),
+    currentDraft: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+      bountyId: args.bountyId,
+    });
+    if (!bounty) throw new Error("Bounty not found");
+
+    return await generateRequirementsDraft(ctx, args, bounty, args.currentDraft);
+  },
+});
+
+export const approveRequirementsAndGenerateTests = action({
+  args: {
+    bountyId: v.id("bounties"),
+    conversationId: v.id("conversations"),
+    generatedRequirementId: v.id("generatedRequirements"),
+  },
+  handler: async (ctx, args) => {
+    await ctx.runMutation(api.generatedRequirements.approve, {
+      generatedRequirementId: args.generatedRequirementId,
+    });
+
+    const bounty = await ctx.runQuery(api.bounties.getById, {
+      bountyId: args.bountyId,
+    });
+    if (!bounty) throw new Error("Bounty not found");
+
+    const approvedRequirements = await ctx.runQuery(
+      api.generatedRequirements.getApprovedByBountyId,
+      { bountyId: args.bountyId },
+    );
+    const conversation = await ctx.runQuery(api.conversations.getByIdPublic, {
+      conversationId: args.conversationId,
+    });
+    const repoConnection = await ctx.runQuery(api.repoConnections.getByBountyId, {
+      bountyId: args.bountyId,
+    });
+    const existingFeatureExemplars = repoConnection?.detectedFeatureFiles?.slice(0, 2)
+      .map((file: { filePath: string; content: string }) => `# ${file.filePath}\n${file.content}`)
+      .join("\n\n");
+
+    await ctx.runMutation(internal.conversations.updateStatus, {
+      conversationId: args.conversationId,
+      status: "tests_generation",
+    });
+
+    const gherkinResult = await ctx.runAction(
+      internal.pipelines.generateBDD.generateBDD,
+      {
+        bountyId: args.bountyId,
+        conversationId: args.conversationId,
+        description: approvedRequirements?.requirementsMarkdown || bounty.description,
+        repoContext: conversation?.repoContextSnapshot || undefined,
+        existingFeatureExemplars,
+        extractedCriteria: approvedRequirements?.acceptanceCriteria.map((criterion) => criterion.text),
+      },
+    );
+
+    const generatedTest = await ctx.runQuery(api.generatedTests.getByConversationId, {
+      conversationId: args.conversationId,
+    });
+    if (!generatedTest) {
+      throw new Error("Generated tests not found after BDD generation");
+    }
+
+    await ctx.runAction(internal.pipelines.generateTDD.generateTDD, {
+      bountyId: args.bountyId,
+      conversationId: args.conversationId,
+      generatedTestId: generatedTest._id,
+      gherkinPublic: gherkinResult.gherkinPublic,
+      gherkinHidden: gherkinResult.gherkinHidden,
+      repoContext: conversation?.repoContextSnapshot || undefined,
+      primaryLanguage: repoConnection?.languages?.[0] || "typescript",
+    });
+
+    await ctx.runMutation(internal.conversations.updateStatus, {
+      conversationId: args.conversationId,
+      status: "tests_review",
+    });
+    await ctx.runMutation(api.bounties.update, {
+      bountyId: args.bountyId,
+      creationStage: "tests",
+    });
+
+    return await ctx.runQuery(api.generatedTests.getByConversationId, {
+      conversationId: args.conversationId,
+    });
+  },
+});
+
+export const approveRequirementsAndGenerateTestsInternal = internalAction({
+  args: {
+    bountyId: v.id("bounties"),
+    conversationId: v.id("conversations"),
+    generatedRequirementId: v.id("generatedRequirements"),
+  },
+  handler: async (ctx, args) => {
+    await ctx.runMutation(internal.generatedRequirements.approveInternal, {
+      generatedRequirementId: args.generatedRequirementId,
+    });
+
+    const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+      bountyId: args.bountyId,
+    });
+    if (!bounty) throw new Error("Bounty not found");
+
+    const approvedRequirements = await ctx.runQuery(
+      internal.generatedRequirements.getApprovedByBountyIdInternal,
+      { bountyId: args.bountyId },
+    );
+    const conversation = await ctx.runQuery(internal.conversations.getById, {
+      conversationId: args.conversationId,
+    });
+    const repoConnection = await ctx.runQuery(internal.repoConnections.getByBountyIdInternal, {
+      bountyId: args.bountyId,
+    });
+    const existingFeatureExemplars = repoConnection?.detectedFeatureFiles?.slice(0, 2)
+      .map((file: { filePath: string; content: string }) => `# ${file.filePath}\n${file.content}`)
+      .join("\n\n");
+
+    await ctx.runMutation(internal.conversations.updateStatus, {
+      conversationId: args.conversationId,
+      status: "tests_generation",
+    });
+
+    const gherkinResult = await ctx.runAction(
+      internal.pipelines.generateBDD.generateBDD,
+      {
+        bountyId: args.bountyId,
+        conversationId: args.conversationId,
+        description: approvedRequirements?.requirementsMarkdown || bounty.description,
+        repoContext: conversation?.repoContextSnapshot || undefined,
+        existingFeatureExemplars,
+        extractedCriteria: approvedRequirements?.acceptanceCriteria.map((criterion) => criterion.text),
+      },
+    );
+
+    const generatedTest = await ctx.runQuery(internal.generatedTests.getByConversationIdInternal, {
+      conversationId: args.conversationId,
+    });
+    if (!generatedTest) {
+      throw new Error("Generated tests not found after BDD generation");
+    }
+
+    await ctx.runAction(internal.pipelines.generateTDD.generateTDD, {
+      bountyId: args.bountyId,
+      conversationId: args.conversationId,
+      generatedTestId: generatedTest._id,
+      gherkinPublic: gherkinResult.gherkinPublic,
+      gherkinHidden: gherkinResult.gherkinHidden,
+      repoContext: conversation?.repoContextSnapshot || undefined,
+      primaryLanguage: repoConnection?.languages?.[0] || "typescript",
+    });
+
+    await ctx.runMutation(internal.conversations.updateStatus, {
+      conversationId: args.conversationId,
+      status: "tests_review",
+    });
+    await ctx.runMutation(internal.bounties.updateInternal, {
+      bountyId: args.bountyId,
+      creationStage: "tests",
+    });
+
+    return await ctx.runQuery(internal.generatedTests.getByConversationIdInternal, {
+      conversationId: args.conversationId,
+    });
+  },
+});
+
+export const regenerateTestsFromApprovedRequirements = action({
+  args: {
+    bountyId: v.id("bounties"),
+    conversationId: v.id("conversations"),
+  },
+  handler: async (ctx, args) => {
+    const approvedRequirements = await ctx.runQuery(
+      api.generatedRequirements.getApprovedByBountyId,
+      { bountyId: args.bountyId },
+    );
+    if (!approvedRequirements) {
+      throw new Error("Approve enhanced requirements before generating tests");
+    }
+    const bounty = await ctx.runQuery(api.bounties.getById, {
+      bountyId: args.bountyId,
+    });
+    if (!bounty) throw new Error("Bounty not found");
+    const conversation = await ctx.runQuery(api.conversations.getByIdPublic, {
+      conversationId: args.conversationId,
+    });
+    const repoConnection = await ctx.runQuery(api.repoConnections.getByBountyId, {
+      bountyId: args.bountyId,
+    });
+    const existingFeatureExemplars = repoConnection?.detectedFeatureFiles?.slice(0, 2)
+      .map((file: { filePath: string; content: string }) => `# ${file.filePath}\n${file.content}`)
+      .join("\n\n");
+
+    await ctx.runMutation(internal.conversations.updateStatus, {
+      conversationId: args.conversationId,
+      status: "tests_generation",
+    });
+    const gherkinResult = await ctx.runAction(
+      internal.pipelines.generateBDD.generateBDD,
+      {
+        bountyId: args.bountyId,
+        conversationId: args.conversationId,
+        description: approvedRequirements.requirementsMarkdown || bounty.description,
+        repoContext: conversation?.repoContextSnapshot || undefined,
+        existingFeatureExemplars,
+        extractedCriteria: approvedRequirements.acceptanceCriteria.map((criterion) => criterion.text),
+      },
+    );
+    const generatedTest = await ctx.runQuery(api.generatedTests.getByConversationId, {
+      conversationId: args.conversationId,
+    });
+    if (!generatedTest) throw new Error("Generated tests not found after BDD generation");
+    await ctx.runAction(internal.pipelines.generateTDD.generateTDD, {
+      bountyId: args.bountyId,
+      conversationId: args.conversationId,
+      generatedTestId: generatedTest._id,
+      gherkinPublic: gherkinResult.gherkinPublic,
+      gherkinHidden: gherkinResult.gherkinHidden,
+      repoContext: conversation?.repoContextSnapshot || undefined,
+      primaryLanguage: repoConnection?.languages?.[0] || "typescript",
+    });
+    await ctx.runMutation(api.bounties.update, {
+      bountyId: args.bountyId,
+      creationStage: "tests",
+    });
+    return await ctx.runQuery(api.generatedTests.getByConversationId, {
+      conversationId: args.conversationId,
+    });
+  },
+});
+
+export const regenerateTestsFromApprovedRequirementsInternal = internalAction({
+  args: {
+    bountyId: v.id("bounties"),
+    conversationId: v.id("conversations"),
+  },
+  handler: async (ctx, args) => {
+    const approvedRequirements = await ctx.runQuery(
+      internal.generatedRequirements.getApprovedByBountyIdInternal,
+      { bountyId: args.bountyId },
+    );
+    if (!approvedRequirements) {
+      throw new Error("Approve enhanced requirements before generating tests");
+    }
+    const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+      bountyId: args.bountyId,
+    });
+    if (!bounty) throw new Error("Bounty not found");
+    const conversation = await ctx.runQuery(internal.conversations.getById, {
+      conversationId: args.conversationId,
+    });
+    const repoConnection = await ctx.runQuery(internal.repoConnections.getByBountyIdInternal, {
+      bountyId: args.bountyId,
+    });
+    const existingFeatureExemplars = repoConnection?.detectedFeatureFiles?.slice(0, 2)
+      .map((file: { filePath: string; content: string }) => `# ${file.filePath}\n${file.content}`)
+      .join("\n\n");
+
+    await ctx.runMutation(internal.conversations.updateStatus, {
+      conversationId: args.conversationId,
+      status: "tests_generation",
+    });
+    const gherkinResult = await ctx.runAction(
+      internal.pipelines.generateBDD.generateBDD,
+      {
+        bountyId: args.bountyId,
+        conversationId: args.conversationId,
+        description: approvedRequirements.requirementsMarkdown || bounty.description,
+        repoContext: conversation?.repoContextSnapshot || undefined,
+        existingFeatureExemplars,
+        extractedCriteria: approvedRequirements.acceptanceCriteria.map((criterion) => criterion.text),
+      },
+    );
+    const generatedTest = await ctx.runQuery(internal.generatedTests.getByConversationIdInternal, {
+      conversationId: args.conversationId,
+    });
+    if (!generatedTest) throw new Error("Generated tests not found after BDD generation");
+    await ctx.runAction(internal.pipelines.generateTDD.generateTDD, {
+      bountyId: args.bountyId,
+      conversationId: args.conversationId,
+      generatedTestId: generatedTest._id,
+      gherkinPublic: gherkinResult.gherkinPublic,
+      gherkinHidden: gherkinResult.gherkinHidden,
+      repoContext: conversation?.repoContextSnapshot || undefined,
+      primaryLanguage: repoConnection?.languages?.[0] || "typescript",
+    });
+    await ctx.runMutation(internal.bounties.updateInternal, {
+      bountyId: args.bountyId,
+      creationStage: "tests",
+    });
+    return await ctx.runQuery(internal.generatedTests.getByConversationIdInternal, {
+      conversationId: args.conversationId,
+    });
+  },
+});
+
+export const finalizeStagedCreation = action({
+  args: {
+    bountyId: v.id("bounties"),
+    generatedTestId: v.id("generatedTests"),
+    reward: v.number(),
+    rewardCurrency: v.string(),
+    paymentMethod: v.union(v.literal("stripe"), v.literal("web3")),
+    deadline: v.optional(v.number()),
+    tags: v.optional(v.array(v.string())),
+    requiredTier: v.optional(v.union(
+      v.literal("S"), v.literal("A"), v.literal("B"),
+      v.literal("C"), v.literal("D")
+    )),
+    tosAccepted: v.boolean(),
+    tosAcceptedAt: v.number(),
+    tosVersion: v.string(),
+    publishNow: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const bounty = await ctx.runQuery(api.bounties.getById, { bountyId: args.bountyId });
+    if (!bounty) throw new Error("Bounty not found");
+    const generatedTest = await ctx.runQuery(api.generatedTests.getByBountyId, {
+      bountyId: args.bountyId,
+    });
+    if (!generatedTest || generatedTest._id !== args.generatedTestId) {
+      throw new Error("Generated tests not found");
+    }
+    if (generatedTest.status !== "approved") {
+      throw new Error("Approve generated tests before finalizing the bounty");
+    }
+
+    await ctx.runMutation(internal.testSuites.upsertGeneratedDraftSuitesInternal, {
+      bountyId: args.bountyId,
+      title: bounty.title,
+      gherkinPublic: generatedTest.gherkinPublic,
+      gherkinHidden: generatedTest.gherkinHidden,
+    });
+
+    await ctx.runMutation(internal.generatedTests.updateStatus, {
+      generatedTestId: args.generatedTestId,
+      status: "published",
+    });
+    await ctx.runMutation(api.bounties.finalizeDraftCreation, {
+      bountyId: args.bountyId,
+      reward: args.reward,
+      rewardCurrency: args.rewardCurrency,
+      paymentMethod: args.paymentMethod,
+      deadline: args.deadline,
+      tags: args.tags,
+      requiredTier: args.requiredTier,
+      tosAccepted: args.tosAccepted,
+      tosAcceptedAt: args.tosAcceptedAt,
+      tosVersion: args.tosVersion,
+      publishNow: args.publishNow,
+    });
+
+    const conversation = await ctx.runQuery(api.conversations.getByBountyId, {
+      bountyId: args.bountyId,
+    });
+    if (conversation) {
+      await ctx.runMutation(internal.conversations.updateStatus, {
+        conversationId: conversation._id,
+        status: "finalized",
+      });
+    }
+
+    return { bountyId: args.bountyId };
+  },
+});
+
+export const validateAndApproveGeneratedTests = action({
+  args: {
+    bountyId: v.id("bounties"),
+    conversationId: v.id("conversations"),
+    generatedTestId: v.id("generatedTests"),
+  },
+  handler: async (ctx, args) => {
+    const generatedTest = await ctx.runQuery(api.generatedTests.getByBountyId, {
+      bountyId: args.bountyId,
+    });
+    if (!generatedTest || generatedTest._id !== args.generatedTestId) {
+      throw new Error("Generated tests not found");
+    }
+    const approvedRequirements = await ctx.runQuery(
+      api.generatedRequirements.getApprovedByBountyId,
+      { bountyId: args.bountyId },
+    );
+
+    const validation = await ctx.runAction(
+      internal.pipelines.validateTests.validateTests,
+      {
+        bountyId: args.bountyId,
+        conversationId: args.conversationId,
+        generatedTestId: args.generatedTestId,
+        gherkinPublic: generatedTest.gherkinPublic,
+        gherkinHidden: generatedTest.gherkinHidden,
+        stepDefinitions: generatedTest.stepDefinitions || "",
+        stepDefinitionsPublic:
+          generatedTest.nativeTestFilesPublic || generatedTest.stepDefinitionsPublic || undefined,
+        stepDefinitionsHidden:
+          generatedTest.nativeTestFilesHidden || generatedTest.stepDefinitionsHidden || undefined,
+        extractedCriteria: approvedRequirements?.acceptanceCriteria.map((criterion) => criterion.text),
+      },
+    );
+
+    if (!validation.valid || validation.needsRegeneration) {
+      throw new Error(
+        validation.issues[0] ||
+          validation.uncoveredCriteria?.[0] ||
+          "Generated tests did not pass validation",
+      );
+    }
+
+    await ctx.runMutation(api.generatedTests.approve, {
+      generatedTestId: args.generatedTestId,
+    });
+    await ctx.runMutation(internal.conversations.updateStatus, {
+      conversationId: args.conversationId,
+      status: "ready_to_publish",
+    });
+    await ctx.runMutation(api.bounties.update, {
+      bountyId: args.bountyId,
+      creationStage: "publish",
+    });
+
+    return validation;
+  },
+});
+
+export const validateAndApproveGeneratedTestsInternal = internalAction({
+  args: {
+    bountyId: v.id("bounties"),
+    conversationId: v.id("conversations"),
+    generatedTestId: v.id("generatedTests"),
+  },
+  handler: async (ctx, args) => {
+    const generatedTest = await ctx.runQuery(internal.generatedTests.getByBountyIdInternal, {
+      bountyId: args.bountyId,
+    });
+    if (!generatedTest || generatedTest._id !== args.generatedTestId) {
+      throw new Error("Generated tests not found");
+    }
+    const approvedRequirements = await ctx.runQuery(
+      internal.generatedRequirements.getApprovedByBountyIdInternal,
+      { bountyId: args.bountyId },
+    );
+
+    const validation = await ctx.runAction(
+      internal.pipelines.validateTests.validateTests,
+      {
+        bountyId: args.bountyId,
+        conversationId: args.conversationId,
+        generatedTestId: args.generatedTestId,
+        gherkinPublic: generatedTest.gherkinPublic,
+        gherkinHidden: generatedTest.gherkinHidden,
+        stepDefinitions: generatedTest.stepDefinitions || "",
+        stepDefinitionsPublic:
+          generatedTest.nativeTestFilesPublic || generatedTest.stepDefinitionsPublic || undefined,
+        stepDefinitionsHidden:
+          generatedTest.nativeTestFilesHidden || generatedTest.stepDefinitionsHidden || undefined,
+        extractedCriteria: approvedRequirements?.acceptanceCriteria.map((criterion) => criterion.text),
+      },
+    );
+
+    if (!validation.valid || validation.needsRegeneration) {
+      throw new Error(
+        validation.issues[0] ||
+          validation.uncoveredCriteria?.[0] ||
+          "Generated tests did not pass validation",
+      );
+    }
+
+    await ctx.runMutation(internal.generatedTests.updateStatus, {
+      generatedTestId: args.generatedTestId,
+      status: "approved",
+    });
+    await ctx.runMutation(internal.conversations.updateStatus, {
+      conversationId: args.conversationId,
+      status: "ready_to_publish",
+    });
+    await ctx.runMutation(internal.bounties.updateInternal, {
+      bountyId: args.bountyId,
+      creationStage: "publish",
+    });
+
+    return validation;
+  },
+});
+
+export const runStagedPipeline = internalAction({
+  args: {
+    bountyId: v.id("bounties"),
+    repoConnectionId: v.id("repoConnections"),
+    conversationId: v.id("conversations"),
+    repositoryUrl: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.runMutation(internal.conversations.updateStatus, {
+      conversationId: args.conversationId,
+      status: "repo_indexing",
+    });
+    await ctx.scheduler.runAfter(0, internal.pipelines.fetchRepo.fetchRepo, {
+      repoConnectionId: args.repoConnectionId,
+      bountyId: args.bountyId,
+      repositoryUrl: args.repositoryUrl,
+    });
+    await ctx.scheduler.runAfter(
+      5000,
+      internal.orchestrator.checkRepoAndGenerateRequirements,
+      {
+        bountyId: args.bountyId,
+        conversationId: args.conversationId,
+        attempt: 0,
+      },
+    );
+  },
+});
+
+export const checkRepoAndGenerateRequirements = internalAction({
+  args: {
+    bountyId: v.id("bounties"),
+    conversationId: v.id("conversations"),
+    attempt: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const maxAttempts = 60;
+    const repoConnection = await ctx.runQuery(
+      internal.repoConnections.getByBountyIdInternal,
+      { bountyId: args.bountyId },
+    );
+    if (!repoConnection) {
+      await ctx.runMutation(internal.conversations.updateStatus, {
+        conversationId: args.conversationId,
+        status: "failed",
+      });
+      return;
+    }
+
+    if (repoConnection.status === "ready") {
+      const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+        bountyId: args.bountyId,
+      });
+      if (!bounty) return;
+      await ctx.runMutation(internal.conversations.updateStatus, {
+        conversationId: args.conversationId,
+        status: "requirements_generation",
+      });
+      await generateRequirementsDraft(ctx, args, bounty);
+      return;
+    }
+
+    if (repoConnection.status === "failed") {
+      await ctx.runMutation(internal.conversations.addMessage, {
+        conversationId: args.conversationId,
+        role: "system",
+        content: `Repo indexing failed: ${repoConnection.errorMessage || "Unknown error"}`,
+      });
+      await ctx.runMutation(internal.conversations.updateStatus, {
+        conversationId: args.conversationId,
+        status: "failed",
+      });
+      return;
+    }
+
+    if (args.attempt >= maxAttempts) {
+      await ctx.runMutation(internal.conversations.addMessage, {
+        conversationId: args.conversationId,
+        role: "system",
+        content: "Repo indexing timed out after 5 minutes",
+      });
+      await ctx.runMutation(internal.conversations.updateStatus, {
+        conversationId: args.conversationId,
+        status: "failed",
+      });
+      return;
+    }
+
+    await ctx.scheduler.runAfter(
+      5000,
+      internal.orchestrator.checkRepoAndGenerateRequirements,
+      {
+        bountyId: args.bountyId,
+        conversationId: args.conversationId,
+        attempt: args.attempt + 1,
+      },
+    );
   },
 });
 

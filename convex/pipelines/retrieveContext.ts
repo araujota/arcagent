@@ -29,7 +29,25 @@ export const retrieveContext = internalAction({
       content: string;
       score: number;
     }>;
+    productionChunks: Array<{
+      filePath: string;
+      symbolName: string;
+      symbolType: string;
+      content: string;
+      score: number;
+    }>;
+    relatedTestChunks: Array<{
+      filePath: string;
+      symbolName: string;
+      symbolType: string;
+      content: string;
+      score: number;
+    }>;
     dependencySignatures: string[];
+    contextFiles: Array<{
+      filenameOriginal: string;
+      extractedText: string;
+    }>;
     totalContextTokens: number;
   }> => {
     const topK = args.topK || 20;
@@ -44,7 +62,10 @@ export const retrieveContext = internalAction({
       return {
         repoMapText: "",
         relevantChunks: [],
+        productionChunks: [],
+        relatedTestChunks: [],
         dependencySignatures: [],
+        contextFiles: [],
         totalContextTokens: 0,
       };
     }
@@ -97,6 +118,11 @@ export const retrieveContext = internalAction({
           : null;
       })
       .filter((c): c is NonNullable<typeof c> => c !== null);
+    const isTestLikePath = (filePath: string) =>
+      /\.(test|spec|steps)\./i.test(filePath) ||
+      /__tests__|features\/|\.feature$/i.test(filePath);
+    const relatedTestChunks = relevantChunks.filter((chunk) => isTestLikePath(chunk.filePath)).slice(0, 5);
+    const productionChunks = relevantChunks.filter((chunk) => !isTestLikePath(chunk.filePath)).slice(0, 6);
 
     // Extract dependency signatures from the symbol table
     const dependencySignatures: string[] = [];
@@ -136,17 +162,33 @@ export const retrieveContext = internalAction({
       // Ignore errors parsing the symbol table/dep graph
     }
 
+    const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+      bountyId: args.bountyId,
+    });
+    const contextFiles = bounty?.repositoryUrl
+      ? await ctx.runQuery(internal.repoContextFiles.listReadyForRepositoryUrlInternal, {
+          repositoryUrl: bounty.repositoryUrl,
+        })
+      : [];
+
     // Estimate total context tokens
     const totalText =
       repoMap.repoMapText +
       relevantChunks.map((c) => c.content).join("\n") +
-      dependencySignatures.join("\n");
+      dependencySignatures.join("\n") +
+      contextFiles.map((file) => file.extractedText).join("\n");
     const totalContextTokens = estimateTokens(totalText);
 
     return {
       repoMapText: repoMap.repoMapText,
       relevantChunks,
+      productionChunks,
+      relatedTestChunks,
       dependencySignatures: dependencySignatures.slice(0, 30), // Limit
+      contextFiles: contextFiles.map((file) => ({
+        filenameOriginal: file.filenameOriginal,
+        extractedText: file.extractedText,
+      })),
       totalContextTokens,
     };
   },

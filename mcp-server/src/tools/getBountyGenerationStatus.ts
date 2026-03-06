@@ -21,8 +21,18 @@ interface GenerationStatus {
     version: number;
     testFramework: string;
     testLanguage: string;
+    nativeTestsStale?: boolean;
+  } | null;
+  requirementsDraft: {
+    status: string;
+    version: number;
+    acceptanceCriteriaCount: number;
+    openQuestionsCount: number;
   } | null;
   testSuitesCount: number;
+  creationStage: string | null;
+  nextAction: string;
+  publishReady: boolean;
   overallReady: boolean;
 }
 
@@ -72,6 +82,22 @@ function renderGeneratedTests(status: GenerationStatus["generatedTest"]): string
     `- **Version:** ${status.version}`,
     `- **Framework:** ${status.testFramework}`,
     `- **Language:** ${status.testLanguage}`,
+    `- **Native Tests Stale:** ${status.nativeTestsStale ? "Yes" : "No"}`,
+    "",
+  ].join("\n");
+}
+
+function renderRequirementsDraft(status: GenerationStatus["requirementsDraft"]): string {
+  if (!status) {
+    return "## Requirements Draft\nNot yet generated.\n";
+  }
+
+  return [
+    "## Requirements Draft",
+    `- **Status:** ${status.status}`,
+    `- **Version:** ${status.version}`,
+    `- **Acceptance Criteria:** ${status.acceptanceCriteriaCount}`,
+    `- **Open Questions:** ${status.openQuestionsCount}`,
     "",
   ].join("\n");
 }
@@ -106,8 +132,12 @@ export function registerGetBountyGenerationStatus(server: McpServer): void {
           "",
           renderRepoIndexing(status.repoIndexing),
           renderConversation(status.conversation),
+          renderRequirementsDraft(status.requirementsDraft),
           renderGeneratedTests(status.generatedTest),
           `## Test Suites: ${status.testSuitesCount}`,
+          `## Creation Stage: ${status.creationStage ?? "n/a"}`,
+          `## Next Action: ${status.nextAction}`,
+          `## Publish Ready: ${status.publishReady ? "YES" : "NO"}`,
           "",
           renderOverallReady(status.overallReady),
         ].join("\n");

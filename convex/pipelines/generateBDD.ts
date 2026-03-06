@@ -218,7 +218,7 @@ export const generateBDD = internalAction({
     try {
       await ctx.runMutation(internal.conversations.updateStatus, {
         conversationId: args.conversationId,
-        status: "generating_bdd",
+        status: "tests_generation",
       });
 
       const llm = createLLMClient(
@@ -371,7 +371,7 @@ export const generateBDD = internalAction({
       // Update conversation status
       await ctx.runMutation(internal.conversations.updateStatus, {
         conversationId: args.conversationId,
-        status: "review",
+        status: "tests_review",
       });
 
       return { gherkinPublic, gherkinHidden };

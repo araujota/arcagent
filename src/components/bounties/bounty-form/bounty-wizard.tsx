@@ -61,7 +61,11 @@ function detectRepoProvider(url: string): RepoProvider {
 
 function normalizeTags(rawTags: string | undefined): string[] | undefined {
   if (!rawTags) return undefined;
-  return [...new Set(rawTags.split(",").map((tag) => tag.trim().toLowerCase()).filter(Boolean))];
+  const normalized = rawTags
+    .split(",")
+    .map((tag) => tag.trim().toLowerCase())
+    .filter((tag): tag is string => tag.length > 0);
+  return Array.from(new Set<string>(normalized));
 }
 
 function deadlineToMs(deadline: string | undefined): number | undefined {
@@ -139,6 +143,8 @@ function buildDraftBountyInput(args: {
     tags: normalizeTags(args.config.tags),
     status: "draft" as const,
     requiredTier: args.config.requiredTier,
+    creationStage: "requirements" as const,
+    commercialConfigPending: true,
   };
 }
 
@@ -653,7 +659,7 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
                     ) : (
                       <Sparkles className="h-4 w-4 mr-2" />
                     )}
-                    AI Generate Tests
+                    Start AI Draft
                   </Button>
                   <Button
                     onClick={() => handleSubmit(config.paymentMethod === "stripe" ? true : false)}

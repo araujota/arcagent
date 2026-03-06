@@ -52,7 +52,7 @@ export const create = mutation({
 
     return await ctx.db.insert("conversations", {
       bountyId: args.bountyId,
-      status: "gathering",
+      status: "repo_indexing",
       messages: [],
     });
   },
@@ -66,7 +66,7 @@ export const createInternal = internalMutation({
   handler: async (ctx, args) => {
     return await ctx.db.insert("conversations", {
       bountyId: args.bountyId,
-      status: "gathering",
+      status: args.autonomous ? "repo_indexing" : "repo_indexing",
       messages: [],
       autonomous: args.autonomous,
     });
@@ -150,7 +150,14 @@ export const updateStatus = internalMutation({
       v.literal("generating_bdd"),
       v.literal("generating_tdd"),
       v.literal("review"),
-      v.literal("finalized")
+      v.literal("finalized"),
+      v.literal("repo_indexing"),
+      v.literal("requirements_generation"),
+      v.literal("requirements_review"),
+      v.literal("tests_generation"),
+      v.literal("tests_review"),
+      v.literal("ready_to_publish"),
+      v.literal("failed")
     ),
   },
   handler: async (ctx, args) => {
