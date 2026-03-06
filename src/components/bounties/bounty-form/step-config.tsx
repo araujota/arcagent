@@ -1,5 +1,6 @@
 "use client";
 
+import { useQuery } from "convex/react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -11,6 +12,8 @@ import {
 } from "@/components/ui/select";
 import { CheckCircle, AlertCircle, GitBranch } from "lucide-react";
 import { RepoContextFilesManager } from "@/components/repos/repo-context-files-manager";
+import { api } from "../../../../convex/_generated/api";
+import { Button } from "@/components/ui/button";
 
 export interface ConfigData {
   deadline: string | undefined;
@@ -45,6 +48,7 @@ function getProviderLabel(url: string): string {
 export function StepConfig({ data, onChange, reward }: StepConfigProps) {
   const repoUrlValid = isValidRepoUrl(data.repositoryUrl);
   const hasRepoUrl = data.repositoryUrl.trim().length > 0;
+  const savedRepos = useQuery(api.savedRepos.listByUser);
 
   return (
     <div className="space-y-4">
@@ -71,6 +75,24 @@ export function StepConfig({ data, onChange, reward }: StepConfigProps) {
 
       <div className="space-y-2">
         <Label htmlFor="repoUrl">Repository link (optional)</Label>
+        {savedRepos && savedRepos.length > 0 ? (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Previously used repositories</p>
+            <div className="flex flex-wrap gap-2">
+              {savedRepos.slice(0, 6).map((repo) => (
+                <Button
+                  key={repo._id}
+                  type="button"
+                  variant={data.repositoryUrl === repo.repositoryUrl ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => onChange({ ...data, repositoryUrl: repo.repositoryUrl })}
+                >
+                  {repo.owner}/{repo.repo}
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : null}
         <div className="relative">
           <Input
             id="repoUrl"

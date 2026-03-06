@@ -20,6 +20,8 @@ function redactForNonCreator(
       stepDefinitions: _stepDefs,
       stepDefinitionsPublic: _stepDefsPub,
       stepDefinitionsHidden: _stepDefsHid,
+      nativeTestFilesPublic: _nativePub,
+      nativeTestFilesHidden: _nativeHid,
       gherkinHidden: _gherkinHidden,
       llmModel: _model,
       ...safe
@@ -119,7 +121,12 @@ export const updateGherkinInternal = internalMutation({
       gherkinPublic: args.gherkinPublic,
       gherkinHidden: args.gherkinHidden,
       stepDefinitions: "", // Reset for re-generation
+      stepDefinitionsPublic: undefined,
+      stepDefinitionsHidden: undefined,
+      nativeTestFilesPublic: undefined,
+      nativeTestFilesHidden: undefined,
       status: "draft",
+      nativeTestsStale: true,
     });
   },
 });
@@ -150,10 +157,13 @@ export const create = internalMutation({
       gherkinPublic: args.gherkinPublic,
       gherkinHidden: args.gherkinHidden,
       stepDefinitions: args.stepDefinitions,
+      nativeTestFilesPublic: undefined,
+      nativeTestFilesHidden: undefined,
       testFramework: args.testFramework,
       testLanguage: args.testLanguage,
       status: "draft",
       llmModel: args.llmModel,
+      nativeTestsStale: true,
     });
   },
 });
@@ -170,8 +180,12 @@ export const updateStepDefinitions = internalMutation({
   handler: async (ctx, args) => {
     const updates: Record<string, unknown> = {
       stepDefinitions: args.stepDefinitions,
+      nativeTestFilesPublic: args.stepDefinitionsPublic,
+      nativeTestFilesHidden: args.stepDefinitionsHidden,
       testFramework: args.testFramework,
       testLanguage: args.testLanguage,
+      nativeTestsStale: false,
+      lastValidatedAt: Date.now(),
     };
     if (args.stepDefinitionsPublic !== undefined) {
       updates.stepDefinitionsPublic = args.stepDefinitionsPublic;
@@ -211,6 +225,10 @@ export const approve = mutation({
     if (!bounty) throw new Error("Bounty not found");
     if (bounty.creatorId !== user._id && user.role !== "admin") {
       throw new Error("Unauthorized");
+    }
+
+    if (test.nativeTestsStale) {
+      throw new Error("Native test files are stale. Regenerate or update them before approval.");
     }
 
     await ctx.db.patch(args.generatedTestId, { status: "approved" });
@@ -270,6 +288,10 @@ export const updateGherkin = mutation({
     const updates: Record<string, unknown> = {};
     if (args.gherkinPublic !== undefined) updates.gherkinPublic = args.gherkinPublic;
     if (args.gherkinHidden !== undefined) updates.gherkinHidden = args.gherkinHidden;
+    if (args.gherkinPublic !== undefined || args.gherkinHidden !== undefined) {
+      updates.nativeTestsStale = true;
+      updates.status = "draft";
+    }
 
     await ctx.db.patch(args.generatedTestId, updates);
   },
@@ -301,6 +323,90 @@ export const updateStepDefinitionsPublic = mutation({
 
     await ctx.db.patch(args.generatedTestId, {
       stepDefinitions: args.stepDefinitions,
+      nativeTestFilesPublic: args.stepDefinitions,
+      stepDefinitionsPublic: args.stepDefinitions,
+      nativeTestsStale: false,
     });
+  },
+});
+
+export const updateNativeTestFiles = mutation({
+  args: {
+    generatedTestId: v.id("generatedTests"),
+    nativeTestFilesPublic: v.optional(v.string()),
+    nativeTestFilesHidden: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const user = requireAuth(await getCurrentUser(ctx));
+
+    const test = await ctx.db.get(args.generatedTestId);
+    if (!test) throw new Error("Generated test not found");
+
+    const bounty = await ctx.db.get(test.bountyId);
+    if (!bounty) throw new Error("Bounty not found");
+    if (bounty.creatorId !== user._id && user.role !== "admin") {
+      throw new Error("Unauthorized");
+    }
+
+    if (bounty.status !== "draft" && bounty.status !== "active") {
+      throw new Error("Tests cannot be modified after an agent has claimed the bounty");
+    }
+
+    const updates: Record<string, unknown> = {
+      status: "draft",
+      nativeTestsStale: false,
+    };
+    if (args.nativeTestFilesPublic !== undefined) {
+      updates.nativeTestFilesPublic = args.nativeTestFilesPublic;
+      updates.stepDefinitionsPublic = args.nativeTestFilesPublic;
+      updates.stepDefinitions = args.nativeTestFilesPublic;
+    }
+    if (args.nativeTestFilesHidden !== undefined) {
+      updates.nativeTestFilesHidden = args.nativeTestFilesHidden;
+      updates.stepDefinitionsHidden = args.nativeTestFilesHidden;
+    }
+
+    await ctx.db.patch(args.generatedTestId, updates);
+  },
+});
+
+export const updateNativeTestFilesInternal = internalMutation({
+  args: {
+    generatedTestId: v.id("generatedTests"),
+    nativeTestFilesPublic: v.optional(v.string()),
+    nativeTestFilesHidden: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const test = await ctx.db.get(args.generatedTestId);
+    if (!test) throw new Error("Generated test not found");
+
+    const bounty = await ctx.db.get(test.bountyId);
+    if (!bounty) throw new Error("Bounty not found");
+    if (bounty.status !== "draft" && bounty.status !== "active") {
+      throw new Error("Tests cannot be modified after an agent has claimed the bounty");
+    }
+
+    const updates: Record<string, unknown> = {
+      status: "draft",
+      nativeTestsStale: false,
+    };
+    if (args.nativeTestFilesPublic !== undefined) {
+      updates.nativeTestFilesPublic = args.nativeTestFilesPublic;
+      updates.stepDefinitionsPublic = args.nativeTestFilesPublic;
+    }
+    if (args.nativeTestFilesHidden !== undefined) {
+      updates.nativeTestFilesHidden = args.nativeTestFilesHidden;
+      updates.stepDefinitionsHidden = args.nativeTestFilesHidden;
+    }
+    if (
+      args.nativeTestFilesPublic !== undefined ||
+      args.nativeTestFilesHidden !== undefined
+    ) {
+      const publicPayload = args.nativeTestFilesPublic ?? test.nativeTestFilesPublic ?? "";
+      const hiddenPayload = args.nativeTestFilesHidden ?? test.nativeTestFilesHidden ?? "";
+      updates.stepDefinitions = [publicPayload, hiddenPayload].filter(Boolean).join("\n\n");
+    }
+
+    await ctx.db.patch(args.generatedTestId, updates);
   },
 });

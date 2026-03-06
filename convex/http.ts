@@ -671,6 +671,17 @@ async function isBountyCreator(
   return !!bounty && bounty.creatorId === userId;
 }
 
+async function resolveVerifiedBountyCreatorId(
+  ctx: { runQuery: Function },
+  auth: McpAuthResult,
+  bountyId: Id<"bounties">,
+  requestedCreatorId?: string,
+): Promise<string | null> {
+  const creatorId = auth.authMethod === "api_key" ? auth.userId : requestedCreatorId;
+  if (!creatorId) return null;
+  return (await isBountyCreator(ctx, creatorId, bountyId)) ? creatorId : null;
+}
+
 // --- Auth: Validate API key ---
 // Supports two paths:
 // 1. Shared secret + keyHash in body (existing self-hosted mode)
@@ -1159,12 +1170,12 @@ async function setupBountyRepositoryAutomation(args: {
 
   const conversationId = await args.ctx.runMutation(
     internal.conversations.createInternal,
-    { bountyId: args.bountyId, autonomous: true }
+    { bountyId: args.bountyId, autonomous: false }
   );
 
   await args.ctx.scheduler.runAfter(
     0,
-    internal.orchestrator.runAutonomousPipeline,
+    internal.orchestrator.runStagedPipeline,
     {
       bountyId: args.bountyId,
       repoConnectionId: repoConnectionId as Id<"repoConnections">,
@@ -1247,6 +1258,8 @@ http.route({
         pmProvider,
         pmConnectionId: pmConnectionId as Id<"pmConnections"> | undefined,
         requiredTier: body.requiredTier,
+        creationStage: repositoryUrl ? "requirements" : "done",
+        commercialConfigPending: false,
       });
       const { repoConnectionId, conversationId } = await setupBountyRepositoryAutomation({
         ctx,
@@ -1262,8 +1275,12 @@ http.route({
         conversationId,
         status: "draft",
         nextStep: paymentMethod === "stripe"
-          ? "Fund escrow, then publish bounty."
-          : "Publish bounty when ready.",
+          ? repositoryUrl
+            ? "Approve requirements and generated tests, then fund escrow and publish."
+            : "Fund escrow, then publish bounty."
+          : repositoryUrl
+            ? "Approve requirements and generated tests, then publish bounty."
+            : "Publish bounty when ready.",
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create bounty";
@@ -1368,6 +1385,13 @@ http.route({
       internal.generatedTests.getByBountyIdInternal,
       { bountyId: typedBountyId }
     );
+    const generatedRequirement = await ctx.runQuery(
+      internal.generatedRequirements.getByBountyIdInternal,
+      { bountyId: typedBountyId }
+    );
+    const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+      bountyId: typedBountyId,
+    });
 
     // Get test suites count
     const testSuites = await ctx.runQuery(
@@ -1379,6 +1403,21 @@ http.route({
       conversation?.status === "finalized" &&
       generatedTest?.status === "published" &&
       (testSuites?.length ?? 0) > 0;
+    const publishReady =
+      bounty?.creationStage === "done" &&
+      !bounty?.commercialConfigPending &&
+      generatedRequirement?.status === "approved" &&
+      generatedTest?.status === "published";
+    const nextAction =
+      repoConnection?.status !== "ready"
+        ? "wait_for_repo_indexing"
+        : generatedRequirement?.status !== "approved"
+          ? "approve_requirements"
+          : generatedTest?.status !== "approved" && generatedTest?.status !== "published"
+            ? "approve_generated_tests"
+            : bounty?.commercialConfigPending || bounty?.creationStage !== "done"
+              ? "finalize_commercial_terms"
+              : "fund_or_publish";
 
     return mcpJson({
       repoIndexing: repoConnection
@@ -1402,11 +1441,260 @@ http.route({
             version: generatedTest.version,
             testFramework: generatedTest.testFramework,
             testLanguage: generatedTest.testLanguage,
+            nativeTestsStale: generatedTest.nativeTestsStale ?? false,
+          }
+        : null,
+      requirementsDraft: generatedRequirement
+        ? {
+            status: generatedRequirement.status,
+            version: generatedRequirement.version,
+            acceptanceCriteriaCount: generatedRequirement.acceptanceCriteria.length,
+            openQuestionsCount: generatedRequirement.openQuestions.length,
           }
         : null,
       testSuitesCount: testSuites?.length ?? 0,
+      creationStage: bounty?.creationStage ?? null,
+      nextAction,
+      publishReady,
       overallReady,
     });
+  }),
+});
+
+http.route({
+  path: "/api/mcp/bounties/generation-draft",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
+
+    const body = await request.json();
+    const {
+      bountyId,
+      creatorId: bodyCreatorId,
+    } = body as { bountyId: string; creatorId?: string };
+    if (!bountyId) return mcpError("Missing bountyId");
+
+    const typedBountyId = bountyId as Id<"bounties">;
+    const creatorId = await resolveVerifiedBountyCreatorId(
+      ctx,
+      auth,
+      typedBountyId,
+      bodyCreatorId,
+    );
+    if (!creatorId) return mcpError("Forbidden", 403);
+
+    const generatedRequirement = await ctx.runQuery(
+      internal.generatedRequirements.getByBountyIdInternal,
+      { bountyId: typedBountyId },
+    );
+    const generatedTest = await ctx.runQuery(
+      internal.generatedTests.getByBountyIdInternal,
+      { bountyId: typedBountyId },
+    );
+    const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+      bountyId: typedBountyId,
+    });
+
+    return mcpJson({
+      bounty: bounty
+        ? {
+            id: bounty._id,
+            title: bounty.title,
+            creationStage: bounty.creationStage ?? null,
+            commercialConfigPending: bounty.commercialConfigPending ?? false,
+          }
+        : null,
+      requirementsDraft: generatedRequirement
+        ? {
+            id: generatedRequirement._id,
+            status: generatedRequirement.status,
+            version: generatedRequirement.version,
+            requirementsMarkdown: generatedRequirement.requirementsMarkdown,
+            acceptanceCriteria: generatedRequirement.acceptanceCriteria,
+            openQuestions: generatedRequirement.openQuestions,
+            citationsJson: generatedRequirement.citationsJson ?? null,
+            reviewScoreJson: generatedRequirement.reviewScoreJson ?? null,
+            editedAt: generatedRequirement.editedAt ?? null,
+            approvedAt: generatedRequirement.approvedAt ?? null,
+          }
+        : null,
+      testsDraft: generatedTest
+        ? {
+            id: generatedTest._id,
+            status: generatedTest.status,
+            version: generatedTest.version,
+            gherkinPublic: generatedTest.gherkinPublic,
+            gherkinHidden: generatedTest.gherkinHidden,
+            nativeTestFilesPublic:
+              generatedTest.nativeTestFilesPublic ?? generatedTest.stepDefinitionsPublic ?? null,
+            nativeTestFilesHidden:
+              generatedTest.nativeTestFilesHidden ?? generatedTest.stepDefinitionsHidden ?? null,
+            nativeTestsStale: generatedTest.nativeTestsStale ?? false,
+            testFramework: generatedTest.testFramework,
+            testLanguage: generatedTest.testLanguage,
+            lastValidatedAt: generatedTest.lastValidatedAt ?? null,
+          }
+        : null,
+    });
+  }),
+});
+
+http.route({
+  path: "/api/mcp/bounties/requirements/update",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
+
+    const body = await request.json();
+    const {
+      bountyId,
+      creatorId: bodyCreatorId,
+      action,
+      requirementsMarkdown,
+    } = body as {
+      bountyId: string;
+      creatorId?: string;
+      action: "save" | "approve" | "regenerate";
+      requirementsMarkdown?: string;
+    };
+    if (!bountyId || !action) return mcpError("Missing required fields: bountyId, action");
+
+    const typedBountyId = bountyId as Id<"bounties">;
+    const creatorId = await resolveVerifiedBountyCreatorId(
+      ctx,
+      auth,
+      typedBountyId,
+      bodyCreatorId,
+    );
+    if (!creatorId) return mcpError("Forbidden", 403);
+
+    const conversation = await ctx.runQuery(internal.conversations.getByBountyIdInternal, {
+      bountyId: typedBountyId,
+    });
+    if (!conversation) return mcpError("Conversation not found", 404);
+
+    const draft = await ctx.runQuery(internal.generatedRequirements.getByBountyIdInternal, {
+      bountyId: typedBountyId,
+    });
+
+    if (action === "save") {
+      if (!draft) return mcpError("Requirements draft not found", 404);
+      if (requirementsMarkdown === undefined) {
+        return mcpError("Missing requirementsMarkdown for save");
+      }
+      await ctx.runMutation(internal.generatedRequirements.updateDraftInternal, {
+        generatedRequirementId: draft._id,
+        requirementsMarkdown,
+      });
+      return mcpJson({ ok: true, action });
+    }
+
+    if (action === "approve") {
+      if (!draft) return mcpError("Requirements draft not found", 404);
+      await ctx.runAction(internal.orchestrator.approveRequirementsAndGenerateTestsInternal, {
+        bountyId: typedBountyId,
+        conversationId: conversation._id,
+        generatedRequirementId: draft._id,
+      });
+      return mcpJson({ ok: true, action });
+    }
+
+    const bounty = await ctx.runQuery(internal.bounties.getByIdInternal, {
+      bountyId: typedBountyId,
+    });
+    if (!bounty) return mcpError("Bounty not found", 404);
+    await ctx.runAction(internal.orchestrator.regenerateRequirementsInternal, {
+      bountyId: typedBountyId,
+      conversationId: conversation._id,
+      currentDraft: requirementsMarkdown ?? draft?.requirementsMarkdown,
+    });
+    return mcpJson({ ok: true, action });
+  }),
+});
+
+http.route({
+  path: "/api/mcp/bounties/tests/update",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const auth = await verifyMcpAuth(ctx, request);
+    if (!auth.authenticated) return mcpUnauthorized();
+
+    const body = await request.json();
+    const {
+      bountyId,
+      creatorId: bodyCreatorId,
+      action,
+      gherkinPublic,
+      gherkinHidden,
+      nativeTestFilesPublic,
+      nativeTestFilesHidden,
+    } = body as {
+      bountyId: string;
+      creatorId?: string;
+      action: "save" | "approve" | "regenerate";
+      gherkinPublic?: string;
+      gherkinHidden?: string;
+      nativeTestFilesPublic?: string;
+      nativeTestFilesHidden?: string;
+    };
+    if (!bountyId || !action) return mcpError("Missing required fields: bountyId, action");
+
+    const typedBountyId = bountyId as Id<"bounties">;
+    const creatorId = await resolveVerifiedBountyCreatorId(
+      ctx,
+      auth,
+      typedBountyId,
+      bodyCreatorId,
+    );
+    if (!creatorId) return mcpError("Forbidden", 403);
+
+    const conversation = await ctx.runQuery(internal.conversations.getByBountyIdInternal, {
+      bountyId: typedBountyId,
+    });
+    if (!conversation) return mcpError("Conversation not found", 404);
+
+    const draft = await ctx.runQuery(internal.generatedTests.getByBountyIdInternal, {
+      bountyId: typedBountyId,
+    });
+    if (!draft) return mcpError("Generated tests not found", 404);
+
+    if (action === "save") {
+      if (gherkinPublic !== undefined || gherkinHidden !== undefined) {
+        await ctx.runMutation(internal.generatedTests.updateGherkinInternal, {
+          generatedTestId: draft._id,
+          gherkinPublic: gherkinPublic ?? draft.gherkinPublic,
+          gherkinHidden: gherkinHidden ?? draft.gherkinHidden,
+        });
+      }
+      if (nativeTestFilesPublic !== undefined || nativeTestFilesHidden !== undefined) {
+        await ctx.runMutation(internal.generatedTests.updateNativeTestFilesInternal, {
+          generatedTestId: draft._id,
+          nativeTestFilesPublic,
+          nativeTestFilesHidden,
+        });
+      }
+      return mcpJson({ ok: true, action });
+    }
+
+    if (action === "approve") {
+      const validation = await ctx.runAction(
+        internal.orchestrator.validateAndApproveGeneratedTestsInternal,
+        {
+        bountyId: typedBountyId,
+        conversationId: conversation._id,
+        generatedTestId: draft._id,
+        },
+      );
+      return mcpJson({ ok: true, action, validation });
+    }
+
+    await ctx.runAction(internal.orchestrator.regenerateTestsFromApprovedRequirementsInternal, {
+      bountyId: typedBountyId,
+      conversationId: conversation._id,
+    });
+    return mcpJson({ ok: true, action });
   }),
 });
 

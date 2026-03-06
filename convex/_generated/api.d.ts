@@ -23,6 +23,7 @@ import type * as codeChunks from "../codeChunks.js";
 import type * as conversations from "../conversations.js";
 import type * as crons from "../crons.js";
 import type * as devWorkspaces from "../devWorkspaces.js";
+import type * as generatedRequirements from "../generatedRequirements.js";
 import type * as generatedTests from "../generatedTests.js";
 import type * as http from "../http.js";
 import type * as investorMetrics from "../investorMetrics.js";
@@ -74,6 +75,7 @@ import type * as pipelines_fetchGherkinUrl from "../pipelines/fetchGherkinUrl.js
 import type * as pipelines_fetchRepo from "../pipelines/fetchRepo.js";
 import type * as pipelines_fetchWorkItem from "../pipelines/fetchWorkItem.js";
 import type * as pipelines_generateBDD from "../pipelines/generateBDD.js";
+import type * as pipelines_generateEnhancedRequirements from "../pipelines/generateEnhancedRequirements.js";
 import type * as pipelines_generateTDD from "../pipelines/generateTDD.js";
 import type * as pipelines_indexRepo from "../pipelines/indexRepo.js";
 import type * as pipelines_parseRepo from "../pipelines/parseRepo.js";
@@ -126,6 +128,7 @@ declare const fullApi: ApiFromModules<{
   conversations: typeof conversations;
   crons: typeof crons;
   devWorkspaces: typeof devWorkspaces;
+  generatedRequirements: typeof generatedRequirements;
   generatedTests: typeof generatedTests;
   http: typeof http;
   investorMetrics: typeof investorMetrics;
@@ -177,6 +180,7 @@ declare const fullApi: ApiFromModules<{
   "pipelines/fetchRepo": typeof pipelines_fetchRepo;
   "pipelines/fetchWorkItem": typeof pipelines_fetchWorkItem;
   "pipelines/generateBDD": typeof pipelines_generateBDD;
+  "pipelines/generateEnhancedRequirements": typeof pipelines_generateEnhancedRequirements;
   "pipelines/generateTDD": typeof pipelines_generateTDD;
   "pipelines/indexRepo": typeof pipelines_indexRepo;
   "pipelines/parseRepo": typeof pipelines_parseRepo;

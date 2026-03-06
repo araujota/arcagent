@@ -76,7 +76,7 @@ export function parseAnalysisResponse(response: string): AnalysisResult {
 // System prompt (rubric-based)
 // ---------------------------------------------------------------------------
 
-const ANALYSIS_SYSTEM_PROMPT = `You are an expert BDD test architect. Analyze this feature request using the
+export const ANALYSIS_SYSTEM_PROMPT = `You are an expert BDD test architect. Analyze this feature request using the
 8-dimension rubric below. Score each dimension 1-3 (1=unclear, 2=partial, 3=clear).
 
 RUBRIC:

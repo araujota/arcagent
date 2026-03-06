@@ -167,7 +167,7 @@ describe("BountyWizard", () => {
     expect(backButton).toBeDisabled();
   });
 
-  it("step 3 shows AI Generate Tests and draft creation actions", async () => {
+  it("step 3 shows staged AI draft and draft creation actions", async () => {
     render(<BountyWizard />);
 
     // Fill valid basics and navigate to step 3
@@ -191,7 +191,7 @@ describe("BountyWizard", () => {
     fireEvent.click(screen.getByText("Next")); // step 2 -> 3
     await waitFor(() => screen.getByTestId("step-review"));
 
-    expect(screen.getByText("AI Generate Tests")).toBeDefined();
+    expect(screen.getByText("Start AI Draft")).toBeDefined();
     expect(screen.getByText("Create draft")).toBeDefined();
   });
 

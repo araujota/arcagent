@@ -150,7 +150,7 @@ export const generateTDD = internalAction({
     try {
       await ctx.runMutation(internal.conversations.updateStatus, {
         conversationId: args.conversationId,
-        status: "generating_tdd",
+        status: "tests_generation",
       });
 
       const llm = createLLMClient(
@@ -244,7 +244,7 @@ export const generateTDD = internalAction({
       // Move to review
       await ctx.runMutation(internal.conversations.updateStatus, {
         conversationId: args.conversationId,
-        status: "review",
+        status: "tests_review",
       });
 
       return { stepDefinitions, testFramework };

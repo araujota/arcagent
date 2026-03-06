@@ -8,7 +8,7 @@ export function registerCreateBounty(server: McpServer): void {
   registerTool(
     server,
     "create_bounty",
-    "Create a new bounty with NL description, optional GitHub repo URL, and reward. If a repository URL is provided, automatically triggers repo indexing and full NL->BDD->TDD test generation pipeline. Requires tosAccepted: true.",
+    "Create a new bounty with NL description, optional GitHub repo URL, and reward. If a repository URL is provided, ArcAgent starts repo indexing and staged requirements generation, then waits for creator approval before generating tests. Requires tosAccepted: true.",
     {
       title: z.string().describe("Bounty title"),
       description: z.string().describe("Natural language description of what needs to be built/fixed"),
@@ -92,10 +92,10 @@ export function registerCreateBounty(server: McpServer): void {
         }
 
         if (result.repoConnectionId) {
-          text += `\n## Autonomous Pipeline Started\n\n`;
+          text += `\n## Staged Generation Started\n\n`;
           text += `**Repo Connection ID:** ${result.repoConnectionId}\n`;
           text += `**Conversation ID:** ${result.conversationId}\n\n`;
-          text += `The repository is being indexed and tests will be auto-generated.\n`;
+          text += `The repository is being indexed. Enhanced requirements will be generated next, and test generation will wait for approval.\n`;
           text += `Use \`get_bounty_generation_status\` with bounty ID \`${result.bountyId}\` to check progress.`;
         } else {
           text += `\nNo repository URL provided — bounty created without test generation pipeline.`;
