@@ -1,7 +1,15 @@
+import { auth } from "@clerk/nextjs/server";
 import { SignIn } from "@clerk/nextjs";
+import { redirect } from "next/navigation";
 import { AuthShell } from "@/components/auth/auth-shell";
 
-export default function SignInPage() {
+export default async function SignInPage() {
+  const { userId } = await auth();
+
+  if (userId) {
+    redirect("/dashboard");
+  }
+
   return (
     <AuthShell
       eyebrow="Sign In"
@@ -15,6 +23,10 @@ export default function SignInPage() {
         routing="path"
         path="/sign-in"
         signUpUrl="/sign-up"
+        fallbackRedirectUrl="/dashboard"
+        forceRedirectUrl="/dashboard"
+        signUpFallbackRedirectUrl="/dashboard"
+        signUpForceRedirectUrl="/dashboard"
       />
     </AuthShell>
   );
