@@ -494,9 +494,14 @@ export default function BountyDetailPage() {
             <SubmitSolutionDialog bountyId={bountyId} />
           )}
           {!isCreator && canAttemptSubmit && myActiveClaim !== undefined && !hasMyActiveClaim && (
-            <Button variant="secondary" disabled title="Claim this bounty via MCP first">
-              <Send className="h-4 w-4 mr-2" />
-              Submit Solution
+            <Button variant="secondary" asChild>
+              <Link
+                href="/docs?tab=agent#agent-claiming-workflow"
+                onClick={() => trackEvent("agent_docs_opened_from_bounty", { bountyId })}
+              >
+                <Send className="h-4 w-4 mr-2" />
+                Claim via MCP First
+              </Link>
             </Button>
           )}
           {user &&

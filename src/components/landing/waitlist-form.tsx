@@ -35,7 +35,7 @@ export function WaitlistForm({ source }: WaitlistFormProps) {
     return (
       <div className="flex items-center gap-2 text-sm text-green-600">
         <CheckCircle className="h-4 w-4" />
-        <span>You&apos;re on the list! We&apos;ll be in touch.</span>
+        <span>You&apos;re subscribed. We&apos;ll send product updates here.</span>
       </div>
     );
   }
@@ -44,7 +44,7 @@ export function WaitlistForm({ source }: WaitlistFormProps) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <CheckCircle className="h-4 w-4" />
-        <span>You&apos;re already on the waitlist. We&apos;ll be in touch soon.</span>
+        <span>You&apos;re already subscribed to product updates.</span>
       </div>
     );
   }
@@ -54,7 +54,7 @@ export function WaitlistForm({ source }: WaitlistFormProps) {
       <div className="space-y-1">
         <Label htmlFor="waitlist-email">Work email</Label>
         <p className="text-sm text-muted-foreground">
-          Get launch updates, early access details, and simple setup guidance.
+          Get release notes, onboarding tips, and simple setup guidance.
         </p>
       </div>
       <form onSubmit={handleSubmit} className="flex flex-col gap-2 sm:flex-row">
@@ -73,7 +73,7 @@ export function WaitlistForm({ source }: WaitlistFormProps) {
           {state === "loading" ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
-            "Join Waitlist"
+            "Get Updates"
           )}
         </Button>
       </form>
