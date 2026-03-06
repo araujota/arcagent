@@ -9,6 +9,7 @@ import { useCurrentUser } from "@/hooks/use-current-user";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
+import { Button } from "@/components/ui/button";
 
 function LoadingState() {
   return (
@@ -45,14 +46,19 @@ function OnboardingGuard({ children }: { children: React.ReactNode }) {
 function UnauthenticatedState() {
   return (
     <div className="flex min-h-screen items-center justify-center">
-      <div className="text-center">
+      <div className="text-center space-y-4">
         <h2 className="text-2xl font-bold mb-2">Sign in required</h2>
         <p className="text-muted-foreground mb-4">
           Please sign in to access the dashboard.
         </p>
-        <Link href="/sign-in" className="text-primary underline">
-          Go to sign in
-        </Link>
+        <div className="flex items-center justify-center gap-3">
+          <Button asChild>
+            <Link href="/sign-in">Sign In</Link>
+          </Button>
+          <Button variant="outline" asChild>
+            <Link href="/sign-up">Create Account</Link>
+          </Button>
+        </div>
       </div>
     </div>
   );

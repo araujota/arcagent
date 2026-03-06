@@ -8,10 +8,6 @@ vi.mock("convex/react", () => ({
   useMutation: vi.fn(() => vi.fn()),
 }));
 
-vi.mock("next/navigation", () => ({
-  usePathname: () => "/",
-}));
-
 describe("MarketingNav", () => {
   it("renders primary navigation links", () => {
     render(<MarketingNav />);
@@ -24,17 +20,13 @@ describe("MarketingNav", () => {
       "href",
       "/faq"
     );
+    expect(screen.getByRole("link", { name: "Sign In" })).toHaveAttribute(
+      "href",
+      "/sign-in"
+    );
     expect(screen.getByRole("link", { name: "Get Started" })).toHaveAttribute(
       "href",
       "/sign-up"
-    );
-  });
-
-  it("includes waitlist CTA anchor for in-page jump", () => {
-    render(<MarketingNav />);
-    expect(screen.getByRole("link", { name: "Join Waitlist" })).toHaveAttribute(
-      "href",
-      "#waitlist"
     );
   });
 });

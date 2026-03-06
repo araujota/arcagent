@@ -117,7 +117,6 @@ export default function FinalizeBountyDraftPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="stripe">Stripe</SelectItem>
-                <SelectItem value="web3" disabled>Web3 (Coming soon)</SelectItem>
               </SelectContent>
             </Select>
           </div>

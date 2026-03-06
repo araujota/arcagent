@@ -162,7 +162,6 @@ export function StepConfig({ data, onChange, reward }: StepConfigProps) {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="stripe">Stripe (Credit Card)</SelectItem>
-            <SelectItem value="web3" disabled>Web3 (Crypto) — Coming Soon</SelectItem>
           </SelectContent>
         </Select>
         <p className="text-sm text-muted-foreground">

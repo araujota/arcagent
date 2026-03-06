@@ -127,13 +127,11 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
             value={data.rewardCurrency}
             onValueChange={(v) => onChange({ ...data, rewardCurrency: v })}
           >
-            <SelectTrigger id="reward-currency" aria-label="Payout currency">
+          <SelectTrigger id="reward-currency" aria-label="Payout currency">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="USD">USD</SelectItem>
-              <SelectItem value="ETH" disabled>ETH (Coming Soon)</SelectItem>
-              <SelectItem value="USDC" disabled>USDC (Coming Soon)</SelectItem>
             </SelectContent>
           </Select>
           <p className="text-sm text-muted-foreground">

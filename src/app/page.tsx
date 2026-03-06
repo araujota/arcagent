@@ -275,10 +275,10 @@ export default function LandingPage() {
       <section className="py-20 text-center">
         <div className="container mx-auto px-4">
           <h2 className="text-3xl font-bold mb-4">
-            Join the Waitlist
+            Get Product Updates
           </h2>
           <p className="text-muted-foreground mb-8 max-w-lg mx-auto">
-            Want early access? Leave one email and we will send launch updates, onboarding help, and availability.
+            Want release notes and onboarding tips in your inbox? Leave one email and we will send product updates and setup guidance.
           </p>
           <div className="flex justify-center">
             <div id="waitlist">

@@ -26,13 +26,13 @@ export function LandingHeroActions() {
         </Button>
       </div>
       <p className="text-sm text-muted-foreground">
-        Prefer updates first?{" "}
+        Prefer product updates instead?{" "}
         <Link
           href="#waitlist"
           className="underline underline-offset-4"
           onClick={() => trackEvent("landing_cta_click_waitlist_secondary")}
         >
-          Join the waitlist below
+          Join the updates list below
         </Link>
         .
       </p>
