@@ -4,6 +4,17 @@ import { useState } from "react";
 import { useMutation, useAction } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import { useRouter } from "next/navigation";
+import {
+  connectionVariants,
+  getClaudeCodeRemoteSnippet,
+  getCodexRemoteSnippet,
+  getOpenCodeRemoteSnippet,
+  getSelfHostedSnippet,
+  hostedMcpBaseUrl,
+  hostedMcpPackageUrl,
+  hostedMcpTransportUrl,
+  remoteMountingSummary,
+} from "@/lib/mcp-connection-copy";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Code2, Users, ArrowRight, ArrowLeft, Key, CreditCard, Wallet, Rocket, Copy, Check } from "lucide-react";
@@ -237,23 +248,25 @@ export default function OnboardingPage() {
               <Key className="h-10 w-10 mx-auto text-muted-foreground" />
               <h2 className="text-xl font-bold">API Key</h2>
               <p className="text-muted-foreground">
-                Your API key for MCP/Claude Desktop integration. Use this to
+                Your API key for MCP agent integration. Use this to
                 let AI agents claim and solve bounties on your behalf. Copy it
                 now — it won&apos;t be shown again.
               </p>
               <p className="text-xs text-muted-foreground">
-                Hosted MCP server URL:{" "}
-                <span className="font-mono">https://mcp.arcagent.dev</span>
+                Hosted MCP origin: <span className="font-mono">{hostedMcpBaseUrl}</span>
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Hosted MCP transport: <span className="font-mono">{hostedMcpTransportUrl}</span>
               </p>
               <p className="text-xs text-muted-foreground">
                 Package:{" "}
                 <a
-                  href="https://www.npmjs.com/package/arcagent-mcp"
+                  href={hostedMcpPackageUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="underline underline-offset-4"
                 >
-                  https://www.npmjs.com/package/arcagent-mcp
+                  {hostedMcpPackageUrl}
                 </a>
               </p>
             </div>
@@ -280,35 +293,41 @@ export default function OnboardingPage() {
 
                   <div className="rounded bg-muted p-3 space-y-3">
                     <div>
-                      <p className="text-xs font-medium mb-1">Remote MCP (hosted HTTP)</p>
+                      <p className="text-xs font-medium mb-1">Codex (native remote MCP)</p>
                       <pre className="text-xs text-muted-foreground overflow-auto">
-{`{
-  "mcpServers": {
-    "arcagent": {
-      "url": "https://mcp.arcagent.dev",
-      "headers": {
-        "Authorization": "Bearer ${apiKey}"
-      }
-    }
-  }
-}`}
+{getCodexRemoteSnippet(apiKey)}
                       </pre>
                     </div>
                     <div>
-                      <p className="text-xs font-medium mb-1">Self-host MCP (Claude Desktop stdio)</p>
+                      <p className="text-xs font-medium mb-1">Claude Code (remote HTTP)</p>
                       <pre className="text-xs text-muted-foreground overflow-auto">
-{`{
-  "mcpServers": {
-    "arcagent": {
-      "command": "npx",
-      "args": ["-y", "arcagent-mcp"],
-      "env": {
-        "ARCAGENT_API_KEY": "${apiKey}"
-      }
-    }
-  }
-}`}
+{getClaudeCodeRemoteSnippet(apiKey)}
                       </pre>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium mb-1">OpenCode</p>
+                      <pre className="text-xs text-muted-foreground overflow-auto">
+{getOpenCodeRemoteSnippet(apiKey)}
+                      </pre>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium mb-1">Claude Desktop (local stdio)</p>
+                      <pre className="text-xs text-muted-foreground overflow-auto">
+{getSelfHostedSnippet(apiKey)}
+                      </pre>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">
+                        {remoteMountingSummary}
+                      </p>
+                      <ul className="text-xs text-muted-foreground space-y-1 list-disc pl-4">
+                        {connectionVariants.map((variant) => (
+                          <li key={variant.client}>
+                            <span className="font-medium text-foreground">{variant.client}:</span>{" "}
+                            {variant.summary}
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   </div>
                 </CardContent>

@@ -6,6 +6,17 @@ import { useSearchParams } from "next/navigation";
 import { api } from "../../../../convex/_generated/api";
 import { Id } from "../../../../convex/_generated/dataModel";
 import { useCurrentUser } from "@/hooks/use-current-user";
+import {
+  connectionVariants,
+  getClaudeCodeRemoteSnippet,
+  getCodexRemoteSnippet,
+  getOpenCodeRemoteSnippet,
+  getSelfHostedSnippet,
+  hostedMcpBaseUrl,
+  hostedMcpPackageUrl,
+  hostedMcpTransportUrl,
+  remoteMountingSummary,
+} from "@/lib/mcp-connection-copy";
 import { getStripeSettingsNotice } from "@/lib/stripe-settings-notice";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -537,18 +548,18 @@ export default function SettingsPage() {
             MCP/API Keys
           </CardTitle>
           <CardDescription>
-            Manage API keys for MCP/Claude Desktop integration via
+            Manage API keys for MCP agent integration via
             {" "}
             <a
-              href="https://www.npmjs.com/package/arcagent-mcp"
+              href={hostedMcpPackageUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="underline underline-offset-4"
             >
               arcagent-mcp on npm
             </a>
-            {" "}or by connecting to the hosted MCP URL{" "}
-            <span className="font-mono">https://mcp.arcagent.dev</span>.
+            {" "}or by connecting to the hosted MCP endpoint{" "}
+            <span className="font-mono">{hostedMcpTransportUrl}</span>.
             Workspace tools require the platform operator to configure WORKER_SHARED_SECRET.
           </CardDescription>
         </CardHeader>
@@ -556,7 +567,7 @@ export default function SettingsPage() {
           {/* Generate new key */}
           <div className="flex gap-2">
             <Input
-              placeholder="Key name (e.g. Claude Desktop)"
+              placeholder="Key name (e.g. Codex or Claude Code)"
               value={newKeyName}
               onChange={(e) => setNewKeyName(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleGenerateKey()}
@@ -591,35 +602,44 @@ export default function SettingsPage() {
               </div>
               <div className="rounded bg-muted p-3 space-y-3">
                 <div>
-                  <p className="text-xs font-medium mb-1">Remote MCP (hosted HTTP)</p>
+                  <p className="text-xs font-medium mb-1">Codex (native remote MCP)</p>
                   <pre className="text-xs text-muted-foreground overflow-auto">
-{`{
-  "mcpServers": {
-    "arcagent": {
-      "url": "https://mcp.arcagent.dev",
-      "headers": {
-        "Authorization": "Bearer ${generatedKey}"
-      }
-    }
-  }
-}`}
+{getCodexRemoteSnippet(generatedKey)}
                   </pre>
                 </div>
                 <div>
-                  <p className="text-xs font-medium mb-1">Self-host MCP (Claude Desktop stdio)</p>
+                  <p className="text-xs font-medium mb-1">Claude Code (remote HTTP)</p>
                   <pre className="text-xs text-muted-foreground overflow-auto">
-{`{
-  "mcpServers": {
-    "arcagent": {
-      "command": "npx",
-      "args": ["-y", "arcagent-mcp"],
-      "env": {
-        "ARCAGENT_API_KEY": "${generatedKey}"
-      }
-    }
-  }
-}`}
+{getClaudeCodeRemoteSnippet(generatedKey)}
                   </pre>
+                </div>
+                <div>
+                  <p className="text-xs font-medium mb-1">OpenCode</p>
+                  <pre className="text-xs text-muted-foreground overflow-auto">
+{getOpenCodeRemoteSnippet(generatedKey)}
+                  </pre>
+                </div>
+                <div>
+                  <p className="text-xs font-medium mb-1">Claude Desktop (local stdio)</p>
+                  <pre className="text-xs text-muted-foreground overflow-auto">
+{getSelfHostedSnippet(generatedKey)}
+                  </pre>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">
+                    Hosted origin: <span className="font-mono">{hostedMcpBaseUrl}</span>
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {remoteMountingSummary}
+                  </p>
+                  <ul className="text-xs text-muted-foreground space-y-1 list-disc pl-4">
+                    {connectionVariants.map((variant) => (
+                      <li key={variant.client}>
+                        <span className="font-medium text-foreground">{variant.client}:</span>{" "}
+                        {variant.summary}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               </div>
               <Button
