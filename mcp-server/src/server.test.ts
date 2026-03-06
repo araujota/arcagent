@@ -23,6 +23,7 @@ vi.mock("./tools/setupPaymentMethod", () => ({ registerSetupPaymentMethod: vi.fn
 vi.mock("./tools/setupPayoutAccount", () => ({ registerSetupPayoutAccount: vi.fn() }));
 vi.mock("./tools/fundBountyEscrow", () => ({ registerFundBountyEscrow: vi.fn() }));
 vi.mock("./tools/checkNotifications", () => ({ registerCheckNotifications: vi.fn() }));
+vi.mock("./tools/configureBountyNotifications", () => ({ registerConfigureBountyNotifications: vi.fn() }));
 vi.mock("./tools/cancelBounty", () => ({ registerCancelBounty: vi.fn() }));
 vi.mock("./tools/getSubmissionFeedback", () => ({ registerGetSubmissionFeedback: vi.fn() }));
 vi.mock("./tools/registerAccount", () => ({ registerRegisterAccount: vi.fn() }));
@@ -71,6 +72,7 @@ import { registerSetupPaymentMethod } from "./tools/setupPaymentMethod";
 import { registerSetupPayoutAccount } from "./tools/setupPayoutAccount";
 import { registerFundBountyEscrow } from "./tools/fundBountyEscrow";
 import { registerCheckNotifications } from "./tools/checkNotifications";
+import { registerConfigureBountyNotifications } from "./tools/configureBountyNotifications";
 import { registerCancelBounty } from "./tools/cancelBounty";
 import { registerGetSubmissionFeedback } from "./tools/getSubmissionFeedback";
 import { registerRegisterAccount } from "./tools/registerAccount";
@@ -142,6 +144,7 @@ describe("createMcpServer", () => {
       registerSetupPayoutAccount,
       registerFundBountyEscrow,
       registerCheckNotifications,
+      registerConfigureBountyNotifications,
       registerCancelBounty,
       registerImportWorkItem,
       registerGetMyAgentStats,
@@ -160,7 +163,7 @@ describe("createMcpServer", () => {
       registerTestBounty,
     ];
 
-    expect(allRegisterFns).toHaveLength(45);
+    expect(allRegisterFns).toHaveLength(46);
 
     for (const fn of allRegisterFns) {
       expect(fn).toHaveBeenCalledTimes(1);

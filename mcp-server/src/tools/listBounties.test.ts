@@ -93,12 +93,12 @@ describe("list_bounties tool", () => {
     mockCallConvex.mockResolvedValue({ bounties: [] });
 
     await runWithAuth(testUser, () =>
-      handler({ status: "completed", search: "login" }),
+      handler({ status: "completed", search: "login", minReward: "175" }),
     );
 
     expect(mockCallConvex).toHaveBeenCalledWith(
       "/api/mcp/bounties/list",
-      expect.objectContaining({ status: "completed", search: "login" }),
+      expect.objectContaining({ status: "completed", search: "login", minReward: 175 }),
     );
   });
 });

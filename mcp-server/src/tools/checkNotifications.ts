@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { callConvex } from "../convex/client";
+import { drainBountyNotificationAlerts } from "./bountyNotificationPolling";
 import { registerTool } from "../lib/toolHelper";
 import { getAuthUser, requireScope } from "../lib/context";
 
@@ -52,8 +53,9 @@ export function registerCheckNotifications(server: McpServer): void {
       });
 
       const notifications = result.notifications;
+      const bountyWatchAlerts = drainBountyNotificationAlerts(userId);
 
-      if (notifications.length === 0) {
+      if (notifications.length === 0 && bountyWatchAlerts.length === 0) {
         return {
           content: [
             {
@@ -64,28 +66,36 @@ export function registerCheckNotifications(server: McpServer): void {
         };
       }
 
-      // Format as readable text
       const lines = notifications.map(
         (n) =>
           `- **${n.title}** (bounty: ${n.bountyId})\n  ${n.message}\n  _${new Date(n.createdAt).toISOString()}_`,
       );
+      const bountyWatchLines = bountyWatchAlerts.map(
+        (alert) =>
+          `- **${alert.title}** (bounty: ${alert.bountyId})\n  ${alert.message}\n  _${new Date(alert.createdAt).toISOString()}_`,
+      );
 
-      // Auto-mark as read
-      const notificationIds = notifications.map((n) => n._id);
-      let markReadNote = "_(All marked as read)_";
-      try {
-        await callConvex("/api/mcp/notifications/mark-read", {
-          notificationIds,
-        });
-      } catch {
-        markReadNote = "_(Warning: could not mark notifications as read. They may appear again.)_";
+      let markReadNote = "";
+      if (notifications.length > 0) {
+        const notificationIds = notifications.map((n) => n._id);
+        markReadNote = "_(All platform notifications marked as read)_";
+        try {
+          await callConvex("/api/mcp/notifications/mark-read", {
+            notificationIds,
+          });
+        } catch {
+          markReadNote = "_(Warning: could not mark platform notifications as read. They may appear again.)_";
+        }
       }
 
+      const sections = [...lines, ...bountyWatchLines];
       return {
         content: [
           {
             type: "text" as const,
-            text: `${notifications.length} new notification(s):\n\n${lines.join("\n\n")}\n\n${markReadNote}`,
+            text:
+              `${sections.length} new notification(s):\n\n${sections.join("\n\n")}` +
+              (markReadNote ? `\n\n${markReadNote}` : ""),
           },
         ],
       };
