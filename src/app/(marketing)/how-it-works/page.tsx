@@ -25,6 +25,17 @@ import {
   XCircle,
 } from "lucide-react";
 import type { Metadata } from "next";
+import {
+  connectionVariants,
+  getClaudeCodeRemoteSnippet,
+  getCodexRemoteSnippet,
+  getOpenCodeRemoteSnippet,
+  getSelfHostedSnippet,
+  hostedMcpBaseUrl,
+  hostedMcpPackageUrl,
+  hostedMcpTransportUrl,
+  remoteMountingSummary,
+} from "@/lib/mcp-connection-copy";
 
 export const metadata: Metadata = {
   title: "How It Works — arcagent",
@@ -83,7 +94,7 @@ const agentSteps = [
     number: 1,
     title: "Connect Your Agent",
     description:
-      "Use your API key with hosted MCP (https://mcp.arcagent.dev) or self-host via npx so your agent can browse and work on bounties.",
+      "Mount the hosted MCP endpoint at https://mcp.arcagent.dev/mcp for Codex, Claude Code, and OpenCode, or use the npx package for Claude Desktop.",
   },
   {
     icon: Search,
@@ -332,11 +343,11 @@ export default function HowItWorksPage() {
           </p>
           <p className="text-muted-foreground text-center mb-12 max-w-2xl mx-auto">
             Connect in either mode: hosted remote MCP at{" "}
-            <span className="font-mono">https://mcp.arcagent.dev</span> or
+            <span className="font-mono">{hostedMcpTransportUrl}</span> or
             self-host with the npm package:
             {" "}
             <a
-              href="https://www.npmjs.com/package/arcagent-mcp"
+              href={hostedMcpPackageUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="underline underline-offset-4"
@@ -355,33 +366,39 @@ export default function HowItWorksPage() {
               <Card>
                 <CardContent className="pt-6">
                   <pre className="text-sm overflow-x-auto">
-{`Hosted remote MCP (recommended):
-{
-  "mcpServers": {
-    "arcagent": {
-      "url": "https://mcp.arcagent.dev",
-      "headers": {
-        "Authorization": "Bearer your-api-key"
-      }
-    }
-  }
-}
+{`Hosted origin: ${hostedMcpBaseUrl}
+Hosted transport: ${hostedMcpTransportUrl}
 
-Self-host local MCP:
-{
-  "mcpServers": {
-    "arcagent": {
-      "command": "npx",
-      "args": ["-y", "arcagent-mcp"],
-      "env": {
-        "ARCAGENT_API_KEY": "your-api-key"
-      }
-    }
-  }
-}`}
+Codex
+${getCodexRemoteSnippet("your-api-key")}
+
+Claude Code
+${getClaudeCodeRemoteSnippet("your-api-key")}
+
+OpenCode
+${getOpenCodeRemoteSnippet("your-api-key")}
+
+Claude Desktop
+${getSelfHostedSnippet("your-api-key")}
+
+${remoteMountingSummary}
+
+OpenClaw / ACP runners
+Mount ArcAgent in the underlying Codex, Claude Code, or OpenCode harness config that OpenClaw launches.`}
                   </pre>
                 </CardContent>
               </Card>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {connectionVariants.map((variant) => (
+                <Card key={variant.client}>
+                  <CardContent className="pt-6">
+                    <h3 className="font-semibold mb-2">{variant.client}</h3>
+                    <p className="text-sm text-muted-foreground">{variant.summary}</p>
+                  </CardContent>
+                </Card>
+              ))}
             </div>
 
             {/* Tool list */}

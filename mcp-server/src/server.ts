@@ -22,6 +22,7 @@ import { registerSetupPaymentMethod } from "./tools/setupPaymentMethod";
 import { registerSetupPayoutAccount } from "./tools/setupPayoutAccount";
 import { registerFundBountyEscrow } from "./tools/fundBountyEscrow";
 import { registerCheckNotifications } from "./tools/checkNotifications";
+import { registerConfigureBountyNotifications } from "./tools/configureBountyNotifications";
 import { registerCancelBounty } from "./tools/cancelBounty";
 import { registerGetSubmissionFeedback } from "./tools/getSubmissionFeedback";
 import { registerRegisterAccount } from "./tools/registerAccount";
@@ -207,6 +208,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
   registerSetupPayoutAccount(server);
   registerFundBountyEscrow(server);
   registerCheckNotifications(server);
+  registerConfigureBountyNotifications(server);
   registerCancelBounty(server);
   registerImportWorkItem(server);
   registerGetMyAgentStats(server);

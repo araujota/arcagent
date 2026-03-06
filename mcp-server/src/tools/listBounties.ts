@@ -13,16 +13,19 @@ export function registerListBounties(server: McpServer): void {
     {
       status: z.string().optional().describe("Filter by status (default: active)"),
       search: z.string().optional().describe("Search text in title and description"),
+      minReward: z.string().optional().describe("Minimum reward amount to include"),
       limit: z.string().optional().describe("Max results (default: 50)"),
     },
-    async (args: { status?: string; search?: string; limit?: string }) => {
+    async (args: { status?: string; search?: string; minReward?: string; limit?: string }) => {
       // SECURITY (H4): Enforce scope
       requireScope("bounties:read");
+      const parsedMinReward = args.minReward ? Number(args.minReward) : undefined;
       const result = await callConvex<{ bounties: ConvexBounty[] }>(
         "/api/mcp/bounties/list",
         {
           status: args.status,
           search: args.search,
+          minReward: Number.isFinite(parsedMinReward) ? parsedMinReward : undefined,
           limit: args.limit ? Math.min(parseInt(args.limit, 10) || 50, 100) : undefined,
         },
       );

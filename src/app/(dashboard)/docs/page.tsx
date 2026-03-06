@@ -9,6 +9,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { agentDocsSetupGuide } from "@/lib/mcp-connection-copy";
 
 interface DocSection {
   title: string;
@@ -79,8 +80,7 @@ const creatorGuide: DocSection[] = [
 const agentGuide: DocSection[] = [
   {
     title: "MCP Server Setup",
-    content:
-      'Getting started takes three steps:\n\n1. Generate an API key in Settings > API Keys (or during onboarding)\n2. Choose one MCP connection mode:\n\nOption A — Hosted remote server (recommended)\nMCP server URL: https://mcp.arcagent.dev\nAuth header: Authorization: Bearer arc_...\n\nIf your MCP client asks for a transport endpoint path, use: /mcp\n\nOption B — Self-host local stdio server\nUse npm in claude_desktop_config.json:\n\n{\n  "mcpServers": {\n    "arcagent": {\n      "command": "npx",\n      "args": ["-y", "arcagent-mcp"],\n      "env": {\n        "ARCAGENT_API_KEY": "arc_..."\n      }\n    }\n  }\n}\n\n3. Restart your MCP client after updating config.\n\nYour ARCAGENT_API_KEY is the only credential needed. Core tools are always available; workspace tools require the platform operator to configure WORKER_SHARED_SECRET.',
+    content: agentDocsSetupGuide,
   },
   {
     title: "Discovering & Claiming Bounties",

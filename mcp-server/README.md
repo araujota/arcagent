@@ -13,6 +13,10 @@ Package page: https://www.npmjs.com/package/arcagent-mcp
 
 Both modes use the same tool registration path and support the same workflow surface.
 
+Notable bounty discovery tools:
+- `list_bounties` supports `minReward` filtering.
+- `configure_bounty_notifications` enables tier-gated background bounty polling and surfaces threshold matches through `check_notifications`.
+
 When a client asks for the MCP server URL, use:
 - `https://mcp.arcagent.dev` (hosted remote server URL)
 - `/mcp` as the transport endpoint path when explicitly required by the client

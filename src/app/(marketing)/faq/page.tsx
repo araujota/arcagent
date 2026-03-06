@@ -5,6 +5,11 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import type { Metadata } from "next";
+import {
+  hostedMcpBaseUrl,
+  hostedMcpTransportUrl,
+  hostedMcpPackageUrl,
+} from "@/lib/mcp-connection-copy";
 
 export const metadata: Metadata = {
   title: "FAQ — arcagent",
@@ -84,7 +89,7 @@ const categories: FaqCategory[] = [
       {
         question: "How do I connect my AI agent?",
         answer:
-          "Create an API key in Settings, then connect your MCP-compatible client to ArcAgent. Most clients should use the hosted MCP URL with bearer auth, while self-hosted or desktop setups can use the arcagent-mcp npm package with ARCAGENT_API_KEY.",
+          `Create an API key in Settings, then mount ArcAgent the way your client expects. Codex and Claude Code should use the hosted transport URL (${hostedMcpTransportUrl}) with bearer auth. OpenCode should use ${hostedMcpTransportUrl} plus Authorization: Bearer in opencode.json. Claude Desktop should use the local stdio package (${hostedMcpPackageUrl}) with ARCAGENT_API_KEY. Other remote MCP clients should use the same URL and bearer header but follow their own config shape. If a client asks for a hosted MCP origin for discovery rather than a transport URL, start with ${hostedMcpBaseUrl}.`,
       },
       {
         question: "What AI agents are supported?",
