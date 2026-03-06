@@ -37,6 +37,7 @@ export function StepTests({ data, onChange, bountyId }: StepTestsProps) {
   );
 
   const fetchGherkinFromUrl = useAction(api.bounties.fetchGherkinFromUrl);
+  const canImportFromRepo = Boolean(bountyId);
 
   const handleRepoImport = (content: string, visibility: "public" | "hidden") => {
     const key = visibility === "public" ? "publicTests" : "hiddenTests";
@@ -91,19 +92,28 @@ export function StepTests({ data, onChange, bountyId }: StepTestsProps) {
 
   return (
     <div className="space-y-6">
+      <div className="space-y-2">
+        <p className="text-sm">
+          These checks are optional. Add them now if you already know the pass/fail criteria, or leave
+          this step blank and use AI-generated checks on the review step.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          Public checks are shown to solvers. Hidden checks stay private and help catch edge cases.
+        </p>
+      </div>
+
       <Tabs defaultValue="write">
-        <TabsList>
-          <TabsTrigger value="write">Write</TabsTrigger>
-          <TabsTrigger value="repo">Import from Repo</TabsTrigger>
-          <TabsTrigger value="url">Import from URL</TabsTrigger>
+        <TabsList className={`grid w-full ${canImportFromRepo ? "grid-cols-3" : "grid-cols-2"}`}>
+          <TabsTrigger value="write">Write manually</TabsTrigger>
+          {canImportFromRepo ? <TabsTrigger value="repo">Import from repo</TabsTrigger> : null}
+          <TabsTrigger value="url">Import from link</TabsTrigger>
         </TabsList>
 
         <TabsContent value="write" className="space-y-6 pt-4">
           <div className="space-y-2">
-            <Label>Public Test Suite</Label>
+            <Label>Public success checks (shown to solvers)</Label>
             <p className="text-sm text-muted-foreground">
-              These Gherkin scenarios are visible to agents before they start coding.
-              They serve as the specification that guides implementation.
+              Write plain-language Gherkin scenarios that explain what should happen when the work is done.
             </p>
             <GherkinEditor
               value={data.publicTests}
@@ -112,10 +122,10 @@ export function StepTests({ data, onChange, bountyId }: StepTestsProps) {
           </div>
 
           <div className="space-y-2">
-            <Label>Hidden Test Suite (Optional)</Label>
+            <Label>Hidden success checks (private)</Label>
             <p className="text-sm text-muted-foreground">
-              These scenarios are kept secret until verification runs inside the
-              microVM. Use them for edge cases and anti-gaming checks.
+              Keep these for edge cases, abuse prevention, or anything you do not want to reveal before
+              submission.
             </p>
             <GherkinEditor
               value={data.hiddenTests}
@@ -125,27 +135,24 @@ export function StepTests({ data, onChange, bountyId }: StepTestsProps) {
           </div>
         </TabsContent>
 
-        <TabsContent value="repo" className="pt-4">
-          {!bountyId ? (
-            <p className="text-sm text-muted-foreground italic">
-              Connect a repository first (in the Config step) to detect .feature files.
-            </p>
-          ) : (
+        {canImportFromRepo ? (
+          <TabsContent value="repo" className="pt-4">
             <FeatureFilePicker
               featureFiles={detectedFeatures ?? []}
               onImport={handleRepoImport}
             />
-          )}
-        </TabsContent>
+          </TabsContent>
+        ) : null}
 
         <TabsContent value="url" className="space-y-4 pt-4">
           <div className="space-y-2">
-            <Label>Gherkin File URL</Label>
+            <Label htmlFor="gherkin-url">Link to a .feature file</Label>
             <p className="text-sm text-muted-foreground">
-              Paste a URL to a raw .feature file (e.g., GitHub raw URL).
+              Paste a direct link to a raw Gherkin file, such as a GitHub Raw URL.
             </p>
             <div className="flex gap-2">
               <Input
+                id="gherkin-url"
                 placeholder="https://raw.githubusercontent.com/..."
                 value={urlInput}
                 onChange={(e) => setUrlInput(e.target.value)}
@@ -158,7 +165,7 @@ export function StepTests({ data, onChange, bountyId }: StepTestsProps) {
                 {isFetchingUrl ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  "Fetch"
+                  "Preview file"
                 )}
               </Button>
             </div>
@@ -178,14 +185,14 @@ export function StepTests({ data, onChange, bountyId }: StepTestsProps) {
                   variant="outline"
                   onClick={() => handleUrlImport("public")}
                 >
-                  Import as Public
+                  Add as public checks
                 </Button>
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={() => handleUrlImport("hidden")}
                 >
-                  Import as Hidden
+                  Add as hidden checks
                 </Button>
               </div>
             </div>

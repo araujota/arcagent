@@ -6,6 +6,7 @@ import { api } from "../../../convex/_generated/api";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -61,6 +62,9 @@ export function PmImportDialog({ onImport, children }: PmImportDialogProps) {
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Import from Project Tool</DialogTitle>
+          <DialogDescription>
+            Pull in an existing ticket so you do not have to retype the title and requirements.
+          </DialogDescription>
         </DialogHeader>
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as Provider)}>
           <TabsList>
@@ -147,13 +151,17 @@ function ProviderTab({
 
   return (
     <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Enter the details needed to preview one ticket. We only use these credentials for this import.
+      </p>
       {/* Connection fields */}
       {needsDomain && (
         <div className="space-y-1">
-          <Label>
+          <Label htmlFor={`${provider}-domain`}>
             {provider === "jira" ? "Jira Domain" : "Monday Account"}
           </Label>
           <Input
+            id={`${provider}-domain`}
             placeholder={
               provider === "jira"
                 ? "mycompany.atlassian.net"
@@ -162,37 +170,48 @@ function ProviderTab({
             value={domain}
             onChange={(e) => setDomain(e.target.value)}
           />
+          <p className="text-xs text-muted-foreground">
+            {provider === "jira"
+              ? "Use the workspace domain from your Jira URL."
+              : "Use your Monday account slug from the workspace URL."}
+          </p>
         </div>
       )}
       {needsEmail && (
         <div className="space-y-1">
-          <Label>Email</Label>
+          <Label htmlFor={`${provider}-email`}>Account email</Label>
           <Input
+            id={`${provider}-email`}
             type="email"
             placeholder="you@company.com"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
+          <p className="text-xs text-muted-foreground">
+            Jira uses your Atlassian account email together with the API token.
+          </p>
         </div>
       )}
       <div className="space-y-1">
-        <Label>API Token</Label>
+        <Label htmlFor={`${provider}-api-token`}>API token</Label>
         <Input
+          id={`${provider}-api-token`}
           type="password"
-          placeholder="Enter API token"
+          placeholder="Paste a token with access to this ticket"
           value={apiToken}
           onChange={(e) => setApiToken(e.target.value)}
         />
         <p className="text-xs text-muted-foreground">
-          Token is used to fetch this issue only and is not stored.
+          Used once to fetch this ticket preview. The token is not stored.
         </p>
       </div>
 
       {/* Issue key input */}
       <div className="space-y-1">
-        <Label>Issue Key / ID</Label>
+        <Label htmlFor={`${provider}-issue-key`}>Ticket number or item ID</Label>
         <div className="flex gap-2">
           <Input
+            id={`${provider}-issue-key`}
             placeholder={
               provider === "jira"
                 ? "PROJ-123"
@@ -210,10 +229,13 @@ function ProviderTab({
             {isFetching ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
-              "Fetch"
+              "Preview ticket"
             )}
           </Button>
         </div>
+        <p className="text-xs text-muted-foreground">
+          Use the same identifier you would paste into the project tool search bar.
+        </p>
       </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
@@ -244,7 +266,7 @@ function ProviderTab({
           )}
           <Button size="sm" onClick={handleImport} className="mt-2">
             <Import className="h-4 w-4 mr-2" />
-            Import to Bounty
+            Import into bounty draft
           </Button>
         </div>
       )}

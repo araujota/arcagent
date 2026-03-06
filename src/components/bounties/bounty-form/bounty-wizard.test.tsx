@@ -119,13 +119,13 @@ describe("BountyWizard", () => {
   it("renders 4-step indicator", () => {
     render(<BountyWizard />);
     // Step names appear in both step indicator and card title, so use getAllByText
-    expect(screen.getAllByText("Basics").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Tests").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Config").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Task").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Checks").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Setup").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Review").length).toBeGreaterThanOrEqual(1);
   });
 
-  it("renders step 0 (Basics) by default", () => {
+  it("renders step 0 (Task) by default", () => {
     render(<BountyWizard />);
     expect(screen.getByTestId("step-basics")).toBeDefined();
   });
@@ -155,7 +155,7 @@ describe("BountyWizard", () => {
 
     fireEvent.click(nextButton);
 
-    // Should now show step 1 (Tests)
+    // Should now show step 1 (Checks)
     await waitFor(() => {
       expect(screen.getByTestId("step-tests")).toBeDefined();
     });
@@ -167,7 +167,7 @@ describe("BountyWizard", () => {
     expect(backButton).toBeDisabled();
   });
 
-  it("step 3 shows Save as Draft, AI Generate Tests, and Publish buttons", async () => {
+  it("step 3 shows AI Generate Tests and draft creation actions", async () => {
     render(<BountyWizard />);
 
     // Fill valid basics and navigate to step 3
@@ -191,14 +191,11 @@ describe("BountyWizard", () => {
     fireEvent.click(screen.getByText("Next")); // step 2 -> 3
     await waitFor(() => screen.getByTestId("step-review"));
 
-    // Verify all action buttons
-    expect(screen.getByText("Save as Draft")).toBeDefined();
     expect(screen.getByText("AI Generate Tests")).toBeDefined();
-    // Payment method defaults to stripe -> "Save Draft"
-    expect(screen.getByText("Save Draft")).toBeDefined();
+    expect(screen.getByText("Create draft")).toBeDefined();
   });
 
-  it("Publish/Save Draft disabled when isCertified is false", async () => {
+  it("create draft stays available for Stripe drafts without certification", async () => {
     render(<BountyWizard />);
 
     // Navigate to review step
@@ -218,9 +215,9 @@ describe("BountyWizard", () => {
     fireEvent.click(screen.getByText("Next"));
     await waitFor(() => screen.getByTestId("step-review"));
 
-    // Save Draft should be disabled (certification not checked)
-    const publishButton = screen.getByText("Save Draft");
-    expect(publishButton).toBeDisabled();
+    // Stripe drafts do not require certification because they are not published yet.
+    const publishButton = screen.getByText("Create draft");
+    expect(publishButton).not.toBeDisabled();
   });
 
   it("successful submit calls createBounty and navigates", async () => {
@@ -245,8 +242,7 @@ describe("BountyWizard", () => {
     fireEvent.click(screen.getByText("Next"));
     await waitFor(() => screen.getByTestId("step-review"));
 
-    // Click Save as Draft (doesn't require certification)
-    fireEvent.click(screen.getByText("Save as Draft"));
+    fireEvent.click(screen.getByText("Create draft"));
 
     await waitFor(() => {
       expect(mockCreateBounty).toHaveBeenCalledWith(
@@ -288,7 +284,7 @@ describe("BountyWizard", () => {
     fireEvent.click(screen.getByText("Next"));
     await waitFor(() => screen.getByTestId("step-review"));
 
-    fireEvent.click(screen.getByText("Save as Draft"));
+    fireEvent.click(screen.getByText("Create draft"));
 
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith("Network error");
