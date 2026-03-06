@@ -37,7 +37,7 @@ describe("WaitlistForm", () => {
     fireEvent.change(screen.getByLabelText("Work email"), {
       target: { value: "test@example.com" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Join Waitlist" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get Updates" }));
 
     await waitFor(() => {
       expect(joinMock).toHaveBeenCalledWith({
@@ -46,7 +46,9 @@ describe("WaitlistForm", () => {
       });
     });
 
-    expect(screen.getByText("You're on the list! We'll be in touch.")).toBeInTheDocument();
+    expect(
+      screen.getByText("You're subscribed. We'll send product updates here.")
+    ).toBeInTheDocument();
   });
 
   it("shows duplicate message when email already exists", async () => {
@@ -58,14 +60,14 @@ describe("WaitlistForm", () => {
     fireEvent.change(screen.getByLabelText("Work email"), {
       target: { value: "test@example.com" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Join Waitlist" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get Updates" }));
 
     await waitFor(() => {
       expect(joinMock).toHaveBeenCalled();
     });
 
     expect(
-      screen.getByText("You're already on the waitlist. We'll be in touch soon.")
+      screen.getByText("You're already subscribed to product updates.")
     ).toBeInTheDocument();
   });
 });

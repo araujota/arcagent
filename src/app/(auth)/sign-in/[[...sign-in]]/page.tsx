@@ -1,7 +1,7 @@
 import { auth } from "@clerk/nextjs/server";
-import { SignIn } from "@clerk/nextjs";
 import { redirect } from "next/navigation";
 import { AuthShell } from "@/components/auth/auth-shell";
+import { AuthFormGate } from "@/components/auth/auth-form-gate";
 
 export default async function SignInPage() {
   const { userId } = await auth();
@@ -19,15 +19,7 @@ export default async function SignInPage() {
       alternateLabel="Create one here"
       alternateText="Need a new account?"
     >
-      <SignIn
-        routing="path"
-        path="/sign-in"
-        signUpUrl="/sign-up"
-        fallbackRedirectUrl="/dashboard"
-        forceRedirectUrl="/dashboard"
-        signUpFallbackRedirectUrl="/dashboard"
-        signUpForceRedirectUrl="/dashboard"
-      />
+      <AuthFormGate mode="sign-in" />
     </AuthShell>
   );
 }
