@@ -34,7 +34,7 @@ describe("WaitlistForm", () => {
 
     render(<WaitlistForm source="hero" />);
 
-    fireEvent.change(screen.getByPlaceholderText("you@example.com"), {
+    fireEvent.change(screen.getByLabelText("Work email"), {
       target: { value: "test@example.com" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Join Waitlist" }));
@@ -55,7 +55,7 @@ describe("WaitlistForm", () => {
 
     render(<WaitlistForm source="cta" />);
 
-    fireEvent.change(screen.getByPlaceholderText("you@example.com"), {
+    fireEvent.change(screen.getByLabelText("Work email"), {
       target: { value: "test@example.com" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Join Waitlist" }));

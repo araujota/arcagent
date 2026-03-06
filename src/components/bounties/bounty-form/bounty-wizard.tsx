@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { api } from "../../../../convex/_generated/api";
 import { Id } from "../../../../convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { StepBasics, type BasicsData } from "./step-basics";
 import { StepTests, type TestsData } from "./step-tests";
 import { StepConfig, type ConfigData } from "./step-config";
@@ -18,7 +18,28 @@ import { Sparkles, Loader2 } from "lucide-react";
 
 const WIZARD_STORAGE_KEY = "arcagent_bounty_wizard_draft";
 
-const STEPS = ["Basics", "Tests", "Config", "Review"] as const;
+const STEPS = [
+  {
+    label: "Task",
+    title: "Describe the work",
+    description: "Name the outcome, explain the goal, and set the reward.",
+  },
+  {
+    label: "Checks",
+    title: "Add success checks",
+    description: "Optional: write visible or hidden checks now, or generate them later.",
+  },
+  {
+    label: "Setup",
+    title: "Choose bounty settings",
+    description: "Add repo, deadline, funding, and any claim restrictions.",
+  },
+  {
+    label: "Review",
+    title: "Review before publishing",
+    description: "Confirm the details, accept the terms, and save or publish.",
+  },
+] as const;
 
 interface GitHubPermissionStatus {
   provider: "github" | "gitlab" | "bitbucket" | null;
@@ -535,7 +556,7 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
       {/* Step indicator */}
       <div className="flex items-center justify-between mb-8">
         {STEPS.map((step, i) => (
-          <div key={step} className="flex items-center">
+          <div key={step.label} className="flex items-center">
             <div className="flex flex-col items-center">
               <div
                 className={`h-8 w-8 rounded-full flex items-center justify-center text-sm font-medium ${
@@ -546,7 +567,7 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
               >
                 {i + 1}
               </div>
-              <span className="text-xs mt-1 text-muted-foreground">{step}</span>
+              <span className="text-xs mt-1 text-muted-foreground">{step.label}</span>
             </div>
             {i < STEPS.length - 1 && (
               <div
@@ -561,7 +582,8 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>{STEPS[currentStep]}</CardTitle>
+          <CardTitle>{STEPS[currentStep].title}</CardTitle>
+          <CardDescription>{STEPS[currentStep].description}</CardDescription>
         </CardHeader>
         <CardContent>
           {renderStepForm(currentStep, {
@@ -612,13 +634,15 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
             <div className="flex gap-2">
               {currentStep === STEPS.length - 1 ? (
                 <>
-                  <Button
-                    variant="outline"
-                    onClick={() => handleSubmit(true)}
-                    disabled={isSubmitting}
-                  >
-                    Save as Draft
-                  </Button>
+                  {config.paymentMethod !== "stripe" ? (
+                    <Button
+                      variant="outline"
+                      onClick={() => handleSubmit(true)}
+                      disabled={isSubmitting}
+                    >
+                      Save as draft
+                    </Button>
+                  ) : null}
                   <Button
                     variant="secondary"
                     onClick={handleAIGenerate}
@@ -633,12 +657,16 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
                   </Button>
                   <Button
                     onClick={() => handleSubmit(config.paymentMethod === "stripe" ? true : false)}
-                    disabled={isSubmitting || !isCertified}
-                    title={!isCertified ? "Accept the Terms of Service to publish" : undefined}
+                    disabled={isSubmitting || (config.paymentMethod !== "stripe" && !isCertified)}
+                    title={
+                      config.paymentMethod !== "stripe" && !isCertified
+                        ? "Accept the Terms of Service to publish"
+                        : undefined
+                    }
                   >
                     {isSubmitting
-                      ? config.paymentMethod === "stripe" ? "Saving..." : "Publishing..."
-                      : config.paymentMethod === "stripe" ? "Save Draft" : "Publish Bounty"}
+                      ? config.paymentMethod === "stripe" ? "Creating draft..." : "Publishing..."
+                      : config.paymentMethod === "stripe" ? "Create draft" : "Publish bounty"}
                   </Button>
                 </>
               ) : (

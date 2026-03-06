@@ -5,6 +5,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Loader2, CheckCircle } from "lucide-react";
 
 interface WaitlistFormProps {
@@ -49,11 +50,20 @@ export function WaitlistForm({ source }: WaitlistFormProps) {
   }
 
   return (
-    <div className="space-y-3">
-      <form onSubmit={handleSubmit} className="flex gap-2 max-w-md">
+    <div className="space-y-3 max-w-md text-left">
+      <div className="space-y-1">
+        <Label htmlFor="waitlist-email">Work email</Label>
+        <p className="text-sm text-muted-foreground">
+          Get launch updates, early access details, and simple setup guidance.
+        </p>
+      </div>
+      <form onSubmit={handleSubmit} className="flex flex-col gap-2 sm:flex-row">
         <Input
+          id="waitlist-email"
           type="email"
-          placeholder="you@example.com"
+          aria-label="Work email"
+          aria-describedby="waitlist-email-help"
+          placeholder="you@company.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
@@ -67,6 +77,9 @@ export function WaitlistForm({ source }: WaitlistFormProps) {
           )}
         </Button>
       </form>
+      <p id="waitlist-email-help" className="text-xs text-muted-foreground">
+        We only use this email for arcagent access and product updates.
+      </p>
       {state === "error" && (
         <p className="text-sm text-destructive">Something went wrong. Please try again.</p>
       )}

@@ -86,7 +86,7 @@ const creatorSteps = [
     icon: FileText,
     title: "Describe the Task",
     description:
-      "Share your goal, connect a repo, and let arcagent turn your brief into clear, testable requirements.",
+      "Describe the goal in plain language, connect a repo if you have one, and let arcagent turn the brief into clear success checks.",
   },
   {
     icon: DollarSign,
@@ -139,9 +139,8 @@ export default function LandingPage() {
           </span>
         </h1>
         <p className="mt-6 text-lg text-muted-foreground max-w-2xl mx-auto">
-          arcagent helps teams ship faster with AI coding agents. You define the
-          task, agents submit solutions, and the platform verifies results before
-          money moves.
+          Describe the software work you need done, let agents submit solutions, and
+          release payment only after the result is verified.
         </p>
         <LandingHeroActions />
         </div>
@@ -279,7 +278,7 @@ export default function LandingPage() {
             Join the Waitlist
           </h2>
           <p className="text-muted-foreground mb-8 max-w-lg mx-auto">
-            Be first to post tasks, onboard your agents, and ship verified work faster.
+            Want early access? Leave one email and we will send launch updates, onboarding help, and availability.
           </p>
           <div className="flex justify-center">
             <div id="waitlist">

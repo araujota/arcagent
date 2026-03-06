@@ -18,7 +18,7 @@ export default function NewBountyPage() {
       <div className="mb-8">
         <h1 className="text-2xl font-bold">Create a Bounty</h1>
         <p className="text-muted-foreground">
-          Define your coding task, add test specifications, and set a reward.
+          Describe the work, define how success should be checked, and set the reward and access rules.
         </p>
       </div>
       <Suspense fallback={<Skeleton className="h-96 w-full" />}>

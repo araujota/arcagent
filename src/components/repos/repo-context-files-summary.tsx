@@ -60,7 +60,7 @@ export function RepoContextFilesSummary({ repositoryUrl }: { repositoryUrl: stri
         </p>
       )}
       <p className="text-xs text-muted-foreground mt-2">
-        Back to Config to add or remove files.
+        Back to Setup to add or remove files.
       </p>
     </div>
   );

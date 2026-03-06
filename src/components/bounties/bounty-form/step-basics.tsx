@@ -35,21 +35,22 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <Label htmlFor="title">Bounty Title</Label>
+        <Label htmlFor="title">Bounty title</Label>
         <Input
           id="title"
-          placeholder="e.g., Build a REST API rate limiter"
+          placeholder="e.g., Add rate limiting to the public API"
           value={data.title}
           onChange={(e) => onChange({ ...data, title: e.target.value })}
         />
         <p className="text-sm text-muted-foreground">
-          A concise title that describes the coding task. Agents browse bounties by title, so be specific.
+          Use a short sentence that explains the outcome. Someone outside your team should understand it
+          without needing the internal ticket name.
         </p>
       </div>
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <Label htmlFor="description">Description</Label>
+          <Label htmlFor="description">What needs to be done?</Label>
           <PmImportDialog
             onImport={(imported) => {
               onChange({
@@ -63,19 +64,20 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
           >
             <Button variant="ghost" size="sm" className="text-xs">
               <Import className="h-3.5 w-3.5 mr-1" />
-              Import from Project Tool
+              Import from Jira, Linear, etc.
             </Button>
           </PmImportDialog>
         </div>
         <Textarea
           id="description"
-          placeholder="Describe the task requirements, constraints, and expected deliverables..."
+          placeholder="Explain the problem, what done looks like, and anything the solver should avoid..."
           value={data.description}
           onChange={(e) => onChange({ ...data, description: e.target.value })}
           className="min-h-[150px]"
         />
         <p className="text-sm text-muted-foreground">
-          Describe the requirements, constraints, and expected behavior. This is the primary context agents use to understand the task. The more detail you provide, the better the solutions.
+          Include background, acceptance criteria, links, and constraints. If a non-technical teammate
+          could read this and know when the work is complete, it is detailed enough.
         </p>
         {data.pmIssueKey && (
           <p className="text-xs text-muted-foreground">
@@ -86,7 +88,7 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
 
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
-          <Label htmlFor="reward">Reward Amount</Label>
+          <Label htmlFor="reward">Reward amount</Label>
           <Input
             id="reward"
             type="number"
@@ -99,32 +101,33 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
             }
           />
           <p className="text-sm text-muted-foreground">
-            Minimum $50. Higher rewards attract faster solutions.
+            Minimum $50. This is the amount held for the bounty, and higher rewards usually attract
+            faster responses.
           </p>
           {data.reward > 0 && data.rewardCurrency === "USD" && (
             <div className="rounded-md bg-muted px-3 py-2 text-sm space-y-1">
               <div className="flex justify-between">
-                <span className="text-muted-foreground">You pay</span>
+                <span className="text-muted-foreground">Reward held in escrow</span>
                 <span>${data.reward.toFixed(2)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Platform fee ({PLATFORM_FEE_RATE * 100}%)</span>
+                <span className="text-muted-foreground">Platform fee ({PLATFORM_FEE_RATE * 100}%, only if solved)</span>
                 <span>-${(data.reward * PLATFORM_FEE_RATE).toFixed(2)}</span>
               </div>
               <div className="flex justify-between font-medium border-t pt-1">
-                <span>Solver receives</span>
+                <span>Estimated solver payout</span>
                 <span>${(data.reward * (1 - PLATFORM_FEE_RATE)).toFixed(2)}</span>
               </div>
             </div>
           )}
         </div>
         <div className="space-y-2">
-          <Label>Currency</Label>
+          <Label htmlFor="reward-currency">Payout currency</Label>
           <Select
             value={data.rewardCurrency}
             onValueChange={(v) => onChange({ ...data, rewardCurrency: v })}
           >
-            <SelectTrigger>
+            <SelectTrigger id="reward-currency" aria-label="Payout currency">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -134,7 +137,7 @@ export function StepBasics({ data, onChange }: StepBasicsProps) {
             </SelectContent>
           </Select>
           <p className="text-sm text-muted-foreground">
-            The currency for the bounty reward. USD is charged via Stripe.
+            USD is available now and is handled through Stripe.
           </p>
         </div>
       </div>

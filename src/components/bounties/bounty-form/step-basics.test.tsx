@@ -68,12 +68,12 @@ describe("StepBasics", () => {
     render(<StepBasics data={defaultData} onChange={onChange} />);
 
     const titleInput = screen.getByPlaceholderText(
-      "e.g., Build a REST API rate limiter"
+      "e.g., Add rate limiting to the public API"
     );
     expect(titleInput).toBeInTheDocument();
 
     const descriptionTextarea = screen.getByPlaceholderText(
-      "Describe the task requirements, constraints, and expected deliverables..."
+      "Explain the problem, what done looks like, and anything the solver should avoid..."
     );
     expect(descriptionTextarea).toBeInTheDocument();
   });
@@ -84,7 +84,7 @@ describe("StepBasics", () => {
     render(<StepBasics data={defaultData} onChange={onChange} />);
 
     const titleInput = screen.getByPlaceholderText(
-      "e.g., Build a REST API rate limiter"
+      "e.g., Add rate limiting to the public API"
     );
     await user.type(titleInput, "A");
 
@@ -104,7 +104,7 @@ describe("StepBasics", () => {
     render(<StepBasics data={dataWithReward} onChange={onChange} />);
 
     // "You pay" row
-    expect(screen.getByText("You pay")).toBeInTheDocument();
+    expect(screen.getByText("Reward held in escrow")).toBeInTheDocument();
     expect(screen.getByText("$100.00")).toBeInTheDocument();
 
     // Platform fee row - 8% of 100 = 8.00
@@ -112,7 +112,7 @@ describe("StepBasics", () => {
     expect(screen.getByText("-$8.00")).toBeInTheDocument();
 
     // Solver receives row - 100 - 8 = 92.00
-    expect(screen.getByText("Solver receives")).toBeInTheDocument();
+    expect(screen.getByText("Estimated solver payout")).toBeInTheDocument();
     expect(screen.getByText("$92.00")).toBeInTheDocument();
   });
 
@@ -120,8 +120,8 @@ describe("StepBasics", () => {
     const onChange = vi.fn();
     render(<StepBasics data={defaultData} onChange={onChange} />);
 
-    expect(screen.queryByText("You pay")).not.toBeInTheDocument();
-    expect(screen.queryByText("Solver receives")).not.toBeInTheDocument();
+    expect(screen.queryByText("Reward held in escrow")).not.toBeInTheDocument();
+    expect(screen.queryByText("Estimated solver payout")).not.toBeInTheDocument();
     expect(screen.queryByText(/Platform fee/)).not.toBeInTheDocument();
   });
 
