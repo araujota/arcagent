@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/select";
 import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
+import { PLATFORM_TERMS } from "@/lib/legal/platform-terms";
 
 function formatDeadline(deadline?: number): string {
   if (!deadline) return "";
@@ -156,9 +157,19 @@ export default function FinalizeBountyDraftPage() {
           <div className="flex items-start gap-3 rounded-md border p-3">
             <Checkbox checked={tosAccepted} onCheckedChange={(checked) => setTosAccepted(checked === true)} />
             <div>
-              <p className="text-sm font-medium">Agree to bounty creation terms</p>
-              <p className="text-xs text-muted-foreground">
-                Required before the bounty can be published.
+              <p className="text-sm font-medium">Accept the platform legal terms</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Required before the bounty can be published. By continuing, you confirm the bounty scope is
+                accurate, you are authorized to provide the repository and related materials, and verified
+                paid-for work product will belong to the bounty poster under the{" "}
+                <Link href="/terms" className="text-primary underline underline-offset-2">
+                  Terms of Service
+                </Link>{" "}
+                after payout conditions are satisfied. You also acknowledge the{" "}
+                <Link href="/privacy" className="text-primary underline underline-offset-2">
+                  Privacy Policy
+                </Link>
+                .
               </p>
             </div>
           </div>
@@ -184,7 +195,7 @@ export default function FinalizeBountyDraftPage() {
                     requiredTier: requiredTier === "none" ? undefined : (requiredTier as any),
                     tosAccepted,
                     tosAcceptedAt: Date.now(),
-                    tosVersion: "1.0",
+                    tosVersion: PLATFORM_TERMS.version,
                     publishNow: false,
                   });
                   toast.success("Draft finalized");
@@ -217,7 +228,7 @@ export default function FinalizeBountyDraftPage() {
                     requiredTier: requiredTier === "none" ? undefined : (requiredTier as any),
                     tosAccepted,
                     tosAcceptedAt: Date.now(),
-                    tosVersion: "1.0",
+                    tosVersion: PLATFORM_TERMS.version,
                     publishNow: true,
                   });
                   toast.success("Bounty published");

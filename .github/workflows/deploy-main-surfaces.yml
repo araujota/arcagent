@@ -53,7 +53,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check Convex deploy credentials
+        id: convex_auth
+        run: |
+          set -euo pipefail
+          if [[ -n "${CONVEX_DEPLOY_KEY}" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::CONVEX_DEPLOY_KEY is not configured; skipping GitHub-hosted Convex deploy."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Deploy Convex (prod)
+        if: steps.convex_auth.outputs.enabled == 'true'
         run: npx convex deploy -y --typecheck=disable
 
   deploy-mcp-fargate:
@@ -93,9 +105,7 @@ jobs:
           fi
           REGISTRY="${{ steps.ecr-login.outputs.registry }}"
           IMAGE_URI="${REGISTRY}/${MCP_ECR_REPOSITORY}:sha-${GITHUB_SHA}"
-          MAIN_URI="${REGISTRY}/${MCP_ECR_REPOSITORY}:main"
           echo "uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
-          echo "main_uri=${MAIN_URI}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push MCP image
         uses: docker/build-push-action@v6
@@ -103,9 +113,7 @@ jobs:
           context: mcp-server
           file: mcp-server/Dockerfile
           push: true
-          tags: |
-            ${{ steps.image.outputs.uri }}
-            ${{ steps.image.outputs.main_uri }}
+          tags: ${{ steps.image.outputs.uri }}
 
       - name: Roll ECS service
         run: |
@@ -256,9 +264,7 @@ jobs:
           fi
           REGISTRY="${{ steps.ecr-login.outputs.registry }}"
           IMAGE_URI="${REGISTRY}/${WORKER_ECR_REPOSITORY}:sha-${GITHUB_SHA}"
-          MAIN_URI="${REGISTRY}/${WORKER_ECR_REPOSITORY}:main"
           echo "uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
-          echo "main_uri=${MAIN_URI}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push worker image
         uses: docker/build-push-action@v6
@@ -266,9 +272,7 @@ jobs:
           context: worker
           file: worker/Dockerfile
           push: true
-          tags: |
-            ${{ steps.image.outputs.uri }}
-            ${{ steps.image.outputs.main_uri }}
+          tags: ${{ steps.image.outputs.uri }}
 
       - name: Roll ECS service
         run: |

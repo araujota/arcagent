@@ -307,7 +307,7 @@ The MCP server supports both modes: self-hosted via the `arcagent-mcp` npm packa
 
 | Variable | Required | In `.env.example` |
 |---|---|---|
-| `CONVEX_URL` | Dev only (defaults to production in published package) | Yes |
+| `CONVEX_URL` | Required for self-hosted runtime targeting | Yes |
 | `MCP_SHARED_SECRET` | Dev only (or `ARCAGENT_API_KEY`) | Yes |
 | `ARCAGENT_API_KEY` | Agents set this in Claude Desktop config | Yes |
 | `WORKER_SHARED_SECRET` | Dev only, for workspace tools | Yes |

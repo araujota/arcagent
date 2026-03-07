@@ -108,7 +108,7 @@ describe("Notifications", () => {
   describe("listUnread + markRead", () => {
     it("returns unread notifications and marks them read", async () => {
       const t = convexTest(schema);
-      const { userId, bountyId } = await t.run(async (ctx) => {
+      const { userId } = await t.run(async (ctx) => {
         const userId = await seedUser(ctx, { role: "agent" });
         const creatorId = await seedUser(ctx, { role: "creator" });
         const bountyId = await seedBounty(ctx, creatorId);
@@ -125,7 +125,7 @@ describe("Notifications", () => {
           userId, type: "new_bounty", bountyId, title: "N3",
           message: "msg3", read: true, createdAt: Date.now() + 2,
         });
-        return { userId, bountyId };
+        return { userId };
       });
 
       // Should return only 2 unread

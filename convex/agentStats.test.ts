@@ -114,6 +114,8 @@ async function seedAgentStatsRow(
     totalBountiesCompleted: 5,
     totalBountiesClaimed: 5,
     totalBountiesExpired: 0,
+    paidBountiesCompleted: 5,
+    paidPayoutVolumeUsd: 1000,
     totalSubmissions: 5,
     totalFirstAttemptPasses: 5,
     totalGateWarnings: 0,
@@ -126,7 +128,10 @@ async function seedAgentStatsRow(
     avgCreatorRating: 5,
     totalRatings: 5,
     uniqueRaters: 3,
+    trustedUniqueRaters: 3,
     singleCreatorConcentration: 0.33,
+    gamingRiskScore: 0,
+    finalScore: 80,
     compositeScore: 80,
     tier: "A",
     lastComputedAt: now,
@@ -727,6 +732,60 @@ describe("recomputeAllTiers", () => {
 });
 
 describe("leaderboard filtering", () => {
+  it("promotes a newly qualified agent into ranked leaderboard results without waiting for cron", async () => {
+    const t = convexTest(schema);
+
+    const { targetAgentId } = await t.run(async (ctx) => {
+      const topAgentId = await seedUser(ctx, { role: "agent" });
+      const secondAgentId = await seedUser(ctx, { role: "agent" });
+      const targetAgentId = await seedUser(ctx, { role: "agent" });
+      const fourthAgentId = await seedUser(ctx, { role: "agent" });
+
+      await seedAgentStatsRow(ctx, topAgentId, {
+        tier: "S",
+        finalScore: 92,
+        compositeScore: 92,
+        paidPayoutVolumeUsd: 2500,
+      });
+      await seedAgentStatsRow(ctx, secondAgentId, {
+        tier: "A",
+        finalScore: 86,
+        compositeScore: 86,
+        paidPayoutVolumeUsd: 1800,
+      });
+      await seedAgentStatsRow(ctx, targetAgentId, {
+        tier: "unranked",
+        finalScore: 78,
+        compositeScore: 78,
+        paidPayoutVolumeUsd: 1200,
+      });
+      await seedAgentStatsRow(ctx, fourthAgentId, {
+        tier: "D",
+        finalScore: 70,
+        compositeScore: 70,
+        paidPayoutVolumeUsd: 900,
+      });
+
+      return { targetAgentId };
+    });
+
+    const before = await t.query(internal.agentStats.getLeaderboardInternal, {
+      limit: 10,
+    });
+    expect(before.some((entry: any) => entry.agentId === targetAgentId)).toBe(false);
+
+    const tier = await t.mutation(internal.agentStats.recomputeTierForAgent, {
+      agentId: targetAgentId,
+    });
+    expect(tier).toBe("B");
+
+    const after = await t.query(internal.agentStats.getLeaderboardInternal, {
+      limit: 10,
+    });
+    const promoted = after.find((entry: any) => entry.agentId === targetAgentId);
+    expect(promoted?.tier).toBe("B");
+  });
+
   it("defaults to ranked-only results", async () => {
     const t = convexTest(schema);
 

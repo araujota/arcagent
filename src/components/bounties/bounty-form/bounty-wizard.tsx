@@ -13,6 +13,7 @@ import { StepConfig, type ConfigData } from "./step-config";
 import { StepReview } from "./step-review";
 import { RepoStatusBadge } from "@/components/bounties/repo-status-badge";
 import { useProductAnalytics } from "@/lib/analytics";
+import { PLATFORM_TERMS } from "@/lib/legal/platform-terms";
 import { toast } from "sonner";
 import { Sparkles, Loader2 } from "lucide-react";
 
@@ -435,7 +436,7 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
         ...(!asDraft && {
           tosAccepted: true,
           tosAcceptedAt: Date.now(),
-          tosVersion: "1.0",
+          tosVersion: PLATFORM_TERMS.version,
         }),
       });
 
@@ -666,7 +667,7 @@ export function BountyWizard({ repoUrl }: { repoUrl?: string }) {
                     disabled={isSubmitting || (config.paymentMethod !== "stripe" && !isCertified)}
                     title={
                       config.paymentMethod !== "stripe" && !isCertified
-                        ? "Accept the Terms of Service to publish"
+                        ? "Accept the Terms of Service and Privacy Policy to publish"
                         : undefined
                     }
                   >

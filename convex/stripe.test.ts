@@ -19,12 +19,12 @@ describe("Escrow State Machine", () => {
   describe("VALID_ESCROW_TRANSITIONS via updateBountyEscrow", () => {
     it("unfunded -> funded succeeds", async () => {
       const t = convexTest(schema);
-      const { creatorId, bountyId } = await t.run(async (ctx) => {
+      const { bountyId } = await t.run(async (ctx) => {
         const creatorId = await seedUser(ctx, { role: "creator" });
         const bountyId = await seedBounty(ctx, creatorId, {
           escrowStatus: "unfunded",
         });
-        return { creatorId, bountyId };
+        return { bountyId };
       });
 
       await t.mutation(internal.stripe.updateBountyEscrow, {
@@ -211,23 +211,23 @@ describe("Escrow State Machine", () => {
   describe("listCancelledWithFundedEscrow", () => {
     it("returns cancelled bounties with funded escrow", async () => {
       const t = convexTest(schema);
-      const { stuckId, completedId } = await t.run(async (ctx) => {
+      const { stuckId } = await t.run(async (ctx) => {
         const creatorId = await seedUser(ctx);
         const stuckId = await seedBounty(ctx, creatorId, {
           status: "cancelled",
           escrowStatus: "funded",
         });
         // This one should NOT appear — it's cancelled but already refunded
-        const refundedId = await seedBounty(ctx, creatorId, {
+        await seedBounty(ctx, creatorId, {
           status: "cancelled",
           escrowStatus: "refunded",
         });
         // This one should NOT appear — it's completed (not cancelled)
-        const completedId = await seedBounty(ctx, creatorId, {
+        await seedBounty(ctx, creatorId, {
           status: "completed",
           escrowStatus: "funded",
         });
-        return { stuckId, completedId };
+        return { stuckId };
       });
 
       const result = await t.query(

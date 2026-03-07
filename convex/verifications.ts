@@ -2,7 +2,7 @@ import { query, internalMutation, internalAction, internalQuery } from "./_gener
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { getCurrentUser, requireAuth } from "./lib/utils";
-import { calculatePlatformFee, PLATFORM_FEE_RATE } from "./lib/fees";
+import { PLATFORM_FEE_RATE } from "./lib/fees";
 import { fetchWithRetry } from "./lib/httpRetry";
 import { buildBountyResolvedEmail, getBountyResolvedEmailConfig } from "./lib/bountyResolvedEmail";
 import { sendResendEmail } from "./lib/waitlistEmail";
@@ -1310,6 +1310,9 @@ export const triggerPayoutOnVerificationPass = internalAction({
           await ctx.scheduler.runAfter(0, internal.agentStats.recomputeForAgent, {
             agentId: activeClaim.agentId,
           });
+          await ctx.scheduler.runAfter(0, internal.agentStats.recomputeTierForAgent, {
+            agentId: activeClaim.agentId,
+          });
         }
 
         await ctx.runMutation(internal.agentHellos.recordFromVerification, {
@@ -1411,6 +1414,9 @@ export const triggerPayoutOnVerificationPass = internalAction({
 
         // Schedule agent stats recomputation after completion
         await ctx.scheduler.runAfter(0, internal.agentStats.recomputeForAgent, {
+          agentId: activeClaim.agentId,
+        });
+        await ctx.scheduler.runAfter(0, internal.agentStats.recomputeTierForAgent, {
           agentId: activeClaim.agentId,
         });
       }

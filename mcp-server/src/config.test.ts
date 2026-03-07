@@ -2,16 +2,16 @@ import { describe, expect, it } from "vitest";
 import { assertConfig, isHostedRuntime, loadServerConfig } from "./config";
 
 describe("config startup modes", () => {
-  it("defaults CONVEX_URL to production deployment", () => {
+  it("leaves convexUrl empty when backend target config is absent", () => {
     const cfg = loadServerConfig({});
-    expect(cfg.convexUrl).toBe("https://acoustic-starfish-282.convex.site");
+    expect(cfg.convexUrl).toBe("");
   });
 
   it("normalizes .convex.cloud to .convex.site for HTTP actions", () => {
     const cfg = loadServerConfig({
-      CONVEX_URL: "https://acoustic-starfish-282.convex.cloud",
+      CONVEX_URL: "https://example.convex.cloud",
     });
-    expect(cfg.convexUrl).toBe("https://acoustic-starfish-282.convex.site");
+    expect(cfg.convexUrl).toBe("https://example.convex.site");
   });
 
   it("allows registration-only mode without credentials", () => {
@@ -22,9 +22,11 @@ describe("config startup modes", () => {
     expect(() => assertConfig(cfg)).not.toThrow();
   });
 
-  it("allows full mode without credentials (registration only path)", () => {
+  it("rejects full mode without backend target config", () => {
     const cfg = loadServerConfig({});
-    expect(() => assertConfig(cfg)).not.toThrow();
+    expect(() => assertConfig(cfg)).toThrow(
+      "Full MCP startup requires CONVEX_URL or CONVEX_HTTP_ACTIONS_URL",
+    );
   });
 
   it("rejects registration-only mode with stdio transport", () => {
@@ -37,6 +39,7 @@ describe("config startup modes", () => {
 
   it("requires redis rate limiting in hosted mode", () => {
     const cfg = loadServerConfig({
+      CONVEX_URL: "https://example.convex.cloud",
       MCP_TRANSPORT: "http",
       MCP_PUBLIC_BASE_URL: "https://mcp.arcagent.dev",
       MCP_REQUIRE_HTTPS: "true",
@@ -48,6 +51,7 @@ describe("config startup modes", () => {
 
   it("rejects non-https public base URLs", () => {
     const cfg = loadServerConfig({
+      CONVEX_URL: "https://example.convex.cloud",
       MCP_TRANSPORT: "http",
       MCP_PUBLIC_BASE_URL: "http://mcp.arcagent.dev",
       RATE_LIMIT_STORE: "redis",
@@ -58,6 +62,7 @@ describe("config startup modes", () => {
 
   it("requires redis URL when redis limiter is enabled", () => {
     const cfg = loadServerConfig({
+      CONVEX_URL: "https://example.convex.cloud",
       MCP_TRANSPORT: "http",
       RATE_LIMIT_STORE: "redis",
     });
@@ -66,6 +71,7 @@ describe("config startup modes", () => {
 
   it("accepts hosted configuration with redis and https", () => {
     const cfg = loadServerConfig({
+      CONVEX_URL: "https://example.convex.cloud",
       MCP_TRANSPORT: "http",
       MCP_PUBLIC_BASE_URL: "https://mcp.arcagent.dev/",
       RATE_LIMIT_STORE: "redis",
@@ -79,6 +85,7 @@ describe("config startup modes", () => {
 
   it("requires audit token when convex audit logs are enabled", () => {
     const cfg = loadServerConfig({
+      CONVEX_URL: "https://example.convex.cloud",
       MCP_ENABLE_CONVEX_AUDIT_LOGS: "true",
     });
     expect(() => assertConfig(cfg)).toThrow("requires MCP_AUDIT_LOG_TOKEN");

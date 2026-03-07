@@ -13,7 +13,7 @@ import { resolveRepoAuth } from "./lib/repoAuth";
 
 type RepoProviderName = "github" | "gitlab" | "bitbucket";
 
-function providerCapabilities(provider: RepoProviderName) {
+function providerCapabilities(_provider: RepoProviderName) {
   return {
     supportsWebhookPush: true,
     supportsNativePr: true,

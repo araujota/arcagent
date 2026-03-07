@@ -1,69 +1,39 @@
+import {
+  LEGAL_EFFECTIVE_DATE,
+  PLATFORM_TERMS_VERSION,
+} from "../../../shared/legal";
+
 export const BOUNTY_CREATION_TOS = {
-  version: "1.0",
-  effectiveDate: "2025-02-13",
+  version: PLATFORM_TERMS_VERSION,
+  effectiveDate: LEGAL_EFFECTIVE_DATE,
   sections: [
     {
-      title: "1. Scope of Work Certification",
-      content: `By creating a bounty on arcagent, you ("Creator") certify that:
-(a) The description of work, test scenarios (Gherkin BDD specifications), and any generated or imported test code ("Acceptance Criteria") together constitute a full and complete description of the scope of work required to claim the bounty reward.
-(b) An agent satisfying all Acceptance Criteria — including passing all public and hidden test scenarios and maintaining all existing regression tests in a passing state — has fulfilled the complete scope of work for the bounty.
-(c) You have reviewed all generated and/or imported test scenarios and confirm they accurately describe the work you are requesting.`,
+      title: "1. Scope And Acceptance Criteria",
+      content:
+        "You certify that the bounty description, repository context, and public and hidden acceptance criteria together describe the work you want delivered. You are responsible for reviewing any generated or imported requirements and tests before publishing.",
     },
     {
-      title: "2. Regression Test Responsibility",
-      content: `The Creator is solely responsible for ensuring that:
-(a) The target repository has adequate regression test coverage before creating a bounty.
-(b) Any changes made by an agent that pass all bounty Acceptance Criteria but break existing functionality not covered by regression tests are the Creator's responsibility.
-(c) If the Creator's repository lacks regression tests, the Creator accepts the risk that an agent's changes may have unintended side effects on untested functionality.
-(d) arcagent provides an 8-gate verification pipeline (build, lint, typecheck, security, memory, Snyk, SonarQube, test) but does not guarantee passing these gates means the code is free from all defects.`,
+      title: "2. Repository And Regression Responsibility",
+      content:
+        "You confirm that you are authorized to share the repository and any imported work-item context with ArcAgent, and that the repository has the regression coverage you want before opening the bounty for claims and submissions.",
     },
     {
-      title: "3. Test Scenario Accuracy",
-      content: `The Creator acknowledges that:
-(a) AI-generated test scenarios are derived from the Creator's natural language description, imported project management data, and repository context. The Creator is responsible for reviewing these scenarios before publishing the bounty.
-(b) Imported Gherkin/Cucumber scenarios from external sources (repository files, URLs, or project management tools such as Jira, Linear, Asana, or Monday.com) are used as supplementary context for AI test generation and as direct test suites. The Creator is responsible for ensuring their accuracy and completeness.
-(c) Once a bounty is claimed by an agent, test scenarios and the description of work are frozen and cannot be modified. The Creator must ensure accuracy before publishing.
-(d) If test scenarios contain errors, ambiguities, or omissions that cause an agent to produce work that passes all tests but does not meet the Creator's actual intent, the Creator is still obligated to accept and pay for the work.`,
+      title: "3. Work Product Ownership",
+      content:
+        "Under the platform Terms of Service, verified paid-for agent work product belongs to the bounty poster once payout conditions are satisfied. ArcAgent keeps ownership of its platform software, hidden verification systems, and service infrastructure, and receives only the limited rights needed to operate the service.",
     },
     {
-      title: "4. Payment Obligations",
-      content: `The Creator agrees that:
-(a) Upon publishing a bounty with Stripe payment, the full reward amount is placed in escrow and is non-refundable once an agent's submission passes all verification gates.
-(b) A platform fee of 8% is deducted from the reward before payout to the solving agent.
-(c) Disputes must be raised within 48 hours of a passing verification and are resolved by platform administrators.
-(d) Cancellation of a bounty after funding triggers a full refund (minus any processing fees charged by Stripe) only if no agent has an active claim.`,
+      title: "4. Operational License And Privacy",
+      content:
+        "You authorize ArcAgent to store, process, verify, log, and retain bounty materials, submissions, receipts, artifacts, and related account or integration data as described in the Terms of Service and Privacy Policy.",
     },
     {
-      title: "5. Intellectual Property",
-      content: `The Creator acknowledges that:
-(a) Code submitted by agents in response to bounties is subject to the repository's existing license.
-(b) The Creator grants arcagent a non-exclusive license to store and process test scenarios, descriptions, and repository data for the purpose of operating the verification pipeline.
-(c) Step definitions (test implementation code) generated by the platform are proprietary to arcagent and are not shared with agents or third parties.`,
-    },
-    {
-      title: "6. Limitation of Liability",
-      content: `arcagent provides a verification infrastructure and escrow service. arcagent does not:
-(a) Guarantee the quality, correctness, or fitness of agent-submitted code beyond what the Acceptance Criteria specify.
-(b) Guarantee that AI-generated test scenarios are complete, correct, or aligned with the Creator's intent.
-(c) Accept liability for damages arising from insufficient regression test coverage, inaccurate test scenarios, or ambiguous descriptions of work.
-(d) Accept liability for security vulnerabilities in agent-submitted code that are not caught by the verification pipeline's security gates.`,
-    },
-    {
-      title: "7. Data from Third-Party Services",
-      content: `When importing work items from project management tools (Jira, Linear, Asana, Monday.com), the Creator acknowledges that:
-(a) arcagent stores imported issue data (title, description, labels) on the bounty record for the purpose of test generation and traceability.
-(b) API tokens provided for PM tool connections are hashed before storage and used only to fetch the specified work items. arcagent does not access, modify, or store any other data from the Creator's PM tool account.
-(c) The Creator is responsible for ensuring they have permission to share the imported work item data with arcagent.`,
-    },
-    {
-      title: "8. Amendments",
-      content: `arcagent reserves the right to update these Terms of Service. Changes take effect for bounties created after the update date. Existing bounties remain governed by the TOS version accepted at creation time.`,
+      title: "5. Launch Checklist",
+      content:
+        "Publishing a bounty means you have reviewed the legal terms, confirmed the commercial setup, and accepted that passing verification measures only the configured checks for that bounty and does not replace your own code-review or deployment controls.",
     },
   ],
 };
 
 export const SCOPE_CERTIFICATION_TEXT =
-  "I certify that the test scenarios and description of work above constitute a full and " +
-  "complete description of the scope of work for this bounty. An agent passing all tests " +
-  "(including full regression tests remaining green) constitutes acceptable work to claim " +
-  "this bounty. I have read and agree to the Bounty Creation Terms of Service.";
+  "I certify that this bounty accurately describes the requested work, that I have the right to provide the repository and related materials, and that I understand verified paid-for work product belongs to the bounty poster under the Terms of Service.";

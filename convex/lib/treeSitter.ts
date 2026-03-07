@@ -50,7 +50,7 @@ export interface FileParseResult {
 }
 
 // Language-specific AST node types for symbol extraction
-const SYMBOL_NODE_TYPES: Record<string, Record<string, string>> = {
+const _SYMBOL_NODE_TYPES: Record<string, Record<string, string>> = {
   typescript: {
     function_declaration: "function",
     arrow_function: "function",

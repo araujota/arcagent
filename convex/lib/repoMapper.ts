@@ -5,7 +5,7 @@
  * 3. Repo Map Text: compact Aider-style format for LLM context
  */
 
-import type { ExtractedSymbol, FileParseResult, ImportInfo } from "./treeSitter";
+import type { FileParseResult } from "./treeSitter";
 
 export interface SymbolTableEntry {
   qualifiedName: string;

@@ -208,6 +208,27 @@ export function pullVercelEnv(environment) {
   }
 }
 
+export function pullConvexEnv({ prod = false } = {}) {
+  const args = ["convex", "env", "list"];
+  if (prod) {
+    args.push("--prod");
+  }
+  const { stdout } = runCommand("npx", args);
+  return parseConvexEnvList(stdout);
+}
+
+export function deriveConvexSiteUrl(value) {
+  if (!value) return undefined;
+  const parsed = new URL(value);
+  if (parsed.hostname.endsWith(".convex.cloud")) {
+    parsed.hostname = parsed.hostname.replace(/\.convex\.cloud$/, ".convex.site");
+  }
+  parsed.pathname = "";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString().replace(/\/+$/, "");
+}
+
 export function parseArgs(argv) {
   const args = new Set(argv);
   return {

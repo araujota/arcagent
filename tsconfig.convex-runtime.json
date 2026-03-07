@@ -1,0 +1,9 @@
+{
+  "extends": "./convex/tsconfig.json",
+  "include": ["convex/**/*.ts"],
+  "exclude": [
+    "convex/_generated",
+    "convex/**/*.test.ts",
+    "convex/**/__tests__/**"
+  ]
+}

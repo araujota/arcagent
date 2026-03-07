@@ -13,6 +13,15 @@ const eslintConfig = defineConfig([
       "react-hooks/set-state-in-effect": "off",
     },
   },
+  {
+    files: ["convex/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-unused-vars": ["error", {
+        argsIgnorePattern: "^(ctx|args|_ctx|_args|_.*)$",
+        varsIgnorePattern: "^_",
+      }],
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:
@@ -22,6 +31,7 @@ const eslintConfig = defineConfig([
     "coverage/**",
     "**/coverage/**",
     "**/dist/**",
+    "convex/_generated/**",
     "next-env.d.ts",
   ]),
 ]);

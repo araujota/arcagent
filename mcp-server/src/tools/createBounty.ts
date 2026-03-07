@@ -3,6 +3,7 @@ import { z } from "zod";
 import { callConvex } from "../convex/client";
 import { registerTool } from "../lib/toolHelper";
 import { getAuthUser, requireScope } from "../lib/context";
+import { PLATFORM_TERMS_VERSION } from "../lib/legal";
 
 export function registerCreateBounty(server: McpServer): void {
   registerTool(
@@ -15,7 +16,7 @@ export function registerCreateBounty(server: McpServer): void {
       reward: z.string().describe("Reward amount (numeric string, e.g. '100')"),
       rewardCurrency: z.string().describe("Currency code (e.g. 'USD', 'ETH')"),
       paymentMethod: z.enum(["stripe", "web3"]).describe("Payment method: 'stripe' or 'web3'"),
-      tosAccepted: z.boolean().describe("Must be true — confirms acceptance of Bounty Creation Terms of Service"),
+      tosAccepted: z.boolean().describe("Must be true — confirms acceptance of ArcAgent's Terms of Service"),
       repositoryUrl: z.string().optional().describe("GitHub repository URL to index and generate tests from"),
       deadline: z.string().optional().describe("Deadline as Unix timestamp in milliseconds"),
       tags: z.string().optional().describe("Comma-separated tags (e.g. 'react,typescript,api')"),
@@ -50,7 +51,7 @@ export function registerCreateBounty(server: McpServer): void {
       // Enforce TOS acceptance
       if (!args.tosAccepted) {
         return {
-          content: [{ type: "text" as const, text: "Error: You must accept the Bounty Creation Terms of Service (tosAccepted: true) to create a bounty." }],
+          content: [{ type: "text" as const, text: "Error: You must accept the ArcAgent Terms of Service (tosAccepted: true) to create a bounty." }],
           isError: true,
         };
       }
@@ -72,7 +73,7 @@ export function registerCreateBounty(server: McpServer): void {
           tags: args.tags ? args.tags.split(",").map((t) => t.trim()) : undefined,
           tosAccepted: true,
           tosAcceptedAt: Date.now(),
-          tosVersion: "1.0",
+          tosVersion: PLATFORM_TERMS_VERSION,
           pmIssueKey: args.pmIssueKey,
           pmProvider: args.pmProvider,
         });
@@ -82,7 +83,7 @@ export function registerCreateBounty(server: McpServer): void {
         text += `**Title:** ${args.title}\n`;
         text += `**Reward:** ${args.reward} ${args.rewardCurrency}\n`;
         text += `**Payment:** ${args.paymentMethod}\n`;
-        text += `**TOS:** Accepted (v1.0)\n`;
+        text += `**TOS:** Accepted (v${PLATFORM_TERMS_VERSION})\n`;
         if (args.paymentMethod === "stripe") {
           text += `**Status:** draft (fund escrow, then publish)\n`;
         }

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -158,16 +159,27 @@ export function StepReview({ basics, tests, config, isCertified, onCertification
             htmlFor="tos-certification"
             className="text-sm leading-relaxed text-muted-foreground cursor-pointer"
           >
-            {SCOPE_CERTIFICATION_TEXT.replace(
-              "Bounty Creation Terms of Service.",
-              ""
-            )}
+            {SCOPE_CERTIFICATION_TEXT} I have read the{" "}
+            <Link
+              href="/terms"
+              className="text-primary underline underline-offset-2 hover:text-primary/80"
+            >
+              Terms of Service
+            </Link>{" "}
+            and{" "}
+            <Link
+              href="/privacy"
+              className="text-primary underline underline-offset-2 hover:text-primary/80"
+            >
+              Privacy Policy
+            </Link>
+            , and I have reviewed the{" "}
             <BountyTosModal>
               <button
                 type="button"
                 className="text-primary underline underline-offset-2 hover:text-primary/80"
               >
-                Bounty Creation Terms of Service
+                creator certification summary
               </button>
             </BountyTosModal>
             .

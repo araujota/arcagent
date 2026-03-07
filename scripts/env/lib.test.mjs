@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildWorkerGeneratedEnv,
+  deriveConvexSiteUrl,
   parseConvexEnvList,
   parseDotenv,
   parseGhNameTable,
@@ -67,6 +68,17 @@ test("buildWorkerGeneratedEnv enforces required keys and defaults", () => {
   assert.equal(env.REDIS_URL, "redis://localhost:6379");
   assert.equal(sourceByKey.REDIS_URL, "default");
   assert.equal(sourceByKey.CONVEX_HTTP_ACTIONS_URL, "derived");
+});
+
+test("deriveConvexSiteUrl normalizes Convex domains", () => {
+  assert.equal(
+    deriveConvexSiteUrl("https://example.convex.cloud"),
+    "https://example.convex.site",
+  );
+  assert.equal(
+    deriveConvexSiteUrl("https://example.convex.site/api/foo?bar=baz"),
+    "https://example.convex.site",
+  );
 });
 
 test("parseGhNameTable extracts uppercase names only", () => {

@@ -88,7 +88,7 @@ Core:
 - `MCP_TRANSPORT`: `stdio` (default) or `http`
 - `MCP_PORT`: HTTP port, default `3002`
 - `MCP_STARTUP_MODE`: `full` (default) or `registration-only`
-- `CONVEX_HTTP_ACTIONS_URL`: Convex HTTP-actions URL (`.convex.site`); if omitted, derived from `CONVEX_URL`
+- `CONVEX_URL` or `CONVEX_HTTP_ACTIONS_URL`: one of these must be set for full startup
 - `WORKER_SHARED_SECRET`: enables workspace tools and worker auth
 
 HTTP/hosting:

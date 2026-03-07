@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { CheckCircle2 } from "lucide-react";
 import type { ReactNode } from "react";
+import { LegalLinks } from "@/components/legal/legal-links";
 
 const creatorValueProps = [
   "Create bounties, fund escrow, and publish without leaving the dashboard.",
@@ -69,6 +70,15 @@ export function AuthShell({
               {alternateLabel}
             </Link>
           </p>
+          <div className="text-sm text-muted-foreground">
+            <span>Using ArcAgent means you agree to our </span>
+            <LegalLinks
+              className="inline-flex items-center gap-2"
+              linkClassName="font-medium text-primary underline underline-offset-4"
+              separatorClassName="text-muted-foreground/60"
+            />
+            <span>.</span>
+          </div>
         </section>
 
         <section className="flex items-center justify-center">

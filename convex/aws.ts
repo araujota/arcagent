@@ -1,6 +1,6 @@
 "use node";
 
-import { internalAction, internalMutation, internalQuery } from "./_generated/server";
+import { internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 
@@ -27,7 +27,6 @@ function getEC2Client() {
 }
 
 // Tag used to identify ArcAgent worker instances
-const WORKER_TAG_KEY = "Name";
 const WORKER_TAG_PREFIX = "arcagent-worker-";
 
 // ---------------------------------------------------------------------------
