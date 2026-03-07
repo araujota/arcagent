@@ -36,8 +36,14 @@ async function expectJson(url, expectedStatus) {
 
 async function main() {
   const defaults = loadTfStateDefaults();
-  const clusterName = process.env.MCP_ECS_CLUSTER_NAME || defaults.clusterName;
-  const serviceName = process.env.MCP_ECS_SERVICE_NAME || defaults.serviceName;
+  const clusterName =
+    process.env.MCP_ECS_CLUSTER ||
+    process.env.MCP_ECS_CLUSTER_NAME ||
+    defaults.clusterName;
+  const serviceName =
+    process.env.MCP_ECS_SERVICE ||
+    process.env.MCP_ECS_SERVICE_NAME ||
+    defaults.serviceName;
   const publicUrl = (process.env.MCP_PUBLIC_URL || defaults.publicUrl || "").replace(/\/+$/, "");
   const workerProxyUrl = (process.env.MCP_WORKER_PROXY_URL || defaults.workerProxyUrl || "").replace(/\/+$/, "");
 
