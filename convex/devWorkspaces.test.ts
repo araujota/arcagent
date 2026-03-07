@@ -225,7 +225,7 @@ describe("Dev Workspaces", () => {
 
     it("P1-3: does NOT clean up recent provisioning workspace", async () => {
       const t = convexTest(schema);
-      const wsDocId = await t.run(async (ctx) => {
+      await t.run(async (ctx) => {
         const creatorId = await seedUser(ctx);
         const agentId = await seedUser(ctx, { role: "agent" });
         const bountyId = await seedBounty(ctx, creatorId);

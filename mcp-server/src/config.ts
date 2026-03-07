@@ -29,7 +29,6 @@ export interface ServerConfig {
   workerProxyPathPrefix: string;
 }
 
-const DEFAULT_CONVEX_URL = "https://acoustic-starfish-282.convex.site";
 const CLOUD_SUFFIX = ".convex.cloud";
 const SITE_SUFFIX = ".convex.site";
 
@@ -123,7 +122,7 @@ export function loadServerConfig(
   const sessionMode: SessionMode = env.MCP_SESSION_MODE === "stateless"
     ? "stateless"
     : "stateful";
-  const convexBaseUrl = env.CONVEX_HTTP_ACTIONS_URL || env.CONVEX_URL || DEFAULT_CONVEX_URL;
+  const convexBaseUrl = env.CONVEX_HTTP_ACTIONS_URL || env.CONVEX_URL;
   const publicBaseUrl = normalizePublicBaseUrl(env.MCP_PUBLIC_BASE_URL);
   const configuredAllowedHosts = parseListEnv(env.MCP_ALLOWED_HOSTS);
   const allowedHosts = configuredAllowedHosts.length > 0
@@ -131,7 +130,7 @@ export function loadServerConfig(
     : getDefaultAllowedHosts(publicBaseUrl);
 
   return {
-    convexUrl: normalizeConvexHttpActionsUrl(convexBaseUrl),
+    convexUrl: convexBaseUrl ? normalizeConvexHttpActionsUrl(convexBaseUrl) : "",
     arcagentApiKey: env.ARCAGENT_API_KEY,
     workerSharedSecret: env.WORKER_SHARED_SECRET,
     clerkSecretKey: env.CLERK_SECRET_KEY,
@@ -164,6 +163,8 @@ export function assertConfig(config: ServerConfig): void {
     if (config.transport !== "http") {
       throw new Error("MCP_STARTUP_MODE=registration-only requires MCP_TRANSPORT=http");
     }
+  } else if (!config.convexUrl) {
+    throw new Error("Full MCP startup requires CONVEX_URL or CONVEX_HTTP_ACTIONS_URL");
   }
 
   if (config.publicBaseUrl) {

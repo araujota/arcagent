@@ -10,6 +10,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck:web": "tsc -p tsconfig.web.json --pretty false",
+    "typecheck:convex": "tsc -p tsconfig.convex-runtime.json --pretty false",
+    "typecheck:worker": "npm --prefix worker run build",
+    "typecheck:mcp": "npm --prefix mcp-server run build",
     "seed": "convex run seed:seed",
     "env:test": "node --test scripts/env/*.test.mjs",
     "env:test:convex": "node scripts/env/run_env_tests_with_convex_env.mjs",
@@ -25,6 +29,9 @@
     "test:coverage:convex": "vitest run --config vitest.convex.config.ts --coverage",
     "test:coverage:core": "npm run test:coverage:webui && npm run test:coverage:convex && npm --prefix worker run test:coverage && npm --prefix mcp-server run test:coverage && node scripts/coverage/assert-core-thresholds.mjs",
     "test:e2e:webhooks": "node --test scripts/e2e/webhooks.e2e.test.mjs",
+    "test:e2e:webhooks:live": "node scripts/e2e/run_live_webhooks.mjs",
+    "smoke:mcp:ecr": "node scripts/e2e/smoke_mcp_ecr.mjs",
+    "smoke:worker:ecr": "node scripts/e2e/smoke_worker_ecr.mjs",
     "scan:snyk": "bash scripts/ci/run-snyk-scan.sh",
     "scan:sonarqube": "bash scripts/ci/run-sonarqube-scan.sh",
     "scan:prepush": "npm run scan:snyk && npm run scan:sonarqube"
@@ -59,10 +66,10 @@
     "zod": "^4.3.6"
   },
   "overrides": {
-    "ajv": "^8.18.0",
     "qs": "^6.14.2"
   },
   "devDependencies": {
+    "ajv": "^6.12.6",
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

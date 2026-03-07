@@ -253,7 +253,7 @@ export const ensureDockerfile = internalAction({
 
 function generateFallbackDockerfile(
   language: string,
-  packageManager: string | null
+  _packageManager: string | null
 ): string {
   switch (language) {
     case "typescript":

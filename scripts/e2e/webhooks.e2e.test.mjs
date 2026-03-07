@@ -5,8 +5,7 @@ import { Webhook as SvixWebhook } from "svix";
 
 const baseUrl =
   process.env.E2E_WEBHOOK_BASE_URL ??
-  process.env.CONVEX_SITE_URL ??
-  "https://acoustic-starfish-282.convex.site";
+  process.env.CONVEX_SITE_URL;
 
 const required = {
   CLERK_WEBHOOK_SECRET: process.env.CLERK_WEBHOOK_SECRET,
@@ -21,6 +20,12 @@ const missing = Object.entries(required)
 if (missing.length > 0) {
   throw new Error(
     `Missing required env vars for webhook E2E tests: ${missing.join(", ")}`
+  );
+}
+
+if (!baseUrl) {
+  throw new Error(
+    "Missing E2E_WEBHOOK_BASE_URL or CONVEX_SITE_URL for webhook E2E tests"
   );
 }
 

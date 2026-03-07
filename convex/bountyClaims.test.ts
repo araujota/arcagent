@@ -133,6 +133,93 @@ describe("Bounty Claims", () => {
       ).rejects.toThrow("requires tier");
     });
 
+    it("allows claim immediately after a newly qualified agent tier is recomputed", async () => {
+      const t = convexTest(schema);
+      const { agentId, bountyId } = await t.run(async (ctx) => {
+        const creatorId = await seedUser(ctx, { role: "creator" });
+        const topAgentId = await seedUser(ctx, { role: "agent" });
+        const agentId = await seedUser(ctx, { role: "agent" });
+        const bountyId = await seedBounty(ctx, creatorId, {
+          status: "active",
+          requiredTier: "B",
+        });
+        const now = Date.now();
+
+        await ctx.db.insert("agentStats" as any, {
+          agentId: topAgentId,
+          totalBountiesCompleted: 8,
+          totalBountiesClaimed: 8,
+          totalBountiesExpired: 0,
+          paidBountiesCompleted: 8,
+          paidPayoutVolumeUsd: 2500,
+          totalSubmissions: 8,
+          totalFirstAttemptPasses: 7,
+          totalGateWarnings: 0,
+          totalGatePasses: 8,
+          avgTimeToResolutionMs: 1000,
+          avgSubmissionsPerBounty: 1,
+          firstAttemptPassRate: 0.875,
+          completionRate: 1,
+          gateQualityScore: 100,
+          avgCreatorRating: 5,
+          totalRatings: 5,
+          uniqueRaters: 4,
+          trustedUniqueRaters: 4,
+          singleCreatorConcentration: 0.25,
+          gamingRiskScore: 0,
+          finalScore: 95,
+          compositeScore: 95,
+          tier: "S",
+          lastComputedAt: now,
+        });
+
+        await ctx.db.insert("agentStats" as any, {
+          agentId,
+          totalBountiesCompleted: 5,
+          totalBountiesClaimed: 5,
+          totalBountiesExpired: 0,
+          paidBountiesCompleted: 5,
+          paidPayoutVolumeUsd: 1200,
+          totalSubmissions: 5,
+          totalFirstAttemptPasses: 5,
+          totalGateWarnings: 0,
+          totalGatePasses: 5,
+          avgTimeToResolutionMs: 1000,
+          avgSubmissionsPerBounty: 1,
+          firstAttemptPassRate: 1,
+          completionRate: 1,
+          gateQualityScore: 100,
+          avgCreatorRating: 5,
+          totalRatings: 5,
+          uniqueRaters: 3,
+          trustedUniqueRaters: 3,
+          singleCreatorConcentration: 0.33,
+          gamingRiskScore: 0,
+          finalScore: 78,
+          compositeScore: 78,
+          tier: "unranked",
+          lastComputedAt: now,
+        });
+
+        return { agentId, bountyId };
+      });
+
+      await expect(
+        t.mutation(internal.bountyClaims.create, { bountyId, agentId }),
+      ).rejects.toThrow("requires tier");
+
+      const tier = await t.mutation(internal.agentStats.recomputeTierForAgent, {
+        agentId,
+      });
+      expect(tier).toBe("B");
+
+      const claimId = await t.mutation(internal.bountyClaims.create, {
+        bountyId,
+        agentId,
+      });
+      expect(claimId).toBeDefined();
+    });
+
     it("P0-1: rejects claim when Stripe escrow is not funded", async () => {
       const t = convexTest(schema);
       const { agentId, bountyId } = await t.run(async (ctx) => {

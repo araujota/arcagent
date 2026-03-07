@@ -798,6 +798,40 @@ function shouldBeUnranked(stats: any, now: number): boolean {
   );
 }
 
+function resolveTierForQualifiedStats(
+  stats: any,
+  qualified: any[],
+): "S" | "A" | "B" | "C" | "D" | "unranked" {
+  const index = qualified.findIndex((candidate) => candidate._id === stats._id);
+  if (index < 0) return "unranked";
+
+  const percentile = qualified.length > 0 ? index / qualified.length : 1;
+  const score = stats.finalScore ?? stats.compositeScore;
+  const risk = stats.gamingRiskScore ?? 0;
+  const payout = stats.paidPayoutVolumeUsd ?? 0;
+  return applyTierCaps(computeBaseTier(score, percentile, payout, risk), stats);
+}
+
+async function recomputeTierForAgentRow(ctx: any, agentId: any): Promise<"S" | "A" | "B" | "C" | "D" | "unranked" | null> {
+  const now = Date.now();
+  const allStats = await ctx.db.query("agentStats").collect();
+  const stats = allStats.find((entry) => entry.agentId === agentId);
+  if (!stats) return null;
+
+  const nextTier = shouldBeUnranked(stats, now)
+    ? "unranked"
+    : resolveTierForQualifiedStats(
+        stats,
+        allStats.filter((entry) => isTierQualificationEligible(entry, now)).sort(compareTierCandidates),
+      );
+
+  if (stats.tier !== nextTier) {
+    await ctx.db.patch(stats._id, { tier: nextTier });
+  }
+
+  return nextTier;
+}
+
 /**
  * Recompute all tiers based on V2 ranking and anti-gaming policy.
  * Called by daily cron.
@@ -810,14 +844,11 @@ export const recomputeAllTiers = internalMutation({
     const qualified = allStats.filter((stats) => isTierQualificationEligible(stats, now));
     qualified.sort(compareTierCandidates);
 
-    for (let i = 0; i < qualified.length; i++) {
-      const stats = qualified[i];
-      const percentile = qualified.length > 0 ? i / qualified.length : 1;
-      const score = stats.finalScore ?? stats.compositeScore;
-      const risk = stats.gamingRiskScore ?? 0;
-      const payout = stats.paidPayoutVolumeUsd ?? 0;
-      const tier = applyTierCaps(computeBaseTier(score, percentile, payout, risk), stats);
-      await ctx.db.patch(stats._id, { tier });
+    for (const stats of qualified) {
+      const tier = resolveTierForQualifiedStats(stats, qualified);
+      if (stats.tier !== tier) {
+        await ctx.db.patch(stats._id, { tier });
+      }
     }
 
     for (const stats of allStats) {
@@ -825,6 +856,13 @@ export const recomputeAllTiers = internalMutation({
         await ctx.db.patch(stats._id, { tier: "unranked" });
       }
     }
+  },
+});
+
+export const recomputeTierForAgent = internalMutation({
+  args: { agentId: v.id("users") },
+  handler: async (ctx, args) => {
+    return await recomputeTierForAgentRow(ctx, args.agentId);
   },
 });
 

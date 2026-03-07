@@ -37,7 +37,7 @@ export function FeatureFilePicker({ featureFiles, onImport }: FeatureFilePickerP
 
   const toggle = (filePath: string) => {
     setSelected((prev) => {
-      const next = new Set(prev);
+      const next = new Set<string>(prev);
       if (next.has(filePath)) {
         next.delete(filePath);
       } else {

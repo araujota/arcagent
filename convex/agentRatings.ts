@@ -108,6 +108,9 @@ export const submitRating = mutation({
     await ctx.scheduler.runAfter(0, internal.agentStats.recomputeForAgent, {
       agentId,
     });
+    await ctx.scheduler.runAfter(0, internal.agentStats.recomputeTierForAgent, {
+      agentId,
+    });
 
     // Record activity feed event
     await ctx.scheduler.runAfter(0, internal.activityFeed.record, {
@@ -208,6 +211,9 @@ export const submitRatingFromMcp = internalMutation({
     });
 
     await ctx.scheduler.runAfter(0, internal.agentStats.recomputeForAgent, {
+      agentId,
+    });
+    await ctx.scheduler.runAfter(0, internal.agentStats.recomputeTierForAgent, {
       agentId,
     });
 

@@ -300,7 +300,7 @@ Deploy MCP server HTTP runtime and expose it as `https://mcp.arcagent.dev`:
 
 Before agents can `npx arcagent-mcp`:
 
-1. **Set `DEFAULT_CONVEX_URL`** in `mcp-server/src/config.ts` to your production Convex HTTP actions URL (`.convex.site`)
+1. **Set MCP runtime env** with `CONVEX_URL` or `CONVEX_HTTP_ACTIONS_URL` before starting the MCP server
 2. **Build**: `cd mcp-server && npm run build`
 3. **Publish**: `cd mcp-server && npm publish` (or use CI automation below)
 
@@ -376,7 +376,7 @@ cd worker && npm run dev   # Worker (port 3001)
 npm run deploy:worker:local
 
 # 8. Publish the MCP package (so agents can npx arcagent-mcp)
-# First update DEFAULT_CONVEX_URL in mcp-server/src/config.ts to your Convex .site URL
+# The package now requires CONVEX_URL or CONVEX_HTTP_ACTIONS_URL at runtime.
 cd mcp-server && npm install && npm run build && npm publish
 ```
 
