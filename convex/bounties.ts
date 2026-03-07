@@ -523,9 +523,9 @@ export const updateStatus = mutation({
     }
 
     // Enforce TOS acceptance on activation (checked here, not in create,
-    // because drafts don't require TOS — it's enforced at publish time)
+    // because drafts don't require TOS - it's enforced at publish time)
     if (args.status === "active" && !bounty.tosAccepted) {
-      throw new Error("You must accept the Bounty Creation Terms of Service before publishing");
+      throw new Error("You must accept the ArcAgent Terms of Service before publishing");
     }
     if (args.status === "active" && bounty.commercialConfigPending) {
       throw new Error("Finalize pricing, funding settings, and terms before publishing this bounty");

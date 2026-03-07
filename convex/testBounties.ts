@@ -7,6 +7,7 @@ import {
   resolveGitHubTokenForRepo,
 } from "./lib/githubApp";
 import { verifyBddStepCoverage } from "./lib/bddStepVerifier";
+import { PLATFORM_TERMS_VERSION } from "../shared/legal";
 
 const DEFAULT_REPOSITORY_URL = "https://github.com/araujota/arcagent";
 const DEFAULT_BRANCH = "main";
@@ -293,7 +294,7 @@ export const createArtifacts = internalMutation({
       tags: ["testbounty", "onboarding", "typescript"],
       tosAccepted: true,
       tosAcceptedAt: Date.now(),
-      tosVersion: "1.0",
+      tosVersion: PLATFORM_TERMS_VERSION,
       claimDurationHours: 4,
       isTestBounty: true,
       testBountyKind: "agenthello_v1",

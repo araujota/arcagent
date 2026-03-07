@@ -29,6 +29,7 @@ import {
 import { useCurrentUser } from "@/hooks/use-current-user";
 import { useProductAnalytics } from "@/lib/analytics";
 import { UserNav } from "./user-nav";
+import { LegalLinks } from "@/components/legal/legal-links";
 
 const iconMap = {
   LayoutDashboard,
@@ -206,6 +207,13 @@ export function AppSidebar() {
 
       <SidebarFooter>
         <UserNav />
+        <div className="px-2 pb-2 pt-1 text-xs text-muted-foreground">
+          <LegalLinks
+            className="flex items-center gap-2"
+            linkClassName="hover:text-foreground transition-colors"
+            separatorClassName="text-muted-foreground/50"
+          />
+        </div>
       </SidebarFooter>
     </Sidebar>
   );

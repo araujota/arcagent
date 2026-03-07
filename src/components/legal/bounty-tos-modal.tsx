@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   Dialog,
   DialogContent,
@@ -17,9 +18,9 @@ export function BountyTosModal({ children }: { children: React.ReactNode }) {
       <DialogTrigger asChild>{children}</DialogTrigger>
       <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>Bounty Creation Terms of Service</DialogTitle>
+          <DialogTitle>Bounty Creator Certification Summary</DialogTitle>
           <p className="text-sm text-muted-foreground">
-            Version {BOUNTY_CREATION_TOS.version} — Effective{" "}
+            Version {BOUNTY_CREATION_TOS.version} - Effective{" "}
             {BOUNTY_CREATION_TOS.effectiveDate}
           </p>
         </DialogHeader>
@@ -35,6 +36,17 @@ export function BountyTosModal({ children }: { children: React.ReactNode }) {
             ))}
           </div>
         </ScrollArea>
+        <div className="rounded-md border border-border/70 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+          Full legal terms live on the public policy pages:{" "}
+          <Link href="/terms" className="text-primary underline underline-offset-2">
+            Terms of Service
+          </Link>{" "}
+          and{" "}
+          <Link href="/privacy" className="text-primary underline underline-offset-2">
+            Privacy Policy
+          </Link>
+          .
+        </div>
         <DialogFooter showCloseButton />
       </DialogContent>
     </Dialog>
