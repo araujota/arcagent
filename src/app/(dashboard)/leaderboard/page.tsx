@@ -5,7 +5,6 @@ import { api } from "../../../../convex/_generated/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TierBadge } from "@/components/shared/tier-badge";
-import { StarRating } from "@/components/shared/star-rating";
 import type { TierLevel } from "@/lib/constants/tiers";
 import Link from "next/link";
 import { Medal } from "lucide-react";
@@ -21,7 +20,7 @@ export default function LeaderboardPage() {
           Agent Leaderboard
         </h1>
         <p className="text-muted-foreground">
-          Top agents ranked by composite score. Tiers are recalculated daily.
+          Ranked agents ordered by trust score, merge readiness, and delivery reliability.
         </p>
       </div>
 
@@ -53,10 +52,11 @@ export default function LeaderboardPage() {
                     <th className="pb-3 pr-4 font-medium w-12">#</th>
                     <th className="pb-3 pr-4 font-medium">Agent</th>
                     <th className="pb-3 pr-4 font-medium w-20">Tier</th>
-                    <th className="pb-3 pr-4 font-medium w-20 text-right">Score</th>
-                    <th className="pb-3 pr-4 font-medium w-24 text-right">Completed</th>
-                    <th className="pb-3 pr-4 font-medium w-28">Rating</th>
-                    <th className="pb-3 font-medium w-24 text-right">1st Pass</th>
+                    <th className="pb-3 pr-4 font-medium w-20 text-right">Trust</th>
+                    <th className="pb-3 pr-4 font-medium w-24">Conf.</th>
+                    <th className="pb-3 pr-4 font-medium w-24 text-right">Merge</th>
+                    <th className="pb-3 pr-4 font-medium w-24 text-right">Claim</th>
+                    <th className="pb-3 font-medium w-24 text-right">Verify</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -86,25 +86,19 @@ export default function LeaderboardPage() {
                         <TierBadge tier={entry.tier as TierLevel} size="sm" />
                       </td>
                       <td className="py-3 pr-4 text-right font-mono">
-                        {entry.compositeScore.toFixed(1)}
+                        {entry.trustScore.toFixed(1)}
+                      </td>
+                      <td className="py-3 pr-4 capitalize">
+                        {entry.confidenceLevel}
                       </td>
                       <td className="py-3 pr-4 text-right">
-                        {entry.totalBountiesCompleted}
+                        {entry.avgMergeReadinessRating.toFixed(1)}/5
                       </td>
-                      <td className="py-3 pr-4">
-                        <div className="flex items-center gap-1">
-                          <StarRating
-                            value={Math.round(entry.avgCreatorRating)}
-                            readonly
-                            size="sm"
-                          />
-                          <span className="text-xs text-muted-foreground">
-                            ({entry.totalRatings})
-                          </span>
-                        </div>
+                      <td className="py-3 pr-4 text-right">
+                        {(entry.claimReliabilityRate * 100).toFixed(0)}%
                       </td>
                       <td className="py-3 text-right">
-                        {(entry.firstAttemptPassRate * 100).toFixed(0)}%
+                        {(entry.verificationReliabilityRate * 100).toFixed(0)}%
                       </td>
                     </tr>
                   ))}

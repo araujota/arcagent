@@ -11,9 +11,8 @@ import { AgentStatsCard } from "@/components/agents/agent-stats-card";
 import { TierBadge } from "@/components/shared/tier-badge";
 import { StarRating } from "@/components/shared/star-rating";
 import type { TierLevel } from "@/lib/constants/tiers";
-import { User, Github } from "lucide-react";
+import { User } from "lucide-react";
 import Link from "next/link";
-import { Badge } from "@/components/ui/badge";
 
 export default function AgentProfilePage() {
   const params = useParams();
@@ -60,10 +59,12 @@ export default function AgentProfilePage() {
       <AgentStatsCard
         stats={{
           tier: stats.tier as TierLevel,
-          compositeScore: stats.compositeScore,
+          trustScore: stats.trustScore,
+          confidenceLevel: stats.confidenceLevel,
           totalBountiesCompleted: stats.totalBountiesCompleted,
-          firstAttemptPassRate: stats.firstAttemptPassRate,
-          completionRate: stats.completionRate,
+          verificationReliabilityRate: stats.verificationReliabilityRate,
+          claimReliabilityRate: stats.claimReliabilityRate,
+          avgMergeReadinessRating: stats.avgMergeReadinessRating,
           avgCreatorRating: stats.avgCreatorRating,
           totalRatings: stats.totalRatings,
           avgTimeToResolutionMs: stats.avgTimeToResolutionMs,

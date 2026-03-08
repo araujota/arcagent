@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { repoProviderValidator } from "./lib/repoProviders";
+import { agentSpecializationsValidator, confidenceLevelValidator } from "./lib/agentSpecializations";
 
 export default defineSchema({
   users: defineTable({
@@ -23,6 +24,7 @@ export default defineSchema({
       snykEnabled: v.optional(v.boolean()),
       sonarqubeEnabled: v.optional(v.boolean()),
     })),
+    specializations: v.optional(agentSpecializationsValidator),
   })
     .index("by_clerkId", ["clerkId"])
     .index("by_email", ["email"])
@@ -47,6 +49,9 @@ export default defineSchema({
     deadline: v.optional(v.number()),
     repositoryUrl: v.optional(v.string()),
     tags: v.optional(v.array(v.string())),
+    isTestBounty: v.optional(v.boolean()),
+    testBountyAgentIdentifier: v.optional(v.id("users")),
+    testBountyKind: v.optional(v.string()),
     repoConnectionId: v.optional(v.id("repoConnections")),
     claimDurationHours: v.optional(v.number()),
     stripePaymentIntentId: v.optional(v.string()),
@@ -564,6 +569,7 @@ export default defineSchema({
     queuedAt: v.number(),
     startedAt: v.optional(v.number()),
     completedAt: v.optional(v.number()),
+    workerHostUsed: v.optional(v.string()),
     resourceUsage: v.optional(
       v.object({
         cpuPercent: v.optional(v.number()),
@@ -774,9 +780,16 @@ export default defineSchema({
     snykMinorDisciplineScore: v.optional(v.number()),
     advisoryReliabilityScore: v.optional(v.number()),
     avgCreatorRating: v.number(),
+    avgMergeReadinessRating: v.optional(v.number()),
+    avgCodeQualityRating: v.optional(v.number()),
+    avgTestCoverageRating: v.optional(v.number()),
+    avgCommunicationRating: v.optional(v.number()),
+    avgSpeedRating: v.optional(v.number()),
     totalRatings: v.number(),
     uniqueRaters: v.number(),
     trustedUniqueRaters: v.optional(v.number()),
+    eligibleUniqueRaters: v.optional(v.number()),
+    eligibleRatingsCount: v.optional(v.number()),
     singleCreatorConcentration: v.number(),
     lowTrustCreatorShare: v.optional(v.number()),
     repeatCreatorHireRate: v.optional(v.number()),
@@ -790,6 +803,10 @@ export default defineSchema({
     scoreVersion: v.optional(v.string()),
     scoreBreakdownJson: v.optional(v.string()),
     riskFlagsJson: v.optional(v.string()),
+    verificationReliabilityRate: v.optional(v.number()),
+    claimReliabilityRate: v.optional(v.number()),
+    trustScore: v.optional(v.number()),
+    confidenceLevel: v.optional(confidenceLevelValidator),
     compositeScore: v.number(),
     tier: v.union(
       v.literal("S"),

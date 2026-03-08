@@ -11,20 +11,24 @@ import { StarRating } from "@/components/shared/star-rating";
 import type { TierLevel } from "@/lib/constants/tiers";
 import {
   Trophy,
-  Zap,
-  Target,
+  ShieldCheck,
+  Shield,
   Clock,
   CheckCircle2,
   Users,
+  BadgeCheck,
 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 
 interface AgentStatsCardProps {
   stats: {
     tier: TierLevel;
-    compositeScore: number;
+    trustScore: number;
+    confidenceLevel: "low" | "medium" | "high";
     totalBountiesCompleted: number;
-    firstAttemptPassRate: number;
-    completionRate: number;
+    verificationReliabilityRate: number;
+    claimReliabilityRate: number;
+    avgMergeReadinessRating: number;
     avgCreatorRating: number;
     totalRatings: number;
     avgTimeToResolutionMs: number;
@@ -45,15 +49,20 @@ export function AgentStatsCard({ stats }: AgentStatsCardProps) {
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="text-base">Agent Stats</CardTitle>
-          <TierBadge tier={stats.tier} size="lg" />
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="capitalize">
+              {stats.confidenceLevel} confidence
+            </Badge>
+            <TierBadge tier={stats.tier} size="lg" />
+          </div>
         </div>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
           <Stat
             icon={<Trophy className="h-4 w-4 text-amber-500" />}
-            label="Score"
-            value={`${stats.compositeScore.toFixed(1)}`}
+            label="Trust Score"
+            value={`${stats.trustScore.toFixed(1)}`}
           />
           <Stat
             icon={<CheckCircle2 className="h-4 w-4 text-green-500" />}
@@ -63,7 +72,7 @@ export function AgentStatsCard({ stats }: AgentStatsCardProps) {
           <div className="space-y-1">
             <div className="flex items-center gap-1.5">
               <Users className="h-4 w-4 text-purple-500" />
-              <span className="text-xs text-muted-foreground">Rating</span>
+              <span className="text-xs text-muted-foreground">Creator Rating</span>
             </div>
             <div className="flex items-center gap-1.5">
               <StarRating value={Math.round(stats.avgCreatorRating)} readonly size="sm" />
@@ -73,14 +82,19 @@ export function AgentStatsCard({ stats }: AgentStatsCardProps) {
             </div>
           </div>
           <Stat
-            icon={<Target className="h-4 w-4 text-blue-500" />}
-            label="1st Pass Rate"
-            value={`${(stats.firstAttemptPassRate * 100).toFixed(0)}%`}
+            icon={<BadgeCheck className="h-4 w-4 text-blue-500" />}
+            label="Merge Ready"
+            value={`${stats.avgMergeReadinessRating.toFixed(1)}/5`}
           />
           <Stat
-            icon={<Zap className="h-4 w-4 text-orange-500" />}
-            label="Completion"
-            value={`${(stats.completionRate * 100).toFixed(0)}%`}
+            icon={<Shield className="h-4 w-4 text-orange-500" />}
+            label="Verify Reliab."
+            value={`${(stats.verificationReliabilityRate * 100).toFixed(0)}%`}
+          />
+          <Stat
+            icon={<ShieldCheck className="h-4 w-4 text-emerald-500" />}
+            label="Claim Reliab."
+            value={`${(stats.claimReliabilityRate * 100).toFixed(0)}%`}
           />
           <Stat
             icon={<Clock className="h-4 w-4 text-muted-foreground" />}

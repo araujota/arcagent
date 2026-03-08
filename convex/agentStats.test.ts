@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import schema from "./schema";
 import { internal } from "./_generated/api";
 import {
@@ -11,449 +11,169 @@ import {
   seedRating,
 } from "./__tests__/helpers";
 
-// recomputeForAgent may trigger background scheduled functions via
-// ctx.scheduler.runAfter(). In convex-test these can cause "Write outside of
-// transaction" unhandled rejections. We suppress them here since the mutation
-// itself completes correctly.
 let rejectionHandler: (err: unknown) => void;
-const TRUSTED_AGE_MS = 40 * 24 * 60 * 60 * 1000;
 beforeEach(() => {
   rejectionHandler = () => {};
   process.on("unhandledRejection", rejectionHandler);
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
 });
 afterEach(() => {
   process.removeListener("unhandledRejection", rejectionHandler);
-  vi.useRealTimers();
 });
 
-/**
- * Helper: seed a fully completed bounty for an agent with a passing
- * submission, verification, and a tier-eligible rating from a given creator.
- */
-async function seedCompletedBountyWithRating(
+async function seedCompletedClaim(
   ctx: any,
   agentId: any,
   creatorId: any,
-  overrides: {
-    bountyReward?: number;
+  options: {
+    reward?: number;
+    claimDurationHours?: number;
+    claimedAtOffsetMs?: number;
+    completedAtOffsetMs?: number;
+    tierEligible?: boolean;
     ratingOverrides?: Record<string, unknown>;
   } = {},
 ) {
+  const now = Date.now();
+  const claimedAt = now - (options.claimedAtOffsetMs ?? 2 * 60 * 60 * 1000);
+  const completedAt = now - (options.completedAtOffsetMs ?? 0);
+
   const bountyId = await seedBounty(ctx, creatorId, {
     status: "completed",
-    reward: overrides.bountyReward ?? 100,
+    reward: options.reward ?? 100,
+    claimDurationHours: options.claimDurationHours ?? 4,
   });
-
-  const now = Date.now();
   await seedClaim(ctx, bountyId, agentId, {
     status: "completed",
-    claimedAt: now - 2 * 60 * 60 * 1000, // 2 hours ago
+    claimedAt,
   });
-
   const submissionId = await seedSubmission(ctx, bountyId, agentId, {
     status: "passed",
   });
-
   await seedVerification(ctx, submissionId, bountyId, {
     status: "passed",
-    completedAt: now,
+    completedAt,
   });
-
   await seedRating(ctx, bountyId, agentId, creatorId, {
-    tierEligible: true,
+    tierEligible: options.tierEligible ?? true,
     createdAt: now,
-    ...(overrides.ratingOverrides ?? {}),
+    ...(options.ratingOverrides ?? {}),
   });
-
-  await ctx.db.insert("payments" as any, {
-    bountyId,
-    recipientId: agentId,
-    amount: overrides.bountyReward ?? 100,
-    currency: "USD",
-    method: "stripe",
-    status: "completed",
-    createdAt: now,
-  });
-
-  return bountyId;
 }
 
-async function seedTrustedCreator(ctx: any) {
-  const creatorId = await seedUser(ctx, { role: "creator" });
-  const recipientId = await seedUser(ctx, { role: "agent" });
-
-  for (let i = 0; i < 2; i++) {
-    const bountyId = await seedBounty(ctx, creatorId, {
-      status: "completed",
-      reward: 100,
-    });
-    await ctx.db.insert("payments" as any, {
-      bountyId,
-      recipientId,
-      amount: 100,
-      currency: "USD",
-      method: "stripe",
-      status: "completed",
-      createdAt: Date.now(),
-    });
-  }
-
-  return creatorId;
-}
-
-async function seedAgentStatsRow(
+async function seedFailedTerminalClaim(
   ctx: any,
   agentId: any,
-  overrides: Record<string, unknown> = {},
+  creatorId: any,
+  status: "released" | "expired",
 ) {
-  const now = Date.now();
-  return await ctx.db.insert("agentStats" as any, {
-    agentId,
-    totalBountiesCompleted: 5,
-    totalBountiesClaimed: 5,
-    totalBountiesExpired: 0,
-    paidBountiesCompleted: 5,
-    paidPayoutVolumeUsd: 1000,
-    totalSubmissions: 5,
-    totalFirstAttemptPasses: 5,
-    totalGateWarnings: 0,
-    totalGatePasses: 5,
-    avgTimeToResolutionMs: 60_000,
-    avgSubmissionsPerBounty: 1,
-    firstAttemptPassRate: 1,
-    completionRate: 1,
-    gateQualityScore: 1,
-    avgCreatorRating: 5,
-    totalRatings: 5,
-    uniqueRaters: 3,
-    trustedUniqueRaters: 3,
-    singleCreatorConcentration: 0.33,
-    gamingRiskScore: 0,
-    finalScore: 80,
-    compositeScore: 80,
-    tier: "A",
-    lastComputedAt: now,
-    ...overrides,
+  const bountyId = await seedBounty(ctx, creatorId, {
+    status: "active",
+    reward: 100,
+  });
+  await seedClaim(ctx, bountyId, agentId, {
+    status,
+    claimedAt: Date.now() - 60 * 60 * 1000,
+  });
+  const submissionId = await seedSubmission(ctx, bountyId, agentId, {
+    status: "failed",
+  });
+  await seedVerification(ctx, submissionId, bountyId, {
+    status: "failed",
+    completedAt: Date.now(),
   });
 }
 
 describe("recomputeForAgent", () => {
-  it("creates stats for agent with completed bounties", async () => {
+  it("computes trust-oriented rating dimensions", async () => {
     const t = convexTest(schema);
-
     const { agentId } = await t.run(async (ctx) => {
-      const creatorId = await seedTrustedCreator(ctx);
+      const creatorIds = await Promise.all([
+        seedUser(ctx, { role: "creator" }),
+        seedUser(ctx, { role: "creator" }),
+        seedUser(ctx, { role: "creator" }),
+      ]);
       const agentId = await seedUser(ctx, { role: "agent" });
 
-      await seedCompletedBountyWithRating(ctx, agentId, creatorId);
+      for (const creatorId of creatorIds) {
+        await seedCompletedClaim(ctx, agentId, creatorId, {
+          ratingOverrides: {
+            codeQuality: 5,
+            speed: 4,
+            mergedWithoutChanges: 5,
+            communication: 3,
+            testCoverage: 4,
+          },
+        });
+      }
 
       return { agentId };
     });
 
-    vi.advanceTimersByTime(TRUSTED_AGE_MS);
-    await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
-
-    const stats = await t.run(async (ctx) => {
-      return await ctx.db
-        .query("agentStats")
-        .withIndex("by_agentId", (q: any) => q.eq("agentId", agentId))
-        .first();
-    });
-
-    expect(stats).not.toBeNull();
-    expect(stats!.totalBountiesCompleted).toBe(1);
-    expect(stats!.compositeScore).toBeGreaterThan(0);
-    expect(stats!.agentId).toEqual(agentId);
-  });
-
-  it("handles agent with no completed bounties", async () => {
-    const t = convexTest(schema);
-
-    const { agentId } = await t.run(async (ctx) => {
-      const agentId = await seedUser(ctx, { role: "agent" });
-      return { agentId };
-    });
-
-    vi.advanceTimersByTime(TRUSTED_AGE_MS);
-    await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
-
-    const stats = await t.run(async (ctx) => {
-      return await ctx.db
-        .query("agentStats")
-        .withIndex("by_agentId", (q: any) => q.eq("agentId", agentId))
-        .first();
-    });
-
-    expect(stats).not.toBeNull();
-    expect(stats!.totalBountiesCompleted).toBe(0);
-    // With no claims and no ratings, the composite score is a baseline value
-    // derived from neutral defaults for missing data (creatorRating=50,
-    // timeToResolution=50) weighted by SCORE_WEIGHTS. It should NOT be a high
-    // score. The key invariant is totalBountiesCompleted=0.
-    expect(stats!.totalSubmissions).toBe(0);
-    expect(stats!.completionRate).toBe(0);
-    expect(stats!.tier).toBe("unranked");
-  });
-
-  it("incorporates creator ratings into score", async () => {
-    const t = convexTest(schema);
-
-    const { agentId } = await t.run(async (ctx) => {
-      const creatorId = await seedTrustedCreator(ctx);
-      const agentId = await seedUser(ctx, { role: "agent" });
-
-      await seedCompletedBountyWithRating(ctx, agentId, creatorId, {
-        ratingOverrides: {
-          codeQuality: 5,
-          speed: 5,
-          mergedWithoutChanges: 5,
-          communication: 5,
-          testCoverage: 5,
-        },
-      });
-
-      return { agentId };
-    });
-
-    vi.advanceTimersByTime(TRUSTED_AGE_MS);
-    await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
-
-    const stats = await t.run(async (ctx) => {
-      return await ctx.db
-        .query("agentStats")
-        .withIndex("by_agentId", (q: any) => q.eq("agentId", agentId))
-        .first();
-    });
-
-    expect(stats).not.toBeNull();
-    expect(stats!.avgCreatorRating).toBe(5);
-  });
-
-  it("excludes test bounties from paid ranking metrics", async () => {
-    const t = convexTest(schema);
-
-    const { agentId } = await t.run(async (ctx) => {
-      const creatorId = await seedTrustedCreator(ctx);
-      const agentId = await seedUser(ctx, { role: "agent" });
-      const now = Date.now();
-
-      await seedCompletedBountyWithRating(ctx, agentId, creatorId, {
-        bountyReward: 100,
-      });
-
-      const testBountyId = await seedBounty(ctx, creatorId, {
-        status: "completed",
-        reward: 500,
-        isTestBounty: true,
-      });
-      await seedClaim(ctx, testBountyId, agentId, {
-        status: "completed",
-        claimedAt: now - 60 * 60 * 1000,
-      });
-      await seedRating(ctx, testBountyId, agentId, creatorId, {
-        codeQuality: 5,
-        speed: 5,
-        mergedWithoutChanges: 5,
-        communication: 5,
-        testCoverage: 5,
-        tierEligible: true,
-        createdAt: now,
-      });
-      await ctx.db.insert("payments" as any, {
-        bountyId: testBountyId,
-        recipientId: agentId,
-        amount: 500,
-        currency: "USD",
-        method: "stripe",
-        status: "completed",
-        createdAt: now,
-      });
-
-      return { agentId };
-    });
-
-    vi.advanceTimersByTime(TRUSTED_AGE_MS);
     await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
 
     const stats = await t.run(async (ctx) =>
-      ctx.db
-        .query("agentStats")
-        .withIndex("by_agentId", (q: any) => q.eq("agentId", agentId))
-        .first()
+      ctx.db.query("agentStats").withIndex("by_agentId", (q: any) => q.eq("agentId", agentId)).first(),
     );
 
     expect(stats).not.toBeNull();
-    expect(stats!.totalBountiesCompleted).toBe(2);
-    expect(stats!.paidBountiesCompleted).toBe(1);
-    expect(stats!.paidPayoutVolumeUsd).toBe(100);
+    expect(stats!.avgMergeReadinessRating).toBeCloseTo(5, 5);
+    expect(stats!.avgCodeQualityRating).toBeCloseTo(5, 5);
+    expect(stats!.avgTestCoverageRating).toBeCloseTo(4, 5);
+    expect(stats!.avgCommunicationRating).toBeCloseTo(3, 5);
+    expect(stats!.avgSpeedRating).toBeCloseTo(4, 5);
+    expect(stats!.trustScore).toBeCloseTo(stats!.compositeScore, 10);
   });
 
-  it("excludes fresh sybil creators from trusted unique rater gate", async () => {
+  it("uses only eligible raters for qualification", async () => {
     const t = convexTest(schema);
-
     const { agentId } = await t.run(async (ctx) => {
+      const creators = await Promise.all([
+        seedUser(ctx, { role: "creator" }),
+        seedUser(ctx, { role: "creator" }),
+        seedUser(ctx, { role: "creator" }),
+      ]);
       const agentId = await seedUser(ctx, { role: "agent" });
-      for (let i = 0; i < 3; i++) {
-        const creatorId = await seedUser(ctx, { role: "creator" });
-        await seedCompletedBountyWithRating(ctx, agentId, creatorId, {
-          bountyReward: 100,
-        });
-      }
+
+      await seedCompletedClaim(ctx, agentId, creators[0]);
+      await seedCompletedClaim(ctx, agentId, creators[0]);
+      await seedCompletedClaim(ctx, agentId, creators[1]);
+      await seedCompletedClaim(ctx, agentId, creators[1]);
+      await seedCompletedClaim(ctx, agentId, creators[2], {
+        reward: 20,
+        tierEligible: false,
+      });
+
       return { agentId };
     });
 
     await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
+    await t.mutation(internal.agentStats.recomputeAllTiers, {});
 
     const stats = await t.run(async (ctx) =>
-      ctx.db
-        .query("agentStats")
-        .withIndex("by_agentId", (q: any) => q.eq("agentId", agentId))
-        .first()
+      ctx.db.query("agentStats").withIndex("by_agentId", (q: any) => q.eq("agentId", agentId)).first(),
     );
 
     expect(stats).not.toBeNull();
     expect(stats!.uniqueRaters).toBe(3);
-    expect(stats!.trustedUniqueRaters).toBe(0);
+    expect(stats!.eligibleUniqueRaters).toBe(2);
+    expect(stats!.tier).toBe("unranked");
   });
 
-  it("derives Sonar/Snyk risk burdens and advisory process reliability from normalized receipts", async () => {
+  it("does not let released or expired claims escape verification reliability", async () => {
     const t = convexTest(schema);
-
     const { agentId } = await t.run(async (ctx) => {
-      const creatorId = await seedTrustedCreator(ctx);
+      const creators = await Promise.all([
+        seedUser(ctx, { role: "creator" }),
+        seedUser(ctx, { role: "creator" }),
+        seedUser(ctx, { role: "creator" }),
+      ]);
       const agentId = await seedUser(ctx, { role: "agent" });
 
-      const bountyId = await seedBounty(ctx, creatorId, {
-        status: "completed",
-        reward: 100,
-      });
-
-      const now = Date.now();
-      await seedClaim(ctx, bountyId, agentId, {
-        status: "completed",
-        claimedAt: now - 2 * 60 * 60 * 1000,
-      });
-
-      const submissionId = await seedSubmission(ctx, bountyId, agentId, {
-        status: "passed",
-      });
-
-      const verificationId = await seedVerification(ctx, submissionId, bountyId, {
-        status: "passed",
-        completedAt: now,
-      });
-
-      await seedRating(ctx, bountyId, agentId, creatorId, {
-        tierEligible: true,
-        createdAt: now,
-      });
-
-      await ctx.db.insert("payments" as any, {
-        bountyId,
-        recipientId: agentId,
-        amount: 100,
-        currency: "USD",
-        method: "stripe",
-        status: "completed",
-        createdAt: now,
-      });
-
-      await ctx.db.insert("verificationReceipts", {
-        verificationId,
-        submissionId,
-        bountyId,
-        agentId,
-        attemptNumber: 1,
-        legKey: "snyk_no_new_high_critical",
-        orderIndex: 6,
-        status: "pass",
-        blocking: false,
-        startedAt: now - 60_000,
-        completedAt: now - 59_000,
-        durationMs: 1_000,
-        summaryLine: "PASS",
-        normalizedJson: JSON.stringify({
-          tool: "snyk",
-          blocking: {
-            isBlocking: false,
-            reasonCode: "within_threshold",
-            reasonText: "PASS",
-            threshold: "new_high_critical_delta>0",
-            comparedToBaseline: true,
-          },
-          counts: {
-            critical: 0,
-            high: 0,
-            medium: 2,
-            low: 1,
-            bugs: 0,
-            codeSmells: 0,
-            complexityDelta: 0,
-            introducedTotal: 3,
-          },
-          issues: [],
-          truncated: false,
-        }),
-        createdAt: now,
-      });
-
-      await ctx.db.insert("verificationReceipts", {
-        verificationId,
-        submissionId,
-        bountyId,
-        agentId,
-        attemptNumber: 1,
-        legKey: "sonarqube_new_code",
-        orderIndex: 7,
-        status: "pass",
-        blocking: false,
-        startedAt: now - 58_000,
-        completedAt: now - 57_000,
-        durationMs: 1_000,
-        summaryLine: "PASS",
-        normalizedJson: JSON.stringify({
-          tool: "sonarqube",
-          blocking: {
-            isBlocking: false,
-            reasonCode: "quality_gate_passed",
-            reasonText: "PASS",
-            threshold: "quality_gate=OK",
-            comparedToBaseline: true,
-          },
-          counts: {
-            critical: 0,
-            high: 0,
-            medium: 0,
-            low: 0,
-            bugs: 2,
-            codeSmells: 3,
-            complexityDelta: 1,
-            introducedTotal: 6,
-          },
-          issues: [],
-          truncated: false,
-        }),
-        createdAt: now,
-      });
-
-      await ctx.db.insert("verificationReceipts", {
-        verificationId,
-        submissionId,
-        bountyId,
-        agentId,
-        attemptNumber: 1,
-        legKey: "lint_no_new_errors",
-        orderIndex: 3,
-        status: "skipped_policy_due_process",
-        blocking: false,
-        startedAt: now - 70_000,
-        completedAt: now - 69_000,
-        durationMs: 1_000,
-        summaryLine: "Lint process unavailable",
-        createdAt: now,
-      });
+      for (const creatorId of creators) {
+        await seedCompletedClaim(ctx, agentId, creatorId);
+      }
+      await seedFailedTerminalClaim(ctx, agentId, creators[0], "released");
+      await seedFailedTerminalClaim(ctx, agentId, creators[1], "expired");
 
       return { agentId };
     });
@@ -461,366 +181,224 @@ describe("recomputeForAgent", () => {
     await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
 
     const stats = await t.run(async (ctx) =>
-      ctx.db
-        .query("agentStats")
-        .withIndex("by_agentId", (q: any) => q.eq("agentId", agentId))
-        .first()
+      ctx.db.query("agentStats").withIndex("by_agentId", (q: any) => q.eq("agentId", agentId)).first(),
     );
 
     expect(stats).not.toBeNull();
-    expect(stats!.snykMinorBurden).toBeGreaterThan(0);
-    expect(stats!.sonarRiskBurden).toBeGreaterThan(0);
-    expect(stats!.advisoryProcessFailureRate).toBeGreaterThan(0);
-    expect(stats!.snykMinorDisciplineScore).toBeLessThan(100);
-    expect(stats!.sonarRiskDisciplineScore).toBeLessThan(100);
-    expect(stats!.advisoryReliabilityScore).toBeLessThan(100);
-  });
-});
-
-describe("recomputeAllTiers", () => {
-  it("assigns tiers to qualified agents", async () => {
-    const t = convexTest(schema);
-
-    // We need 6+ qualified agents, each with >=5 completed bounties (MIN_COMPLETED_BOUNTIES)
-    // and >=3 unique raters (MIN_UNIQUE_RATERS).
-    const NUM_AGENTS = 7;
-    const NUM_BOUNTIES_EACH = 5;
-    const NUM_UNIQUE_CREATORS = 3;
-
-    const agentIds = await t.run(async (ctx) => {
-      // Create unique creators for ratings
-      const creatorIds: any[] = [];
-      for (let c = 0; c < NUM_UNIQUE_CREATORS; c++) {
-        creatorIds.push(await seedTrustedCreator(ctx));
-      }
-
-      // Create agents with completed bounties and ratings
-      const agentIds: any[] = [];
-      for (let a = 0; a < NUM_AGENTS; a++) {
-        const agentId = await seedUser(ctx, { role: "agent" });
-        agentIds.push(agentId);
-
-        for (let b = 0; b < NUM_BOUNTIES_EACH; b++) {
-          // Cycle through creators so each agent gets ratings from all 3 creators
-          const creatorId = creatorIds[b % NUM_UNIQUE_CREATORS];
-
-          // Give the first agent highest ratings so they rank at top
-          const ratingValue = a === 0 ? 5 : Math.max(1, 5 - a);
-
-          await seedCompletedBountyWithRating(ctx, agentId, creatorId, {
-            bountyReward: 250,
-            ratingOverrides: {
-              codeQuality: ratingValue,
-              speed: ratingValue,
-              mergedWithoutChanges: ratingValue,
-              communication: ratingValue,
-              testCoverage: ratingValue,
-            },
-          });
-        }
-      }
-
-      return agentIds;
-    });
-
-    vi.advanceTimersByTime(TRUSTED_AGE_MS);
-    // Recompute stats for all agents
-    for (const agentId of agentIds) {
-      await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
-    }
-
-    // Run tier assignment
-    await t.mutation(internal.agentStats.recomputeAllTiers, {});
-
-    // The top agent (index 0, all 5s) should satisfy A-tier constraints.
-    const topAgentStats = await t.run(async (ctx) => {
-      return await ctx.db
-        .query("agentStats")
-        .withIndex("by_agentId", (q: any) => q.eq("agentId", agentIds[0]))
-        .first();
-    });
-
-    expect(topAgentStats).not.toBeNull();
-    expect(topAgentStats!.tier).toBe("A");
+    expect(stats!.verificationReliabilityRate).toBeCloseTo(3 / 5, 5);
+    expect(stats!.claimReliabilityRate).toBeCloseTo(3 / 5, 5);
+    expect(stats!.firstAttemptPassRate).toBeCloseTo(3 / 5, 5);
   });
 
-  it("marks unqualified agents as unranked", async () => {
+  it("trust score does not depend on claim duration", async () => {
     const t = convexTest(schema);
+    const { fastAgentId, slowWindowAgentId } = await t.run(async (ctx) => {
+      const creators = await Promise.all([
+        seedUser(ctx, { role: "creator" }),
+        seedUser(ctx, { role: "creator" }),
+        seedUser(ctx, { role: "creator" }),
+      ]);
+      const fastAgentId = await seedUser(ctx, { role: "agent" });
+      const slowWindowAgentId = await seedUser(ctx, { role: "agent" });
 
-    const { agentId } = await t.run(async (ctx) => {
-      const creatorId = await seedUser(ctx, { role: "creator" });
-      const agentId = await seedUser(ctx, { role: "agent" });
-
-      // Only 1 completed bounty -- below MIN_COMPLETED_BOUNTIES=5
-      await seedCompletedBountyWithRating(ctx, agentId, creatorId);
-
-      return { agentId };
-    });
-
-    await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
-    await t.mutation(internal.agentStats.recomputeAllTiers, {});
-
-    const stats = await t.run(async (ctx) => {
-      return await ctx.db
-        .query("agentStats")
-        .withIndex("by_agentId", (q: any) => q.eq("agentId", agentId))
-        .first();
-    });
-
-    expect(stats).not.toBeNull();
-    expect(stats!.tier).toBe("unranked");
-  });
-
-  it("prevents S/A tiers when payout volume is below high-tier gates", async () => {
-    const t = convexTest(schema);
-
-    const NUM_AGENTS = 7;
-    const NUM_BOUNTIES_EACH = 5;
-    const NUM_UNIQUE_CREATORS = 3;
-
-    const agentIds = await t.run(async (ctx) => {
-      const creatorIds: any[] = [];
-      for (let c = 0; c < NUM_UNIQUE_CREATORS; c++) {
-        creatorIds.push(await seedTrustedCreator(ctx));
-      }
-
-      const agentIds: any[] = [];
-      for (let a = 0; a < NUM_AGENTS; a++) {
-        const agentId = await seedUser(ctx, { role: "agent" });
-        agentIds.push(agentId);
-
-        for (let b = 0; b < NUM_BOUNTIES_EACH; b++) {
-          const creatorId = creatorIds[b % NUM_UNIQUE_CREATORS];
-          const ratingValue = a === 0 ? 5 : 2;
-          await seedCompletedBountyWithRating(ctx, agentId, creatorId, {
-            bountyReward: 100, // 5 x $100 = $500 (below A/S payout gates)
-            ratingOverrides: {
-              codeQuality: ratingValue,
-              speed: ratingValue,
-              mergedWithoutChanges: ratingValue,
-              communication: ratingValue,
-              testCoverage: ratingValue,
-            },
-          });
-        }
-      }
-
-      return agentIds;
-    });
-
-    vi.advanceTimersByTime(TRUSTED_AGE_MS);
-    for (const agentId of agentIds) {
-      await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
-    }
-    await t.mutation(internal.agentStats.recomputeAllTiers, {});
-
-    const topStats = await t.run(async (ctx) =>
-      ctx.db
-        .query("agentStats")
-        .withIndex("by_agentId", (q: any) => q.eq("agentId", agentIds[0]))
-        .first()
-    );
-
-    expect(topStats).not.toBeNull();
-    expect(topStats!.paidPayoutVolumeUsd).toBe(500);
-    expect(["S", "A"]).not.toContain(topStats!.tier);
-    expect(topStats!.tier).not.toBe("unranked");
-  });
-
-  it("concentration cap: high-concentration agent capped at B", async () => {
-    const t = convexTest(schema);
-
-    // The concentrated agent needs:
-    // - >=5 completed bounties (MIN_COMPLETED_BOUNTIES)
-    // - >=3 unique raters (MIN_UNIQUE_RATERS) to be qualified
-    // - singleCreatorConcentration > 0.6 (CONCENTRATION_CAP_THRESHOLD)
-    //
-    // Strategy: 7 total bounties/ratings — 5 from creator A, 1 from creator B,
-    // 1 from creator C. This gives uniqueRaters=3 and concentration=5/7~=0.71.
-    const NUM_OTHER_AGENTS = 6;
-    const NUM_UNIQUE_CREATORS = 4; // 1 primary + 3 diversified for other agents
-
-    const { concentratedAgentId, otherAgentIds } = await t.run(async (ctx) => {
-      const creatorIds: any[] = [];
-      for (let c = 0; c < NUM_UNIQUE_CREATORS; c++) {
-        creatorIds.push(await seedTrustedCreator(ctx));
-      }
-
-      const primaryCreator = creatorIds[0];
-      const secondaryCreator1 = creatorIds[1];
-      const secondaryCreator2 = creatorIds[2];
-
-      // Create the concentrated agent with high ratings
-      const concentratedAgentId = await seedUser(ctx, { role: "agent" });
-      const perfectRatings = {
-        codeQuality: 5,
-        speed: 5,
-        mergedWithoutChanges: 5,
-        communication: 5,
-        testCoverage: 5,
-      };
-
-      // 5 bounties from the primary creator (high concentration)
-      for (let b = 0; b < 5; b++) {
-        await seedCompletedBountyWithRating(ctx, concentratedAgentId, primaryCreator, {
-          bountyReward: 300,
-          ratingOverrides: perfectRatings,
+      for (const creatorId of creators) {
+        await seedCompletedClaim(ctx, fastAgentId, creatorId, {
+          claimDurationHours: 4,
+          claimedAtOffsetMs: 2 * 60 * 60 * 1000,
+        });
+        await seedCompletedClaim(ctx, slowWindowAgentId, creatorId, {
+          claimDurationHours: 12,
+          claimedAtOffsetMs: 2 * 60 * 60 * 1000,
         });
       }
 
-      // 1 bounty each from two other creators (to reach uniqueRaters=3)
-      await seedCompletedBountyWithRating(ctx, concentratedAgentId, secondaryCreator1, {
-        bountyReward: 300,
-        ratingOverrides: perfectRatings,
-      });
-      await seedCompletedBountyWithRating(ctx, concentratedAgentId, secondaryCreator2, {
-        bountyReward: 300,
-        ratingOverrides: perfectRatings,
-      });
-
-      // Create other qualified agents with lower ratings but diversified creators.
-      // These agents ensure there is a large enough pool for tier assignment.
-      const otherAgentIds: any[] = [];
-      for (let a = 0; a < NUM_OTHER_AGENTS; a++) {
-        const otherAgentId = await seedUser(ctx, { role: "agent" });
-        otherAgentIds.push(otherAgentId);
-
-        // 5 bounties cycling through 3 different creators
-        for (let b = 0; b < 5; b++) {
-          const creatorId = creatorIds[(b % 3) + 1]; // use creatorIds[1..3]
-          await seedCompletedBountyWithRating(ctx, otherAgentId, creatorId, {
-            bountyReward: 300,
-            ratingOverrides: {
-              codeQuality: 2,
-              speed: 2,
-              mergedWithoutChanges: 2,
-              communication: 2,
-              testCoverage: 2,
-            },
-          });
-        }
-      }
-
-      return { concentratedAgentId, otherAgentIds };
+      return { fastAgentId, slowWindowAgentId };
     });
 
-    vi.advanceTimersByTime(TRUSTED_AGE_MS);
-    // Recompute stats for all agents
+    await t.mutation(internal.agentStats.recomputeForAgent, { agentId: fastAgentId });
     await t.mutation(internal.agentStats.recomputeForAgent, {
-      agentId: concentratedAgentId,
-    });
-    for (const agentId of otherAgentIds) {
-      await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
-    }
-
-    // Run tier assignment
-    await t.mutation(internal.agentStats.recomputeAllTiers, {});
-
-    const stats = await t.run(async (ctx) => {
-      return await ctx.db
-        .query("agentStats")
-        .withIndex("by_agentId", (q: any) => q.eq("agentId", concentratedAgentId))
-        .first();
+      agentId: slowWindowAgentId,
     });
 
-    expect(stats).not.toBeNull();
-    // Concentration should be 5/7 ~= 0.714 (5 ratings from primary creator out of 7 total)
-    expect(stats!.singleCreatorConcentration).toBeGreaterThan(0.6);
-    // Agent is otherwise strong but concentration cap prevents S/A promotion.
-    expect(stats!.tier).toBe("B");
+    const [fastStats, slowWindowStats] = await t.run(async (ctx) =>
+      Promise.all([
+        ctx.db
+          .query("agentStats")
+          .withIndex("by_agentId", (q: any) => q.eq("agentId", fastAgentId))
+          .first(),
+        ctx.db
+          .query("agentStats")
+          .withIndex("by_agentId", (q: any) => q.eq("agentId", slowWindowAgentId))
+          .first(),
+      ]),
+    );
+
+    expect(fastStats!.avgTimeToResolutionMs).toBeCloseTo(slowWindowStats!.avgTimeToResolutionMs, -2);
+    expect(fastStats!.trustScore).toBeCloseTo(slowWindowStats!.trustScore, 5);
   });
 });
 
-describe("leaderboard filtering", () => {
-  it("promotes a newly qualified agent into ranked leaderboard results without waiting for cron", async () => {
+describe("recomputeAllTiers and leaderboard", () => {
+  it("assigns absolute trust-based tiers and confidence levels", async () => {
     const t = convexTest(schema);
+    const { strongAgentId, mediumAgentId, lowAgentId } = await t.run(async (ctx) => {
+      const creators = await Promise.all(
+        Array.from({ length: 8 }, () => seedUser(ctx, { role: "creator" })),
+      );
+      const strongAgentId = await seedUser(ctx, { role: "agent" });
+      const mediumAgentId = await seedUser(ctx, { role: "agent" });
+      const lowAgentId = await seedUser(ctx, { role: "agent" });
 
-    const { targetAgentId } = await t.run(async (ctx) => {
-      const topAgentId = await seedUser(ctx, { role: "agent" });
-      const secondAgentId = await seedUser(ctx, { role: "agent" });
-      const targetAgentId = await seedUser(ctx, { role: "agent" });
-      const fourthAgentId = await seedUser(ctx, { role: "agent" });
+      for (let i = 0; i < 25; i++) {
+        await seedCompletedClaim(ctx, strongAgentId, creators[i % creators.length], {
+          ratingOverrides: {
+            codeQuality: 5,
+            speed: 5,
+            mergedWithoutChanges: 5,
+            communication: 4,
+            testCoverage: 5,
+          },
+        });
+      }
 
-      await seedAgentStatsRow(ctx, topAgentId, {
-        tier: "S",
-        finalScore: 92,
-        compositeScore: 92,
-        paidPayoutVolumeUsd: 2500,
-      });
-      await seedAgentStatsRow(ctx, secondAgentId, {
-        tier: "A",
-        finalScore: 86,
-        compositeScore: 86,
-        paidPayoutVolumeUsd: 1800,
-      });
-      await seedAgentStatsRow(ctx, targetAgentId, {
-        tier: "unranked",
-        finalScore: 78,
-        compositeScore: 78,
-        paidPayoutVolumeUsd: 1200,
-      });
-      await seedAgentStatsRow(ctx, fourthAgentId, {
-        tier: "D",
-        finalScore: 70,
-        compositeScore: 70,
-        paidPayoutVolumeUsd: 900,
-      });
+      for (let i = 0; i < 10; i++) {
+        await seedCompletedClaim(ctx, mediumAgentId, creators[i % 6], {
+          ratingOverrides: {
+            codeQuality: 5,
+            speed: 4,
+            mergedWithoutChanges: 5,
+            communication: 4,
+            testCoverage: 5,
+          },
+        });
+      }
 
-      return { targetAgentId };
+      for (let i = 0; i < 5; i++) {
+        await seedCompletedClaim(ctx, lowAgentId, creators[i % 3], {
+          ratingOverrides: {
+            codeQuality: 3,
+            speed: 3,
+            mergedWithoutChanges: 3,
+            communication: 3,
+            testCoverage: 3,
+          },
+        });
+      }
+
+      return { strongAgentId, mediumAgentId, lowAgentId };
     });
 
-    const before = await t.query(internal.agentStats.getLeaderboardInternal, {
-      limit: 10,
-    });
-    expect(before.some((entry: any) => entry.agentId === targetAgentId)).toBe(false);
+    for (const agentId of [strongAgentId, mediumAgentId, lowAgentId]) {
+      await t.mutation(internal.agentStats.recomputeForAgent, { agentId });
+    }
+    await t.mutation(internal.agentStats.recomputeAllTiers, {});
 
-    const tier = await t.mutation(internal.agentStats.recomputeTierForAgent, {
-      agentId: targetAgentId,
-    });
-    expect(tier).toBe("B");
+    const [strongStats, mediumStats, lowStats] = await t.run(async (ctx) =>
+      Promise.all([
+        ctx.db
+          .query("agentStats")
+          .withIndex("by_agentId", (q: any) => q.eq("agentId", strongAgentId))
+          .first(),
+        ctx.db
+          .query("agentStats")
+          .withIndex("by_agentId", (q: any) => q.eq("agentId", mediumAgentId))
+          .first(),
+        ctx.db
+          .query("agentStats")
+          .withIndex("by_agentId", (q: any) => q.eq("agentId", lowAgentId))
+          .first(),
+      ]),
+    );
 
-    const after = await t.query(internal.agentStats.getLeaderboardInternal, {
-      limit: 10,
-    });
-    const promoted = after.find((entry: any) => entry.agentId === targetAgentId);
-    expect(promoted?.tier).toBe("B");
+    expect(strongStats!.confidenceLevel).toBe("high");
+    expect(strongStats!.tier).toBe("S");
+    expect(mediumStats!.confidenceLevel).toBe("medium");
+    expect(["A", "B"]).toContain(mediumStats!.tier);
+    expect(lowStats!.confidenceLevel).toBe("low");
+    expect(["C", "D"]).toContain(lowStats!.tier);
   });
 
-  it("defaults to ranked-only results", async () => {
+  it("caps concentrated agents at B tier", async () => {
     const t = convexTest(schema);
+    const { concentratedAgentId, otherAgentId } = await t.run(async (ctx) => {
+      const creators = await Promise.all(
+        Array.from({ length: 4 }, () => seedUser(ctx, { role: "creator" })),
+      );
+      const concentratedAgentId = await seedUser(ctx, { role: "agent" });
+      const otherAgentId = await seedUser(ctx, { role: "agent" });
 
-    await t.run(async (ctx) => {
-      const rankedAgentId = await seedUser(ctx, { role: "agent" });
-      const unrankedAgentId = await seedUser(ctx, { role: "agent" });
-      await seedAgentStatsRow(ctx, rankedAgentId, { tier: "A", compositeScore: 80 });
-      await seedAgentStatsRow(ctx, unrankedAgentId, { tier: "unranked", compositeScore: 95 });
+      for (let i = 0; i < 5; i++) {
+        await seedCompletedClaim(ctx, concentratedAgentId, creators[0], {
+          ratingOverrides: {
+            codeQuality: 5,
+            speed: 5,
+            mergedWithoutChanges: 5,
+            communication: 5,
+            testCoverage: 5,
+          },
+        });
+      }
+      await seedCompletedClaim(ctx, concentratedAgentId, creators[1]);
+      await seedCompletedClaim(ctx, concentratedAgentId, creators[2]);
+
+      for (let i = 0; i < 8; i++) {
+        await seedCompletedClaim(ctx, otherAgentId, creators[i % creators.length], {
+          ratingOverrides: {
+            codeQuality: 4,
+            speed: 4,
+            mergedWithoutChanges: 4,
+            communication: 4,
+            testCoverage: 4,
+          },
+        });
+      }
+
+      return { concentratedAgentId, otherAgentId };
     });
 
-    const leaderboard = await t.query(internal.agentStats.getLeaderboardInternal, {
-      limit: 10,
+    await t.mutation(internal.agentStats.recomputeForAgent, {
+      agentId: concentratedAgentId,
     });
+    await t.mutation(internal.agentStats.recomputeForAgent, { agentId: otherAgentId });
+    await t.mutation(internal.agentStats.recomputeAllTiers, {});
 
-    expect(leaderboard).toHaveLength(1);
-    expect(leaderboard[0].tier).not.toBe("unranked");
+    const stats = await t.run(async (ctx) =>
+      ctx.db
+        .query("agentStats")
+        .withIndex("by_agentId", (q: any) => q.eq("agentId", concentratedAgentId))
+        .first(),
+    );
+
+    expect(stats!.singleCreatorConcentration).toBeGreaterThan(0.6);
+    expect(["B", "C", "D"]).toContain(stats!.tier);
   });
 
-  it("can include unranked rows when explicitly requested", async () => {
+  it("filters unranked agents from the leaderboard", async () => {
     const t = convexTest(schema);
-
-    await t.run(async (ctx) => {
+    const { rankedAgentId, unrankedAgentId } = await t.run(async (ctx) => {
+      const creators = await Promise.all([
+        seedUser(ctx, { role: "creator" }),
+        seedUser(ctx, { role: "creator" }),
+        seedUser(ctx, { role: "creator" }),
+      ]);
       const rankedAgentId = await seedUser(ctx, { role: "agent" });
       const unrankedAgentId = await seedUser(ctx, { role: "agent" });
-      await seedAgentStatsRow(ctx, rankedAgentId, { tier: "A", compositeScore: 80 });
-      await seedAgentStatsRow(ctx, unrankedAgentId, { tier: "unranked", compositeScore: 95 });
+
+      for (let i = 0; i < 5; i++) {
+        await seedCompletedClaim(ctx, rankedAgentId, creators[i % creators.length]);
+      }
+      await seedCompletedClaim(ctx, unrankedAgentId, creators[0]);
+
+      return { rankedAgentId, unrankedAgentId };
     });
 
-    const leaderboard = await t.query(internal.agentStats.getLeaderboardInternal, {
-      limit: 10,
-      rankedOnly: false,
-      includeUnranked: true,
-    });
+    await t.mutation(internal.agentStats.recomputeForAgent, { agentId: rankedAgentId });
+    await t.mutation(internal.agentStats.recomputeForAgent, { agentId: unrankedAgentId });
+    await t.mutation(internal.agentStats.recomputeAllTiers, {});
 
-    expect(leaderboard).toHaveLength(2);
-    expect(leaderboard.some((entry: any) => entry.tier === "unranked")).toBe(true);
+    const leaderboard = await t.query(internal.agentStats.getLeaderboardInternal, { limit: 10 });
+
+    expect(leaderboard.some((entry) => entry.agentId === rankedAgentId)).toBe(true);
+    expect(leaderboard.some((entry) => entry.agentId === unrankedAgentId)).toBe(false);
   });
 });

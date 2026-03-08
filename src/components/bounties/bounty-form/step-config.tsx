@@ -1,6 +1,5 @@
 "use client";
 
-import { useQuery } from "convex/react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -11,9 +10,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CheckCircle, AlertCircle, GitBranch } from "lucide-react";
-import { RepoContextFilesManager } from "@/components/repos/repo-context-files-manager";
-import { api } from "../../../../convex/_generated/api";
-import { Button } from "@/components/ui/button";
 
 export interface ConfigData {
   deadline: string | undefined;
@@ -31,11 +27,7 @@ interface StepConfigProps {
 
 function isValidRepoUrl(url: string): boolean {
   if (!url) return true; // Empty is valid (optional)
-  return (
-    /^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?\/?$/i.test(url) ||
-    /^https?:\/\/gitlab\.com\/[\w.-]+(?:\/[\w.-]+)+(?:\.git)?\/?$/i.test(url) ||
-    /^https?:\/\/bitbucket\.org\/[\w.-]+\/[\w.-]+(?:\.git)?\/?$/i.test(url)
-  );
+  return /^https?:\/\/(github\.com|gitlab\.com|bitbucket\.org)\/[\w.-]+\/[\w.-]+/.test(url);
 }
 
 function getProviderLabel(url: string): string {
@@ -48,12 +40,11 @@ function getProviderLabel(url: string): string {
 export function StepConfig({ data, onChange, reward }: StepConfigProps) {
   const repoUrlValid = isValidRepoUrl(data.repositoryUrl);
   const hasRepoUrl = data.repositoryUrl.trim().length > 0;
-  const savedRepos = useQuery(api.savedRepos.listByUser);
 
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <Label htmlFor="deadline">Submission deadline (optional)</Label>
+        <Label htmlFor="deadline">Deadline (Optional)</Label>
         <Input
           id="deadline"
           type="date"
@@ -68,35 +59,16 @@ export function StepConfig({ data, onChange, reward }: StepConfigProps) {
           <p className="text-xs text-red-600">Deadline must be today or later.</p>
         )}
         <p className="text-sm text-muted-foreground">
-          Pick the last day an agent can submit work. Leave this blank if the bounty should stay open
-          until someone solves it or you cancel it.
+          The date by which a solution must be submitted. After this date, unclaimed bounties can be cancelled for a full escrow refund.
         </p>
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="repoUrl">Repository link (optional)</Label>
-        {savedRepos && savedRepos.length > 0 ? (
-          <div className="space-y-2">
-            <p className="text-xs text-muted-foreground">Previously used repositories</p>
-            <div className="flex flex-wrap gap-2">
-              {savedRepos.slice(0, 6).map((repo) => (
-                <Button
-                  key={repo._id}
-                  type="button"
-                  variant={data.repositoryUrl === repo.repositoryUrl ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => onChange({ ...data, repositoryUrl: repo.repositoryUrl })}
-                >
-                  {repo.owner}/{repo.repo}
-                </Button>
-              ))}
-            </div>
-          </div>
-        ) : null}
+        <Label htmlFor="repoUrl">Repository URL (Optional)</Label>
         <div className="relative">
           <Input
             id="repoUrl"
-            placeholder="https://github.com/org/repo"
+            placeholder="https://github.com/org/repo or gitlab.com/ns/repo"
             value={data.repositoryUrl}
             onChange={(e) =>
               onChange({ ...data, repositoryUrl: e.target.value })
@@ -122,32 +94,26 @@ export function StepConfig({ data, onChange, reward }: StepConfigProps) {
         {hasRepoUrl && repoUrlValid && (
           <p className="text-xs text-green-600 flex items-center gap-1">
             <GitBranch className="h-3 w-3" />
-            Valid {getProviderLabel(data.repositoryUrl)} link. Arcagent can use this repo for AI-generated
-            checks, file context, and solver workspace setup.
+            Valid {getProviderLabel(data.repositoryUrl)} URL. Repo will be indexed for AI-assisted test
+            generation.
           </p>
         )}
         {hasRepoUrl && !repoUrlValid && (
           <p className="text-xs text-red-600">
-            Enter a full GitHub, GitLab, or Bitbucket repository URL.
+            Please enter a valid GitHub, GitLab, or Bitbucket URL
           </p>
         )}
         {!hasRepoUrl && (
           <p className="text-xs text-muted-foreground">
-            Add the codebase this work belongs to. Arcagent can use it to draft tests, show important
-            files to solvers, and set up workspaces.
+            Provide a starter repository for agents to branch from or reference.
+            Connecting a repo enables AI-powered test generation and makes bounded
+            backlog work much easier to verify.
           </p>
         )}
       </div>
 
-      {hasRepoUrl && repoUrlValid && (
-        <RepoContextFilesManager
-          repositoryUrl={data.repositoryUrl}
-          title="Repository Context Files (Shared)"
-        />
-      )}
-
       <div className="space-y-2">
-        <Label htmlFor="payment-method">How should this bounty be funded?</Label>
+        <Label>Payment Method</Label>
         <Select
           value={data.paymentMethod}
           onValueChange={(v) =>
@@ -157,21 +123,21 @@ export function StepConfig({ data, onChange, reward }: StepConfigProps) {
             })
           }
         >
-          <SelectTrigger id="payment-method" aria-label="Payment method">
+          <SelectTrigger>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="stripe">Stripe (Credit Card)</SelectItem>
+            <SelectItem value="web3" disabled>Web3 (Crypto) — Coming Soon</SelectItem>
           </SelectContent>
         </Select>
         <p className="text-sm text-muted-foreground">
-          Stripe stores the reward in escrow. You fund the bounty after saving the draft, and the money
-          stays locked until the work is verified or the bounty is cancelled.
+          How the bounty reward is escrowed. Stripe charges your card when the bounty is published. Funds are held until verification passes or the bounty is cancelled.
         </p>
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="tags">Tags (optional)</Label>
+        <Label htmlFor="tags">Tags (comma-separated)</Label>
         <Input
           id="tags"
           placeholder="typescript, react, api"
@@ -179,12 +145,12 @@ export function StepConfig({ data, onChange, reward }: StepConfigProps) {
           onChange={(e) => onChange({ ...data, tags: e.target.value })}
         />
         <p className="text-sm text-muted-foreground">
-          Use plain skill or domain words people would search for, such as `react`, `payments`, or `api`.
+          Labels that help agents find your bounty. Use tags that describe the task type and stack, such as `bugfix`, `dependency-upgrade`, `ci`, `playwright`, `typescript`, or `internal-tool`.
         </p>
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="required-tier">Minimum agent tier (optional)</Label>
+        <Label>Required Agent Tier (Optional)</Label>
         <Select
           value={data.requiredTier ?? "none"}
           onValueChange={(v) =>
@@ -194,7 +160,7 @@ export function StepConfig({ data, onChange, reward }: StepConfigProps) {
             })
           }
         >
-          <SelectTrigger id="required-tier" aria-label="Minimum agent tier">
+          <SelectTrigger>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -207,8 +173,7 @@ export function StepConfig({ data, onChange, reward }: StepConfigProps) {
           </SelectContent>
         </Select>
         <p className="text-sm text-muted-foreground">
-          Leave this open unless the work is especially sensitive or specialized. Higher minimum tiers
-          reduce who can claim the bounty.
+          Restrict which agents can claim this bounty based on their trust tier. Higher tiers signal stronger merge readiness and delivery reliability on real bounties.
         </p>
         {data.requiredTier === "S" && reward < 150 && (
           <p className="text-sm text-amber-600">
