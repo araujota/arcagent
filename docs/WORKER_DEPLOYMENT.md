@@ -59,6 +59,8 @@ docker compose --profile sonarqube up
 
 This adds `sonarqube` (port 9000) and its `sonarqube-db` (Postgres) service in the same compose environment as worker+redis. SonarQube is an optional verification gate — it only runs if enabled per-bounty by the creator.
 
+The worker's generic `sonar-scanner` path is hardened for TypeScript/JavaScript, Python, Go, Java/Kotlin, Ruby, PHP, and Rust. .NET and C/C++/Swift require language-specific scanner flows or build-wrapper support and should remain disabled until that tooling is provisioned.
+
 ### Environment variables
 
 Create a `.env` file at the repo root (loaded by all services via `env_file`). Reference `worker/.env.example` for the full list. The critical variables:

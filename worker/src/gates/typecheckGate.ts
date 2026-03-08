@@ -43,6 +43,15 @@ export async function runTypecheckGate(
   );
 
   const durationMs = Date.now() - start;
+  const skipSummary = getTypecheckSkipSummary(result.stdout);
+  if (result.exitCode === 0 && skipSummary) {
+    return {
+      gate: "typecheck",
+      status: "skipped",
+      durationMs,
+      summary: skipSummary,
+    };
+  }
 
   if (result.exitCode === 0) {
     return {
@@ -100,6 +109,14 @@ export async function runTypecheckGate(
   };
 }
 
+function getTypecheckSkipSummary(output: string): string | null {
+  const firstLine = output.trim().split("\n")[0] ?? "";
+  if (firstLine.includes("No type checker available") || firstLine.includes("not available")) {
+    return firstLine;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -107,24 +124,36 @@ export async function runTypecheckGate(
 function getTypecheckCommand(language: string): string | null {
   switch (language.toLowerCase()) {
     case "typescript":
-      return "npx tsc --noEmit 2>&1";
+      return (
+        "if [ -x ./node_modules/.bin/tsc ]; then ./node_modules/.bin/tsc --noEmit 2>&1; " +
+        "elif command -v tsc >/dev/null 2>&1; then tsc --noEmit 2>&1; " +
+        "else echo 'TypeScript compiler not available' && exit 1; fi"
+      );
     case "python":
       // Prefer pyright; fall back to mypy
       return (
-        "if command -v pyright &>/dev/null; then pyright .; " +
-        "elif command -v mypy &>/dev/null; then mypy . --ignore-missing-imports; " +
+        "if [ -x ./.venv/bin/pyright ]; then ./.venv/bin/pyright .; " +
+        "elif [ -x ./venv/bin/pyright ]; then ./venv/bin/pyright .; " +
+        "elif python -m pyright --version >/dev/null 2>&1; then python -m pyright .; " +
+        "elif command -v pyright >/dev/null 2>&1; then pyright .; " +
+        "elif [ -x ./.venv/bin/mypy ]; then ./.venv/bin/mypy . --ignore-missing-imports; " +
+        "elif [ -x ./venv/bin/mypy ]; then ./venv/bin/mypy . --ignore-missing-imports; " +
+        "elif python -m mypy --version >/dev/null 2>&1; then python -m mypy . --ignore-missing-imports; " +
+        "elif command -v mypy >/dev/null 2>&1; then mypy . --ignore-missing-imports; " +
         "else echo 'No type checker available' && exit 0; fi"
       );
     case "go":
       return "go vet ./... 2>&1";
     case "php":
       return (
-        "if command -v phpstan &>/dev/null; then phpstan analyse --error-format=raw 2>&1; " +
+        "if [ -x vendor/bin/phpstan ]; then vendor/bin/phpstan analyse --error-format=raw 2>&1; " +
+        "elif command -v phpstan >/dev/null 2>&1; then phpstan analyse --error-format=raw 2>&1; " +
         "else echo 'PHPStan not available' && exit 0; fi"
       );
     case "ruby":
       return (
-        "if command -v srb &>/dev/null; then srb tc 2>&1; " +
+        "if [ -f Gemfile ]; then bundle exec srb tc 2>&1; " +
+        "elif command -v srb >/dev/null 2>&1; then srb tc 2>&1; " +
         "else echo 'Sorbet not available' && exit 0; fi"
       );
     case "rust":

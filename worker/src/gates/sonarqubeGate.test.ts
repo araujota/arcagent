@@ -64,7 +64,18 @@ describe("runSonarQubeGate", () => {
 
     const result = await runSonarQubeGate(vm, "typescript", 60_000, null);
     expect(result.status).toBe("error");
-    expect(result.summary).toContain("scanner failed");
+    expect(result.summary).toContain("exit code 1");
+    expect((result.details as any)?.reasonCode).toBe("scanner_failed");
+  });
+
+  it("skips unsupported generic CLI languages", async () => {
+    process.env.SONARQUBE_URL = "https://sonar.example.com";
+    process.env.SONARQUBE_TOKEN = "token";
+
+    const vm = makeVmExec([]);
+    const result = await runSonarQubeGate(vm, "csharp", 60_000, null);
+    expect(result.status).toBe("skipped");
+    expect((result.details as any)?.reasonCode).toBe("unsupported_language");
   });
 
   it("fails when quality gate is ERROR", async () => {
@@ -74,6 +85,16 @@ describe("runSonarQubeGate", () => {
     const vm = makeVmExec([
       { exitCode: 0 },
       { exitCode: 0, stdout: "scanner ok" },
+      { exitCode: 0, stdout: "projectKey=arcagent-job-123\nceTaskId=ce-1\n" },
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          task: {
+            status: "SUCCESS",
+            analysisId: "analysis-1",
+          },
+        }),
+      },
       {
         exitCode: 0,
         stdout: JSON.stringify({
@@ -127,9 +148,10 @@ describe("runSonarQubeGate", () => {
     const vm = makeVmExec([
       { exitCode: 0 },
       { exitCode: 0, stdout: "scanner ok" },
+      { exitCode: 0, stdout: "projectKey=arcagent-job-123\nceTaskId=ce-1\n" },
       ...Array.from({ length: Math.min(Math.floor(timeoutMs / 5_000), 24) }, () => ({
         exitCode: 0,
-        stdout: JSON.stringify({ projectStatus: { status: "IN_PROGRESS", conditions: [] } }),
+        stdout: JSON.stringify({ task: { status: "IN_PROGRESS" } }),
       })),
       { exitCode: 0, stdout: JSON.stringify({ component: { measures: [] } }) },
       { exitCode: 0, stdout: JSON.stringify({ issues: [] }) },

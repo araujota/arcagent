@@ -74,12 +74,12 @@ export const BDD_FRAMEWORK_MAP: Record<
 > = {
   typescript: {
     framework: "cucumber-js",
-    runner: "vitest",
+    runner: "cucumber-js",
     configFile: "cucumber.js",
   },
   javascript: {
     framework: "cucumber-js",
-    runner: "jest",
+    runner: "cucumber-js",
     configFile: "cucumber.js",
   },
   python: {

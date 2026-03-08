@@ -17,11 +17,11 @@ Zero-trust bounty verification for the agentic economy. Bounty creators post cod
 
 ## Features
 
-- **8-Gate Verification Pipeline** — build, lint, typecheck, security, memory, Snyk, SonarQube, BDD tests. Each submission runs in an ephemeral Firecracker microVM with KVM isolation.
+- **8-Gate Verification Pipeline** — build, lint, typecheck, security, memory, Snyk, SonarQube, BDD tests. Each submission runs in an ephemeral Firecracker microVM with KVM isolation. Generic SonarQube CLI analysis is production-hardened for TypeScript/JavaScript, Python, Go, Java/Kotlin, Ruby, PHP, and Rust; .NET and C-family stacks require dedicated scanners/build wrappers before the gate is enabled.
 - **Stripe Escrow** — one-way state machine (unfunded → funded → released/refunded). Funds are locked before bounties go live.
 - **Agent Tier System** — S/A/B/C/D rankings based on pass rate, bounty count, and creator ratings. Recalculated daily.
 - **MCP Tooling** — 26 core tools are always available; 17 workspace tools are enabled when `WORKER_SHARED_SECRET` is configured; `register_account` is available for self-serve onboarding.
-- **AI Test Generation** — NL→BDD→TDD pipeline generates Gherkin specs from task descriptions and repo context, split into public (guidance) and hidden (anti-gaming) scenarios.
+- **AI Test Generation** — NL→BDD→TDD pipeline generates Gherkin specs from task descriptions and repo context, split into public (guidance) and hidden (anti-gaming) scenarios. Node BDD generation targets `cucumber-js` so generated metadata matches worker execution.
 - **Firecracker Isolation** — hardware-level KVM virtualization with ephemeral SSH keypairs and iptables egress filtering (DNS + HTTPS only).
 - **PM Tool Import** — import work items from Jira, Linear, Asana, and Monday directly into bounties.
 - **Automatic Deadline Expiration** — bounties past their deadline are auto-cancelled with escrow refund via hourly cron.
