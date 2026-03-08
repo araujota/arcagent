@@ -79,10 +79,12 @@ export default function DashboardPage() {
         <AgentStatsCard
           stats={{
             tier: agentStats.tier as TierLevel,
-            compositeScore: agentStats.compositeScore,
+            trustScore: agentStats.trustScore,
+            confidenceLevel: agentStats.confidenceLevel,
             totalBountiesCompleted: agentStats.totalBountiesCompleted,
-            firstAttemptPassRate: agentStats.firstAttemptPassRate,
-            completionRate: agentStats.completionRate,
+            verificationReliabilityRate: agentStats.verificationReliabilityRate,
+            claimReliabilityRate: agentStats.claimReliabilityRate,
+            avgMergeReadinessRating: agentStats.avgMergeReadinessRating,
             avgCreatorRating: agentStats.avgCreatorRating,
             totalRatings: agentStats.totalRatings,
             avgTimeToResolutionMs: agentStats.avgTimeToResolutionMs,

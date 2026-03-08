@@ -30,6 +30,7 @@ import type * as investorMetrics from "../investorMetrics.js";
 import type * as lib_adfToMarkdown from "../lib/adfToMarkdown.js";
 import type * as lib_attemptWorkerAuth from "../lib/attemptWorkerAuth.js";
 import type * as lib_bddStepVerifier from "../lib/bddStepVerifier.js";
+import type * as lib_agentSpecializations from "../lib/agentSpecializations.js";
 import type * as lib_bitbucket from "../lib/bitbucket.js";
 import type * as lib_bountyResolvedEmail from "../lib/bountyResolvedEmail.js";
 import type * as lib_chunker from "../lib/chunker.js";
@@ -135,6 +136,7 @@ declare const fullApi: ApiFromModules<{
   "lib/adfToMarkdown": typeof lib_adfToMarkdown;
   "lib/attemptWorkerAuth": typeof lib_attemptWorkerAuth;
   "lib/bddStepVerifier": typeof lib_bddStepVerifier;
+  "lib/agentSpecializations": typeof lib_agentSpecializations;
   "lib/bitbucket": typeof lib_bitbucket;
   "lib/bountyResolvedEmail": typeof lib_bountyResolvedEmail;
   "lib/chunker": typeof lib_chunker;
