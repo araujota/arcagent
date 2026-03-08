@@ -22,19 +22,46 @@ function withAgentStatDefaults(stats: any) {
 
   return {
     ...stats,
-    avgMergeReadinessRating: stats.avgMergeReadinessRating ?? 0,
+    avgMergeReadinessRating: stats.avgMergeReadinessRating ?? stats.avgCreatorRating ?? 0,
     avgCodeQualityRating: stats.avgCodeQualityRating ?? 0,
     avgTestCoverageRating: stats.avgTestCoverageRating ?? 0,
     avgCommunicationRating: stats.avgCommunicationRating ?? 0,
     avgSpeedRating: stats.avgSpeedRating ?? 0,
-    eligibleUniqueRaters: stats.eligibleUniqueRaters ?? 0,
+    eligibleUniqueRaters:
+      stats.eligibleUniqueRaters ?? stats.trustedUniqueRaters ?? stats.uniqueRaters ?? 0,
     eligibleRatingsCount: stats.eligibleRatingsCount ?? 0,
     verificationReliabilityRate:
       stats.verificationReliabilityRate ?? stats.firstAttemptPassRate ?? 0,
     claimReliabilityRate: stats.claimReliabilityRate ?? stats.completionRate ?? 0,
-    trustScore: stats.trustScore ?? stats.compositeScore ?? 0,
+    trustScore: stats.trustScore ?? stats.finalScore ?? stats.compositeScore ?? 0,
     confidenceLevel: stats.confidenceLevel ?? "low",
   };
+}
+
+function calculateTierForStats(stats: any) {
+  const normalizedStats = withAgentStatDefaults(stats);
+  if (!normalizedStats) {
+    return "unranked" as const;
+  }
+
+  let tier = assignTierFromTrustScore({
+    totalBountiesCompleted: normalizedStats.totalBountiesCompleted,
+    eligibleUniqueRaters: normalizedStats.eligibleUniqueRaters,
+    trustScore: normalizedStats.trustScore,
+    avgMergeReadinessRating: normalizedStats.avgMergeReadinessRating,
+    claimReliabilityRate: normalizedStats.claimReliabilityRate,
+    verificationReliabilityRate: normalizedStats.verificationReliabilityRate,
+    confidenceLevel: normalizedStats.confidenceLevel,
+  });
+
+  if (
+    normalizedStats.singleCreatorConcentration > CONCENTRATION_CAP_THRESHOLD &&
+    (tier === "S" || tier === "A")
+  ) {
+    tier = "B";
+  }
+
+  return tier;
 }
 
 /**
@@ -315,28 +342,36 @@ export const recomputeAllTiers = internalMutation({
 
     for (const stats of allStats) {
       const normalizedStats = withAgentStatDefaults(stats);
-      let tier = assignTierFromTrustScore({
-        totalBountiesCompleted: normalizedStats.totalBountiesCompleted,
-        eligibleUniqueRaters: normalizedStats.eligibleUniqueRaters,
-        trustScore: normalizedStats.trustScore,
-        avgMergeReadinessRating: normalizedStats.avgMergeReadinessRating,
-        claimReliabilityRate: normalizedStats.claimReliabilityRate,
-        verificationReliabilityRate: normalizedStats.verificationReliabilityRate,
-        confidenceLevel: normalizedStats.confidenceLevel,
-      });
-
-      if (
-        normalizedStats.singleCreatorConcentration > CONCENTRATION_CAP_THRESHOLD &&
-        (tier === "S" || tier === "A")
-      ) {
-        tier = "B";
-      }
-
+      const tier = calculateTierForStats(normalizedStats);
       await ctx.db.patch(stats._id, {
         tier,
         compositeScore: normalizedStats.trustScore,
       });
     }
+  },
+});
+
+export const recomputeTierForAgent = internalMutation({
+  args: { agentId: v.id("users") },
+  handler: async (ctx, args) => {
+    const stats = await ctx.db
+      .query("agentStats")
+      .withIndex("by_agentId", (q) => q.eq("agentId", args.agentId))
+      .unique();
+
+    if (!stats) {
+      return "unranked" as const;
+    }
+
+    const normalizedStats = withAgentStatDefaults(stats);
+    const tier = calculateTierForStats(normalizedStats);
+
+    await ctx.db.patch(stats._id, {
+      tier,
+      compositeScore: normalizedStats.trustScore,
+    });
+
+    return tier;
   },
 });
 
