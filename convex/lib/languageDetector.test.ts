@@ -219,6 +219,11 @@ describe("BDD_FRAMEWORK_MAP", () => {
     expect(BDD_FRAMEWORK_MAP.python.runner).toBe("behave");
   });
 
+  it("Node BDD generation aligns with cucumber-js execution", () => {
+    expect(BDD_FRAMEWORK_MAP.typescript.runner).toBe("cucumber-js");
+    expect(BDD_FRAMEWORK_MAP.javascript.runner).toBe("cucumber-js");
+  });
+
   it("each entry has framework, runner, and configFile", () => {
     for (const lang of expectedLanguages) {
       const entry = BDD_FRAMEWORK_MAP[lang];

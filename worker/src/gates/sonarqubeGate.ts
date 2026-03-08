@@ -4,11 +4,21 @@ import { DiffContext } from "../lib/diffContext";
 import { parseJsonSafe } from "../lib/resultParser";
 import { logger } from "../index";
 
+const GENERIC_CLI_SONAR_LANGUAGES = new Set([
+  "typescript",
+  "javascript",
+  "python",
+  "go",
+  "java",
+  "kotlin",
+  "ruby",
+  "php",
+  "rust",
+]);
+
 /**
- * SonarQube gate -- runs sonar-scanner and queries the quality gate status.
- *
- * When DiffContext is available, switches to PR analysis mode which natively
- * reports only new-code issues.
+ * SonarQube gate -- runs sonar-scanner and waits for the compute-engine task
+ * before querying the quality gate for the resulting analysis.
  *
  * Expects `SONARQUBE_URL` and `SONARQUBE_TOKEN` environment variables.
  * If SonarQube is not configured the gate is skipped gracefully.
@@ -20,6 +30,7 @@ export async function runSonarQubeGate(
   diff: DiffContext | null,
 ): Promise<GateResult> {
   const start = Date.now();
+  const normalizedLanguage = language.toLowerCase();
 
   const sonarUrl = process.env.SONARQUBE_URL;
   const sonarToken = process.env.SONARQUBE_TOKEN;
@@ -32,6 +43,19 @@ export async function runSonarQubeGate(
       summary: "SonarQube not configured (SONARQUBE_URL / SONARQUBE_TOKEN missing)",
       details: {
         reasonCode: "missing_config",
+      },
+    };
+  }
+
+  if (!GENERIC_CLI_SONAR_LANGUAGES.has(normalizedLanguage)) {
+    return {
+      gate: "sonarqube",
+      status: "skipped",
+      durationMs: Date.now() - start,
+      summary: `SonarQube generic CLI analysis is not supported for language "${language}"`,
+      details: {
+        reasonCode: "unsupported_language",
+        language: normalizedLanguage,
       },
     };
   }
@@ -63,20 +87,17 @@ export async function runSonarQubeGate(
     };
   }
 
-  // Generate a unique project key for this scan
   const projectKey = `arcagent-${vm.jobId}`;
 
-  // If diff context is available, set up base branch for PR analysis mode
   if (diff) {
     await setupPrAnalysis(vm, diff);
   }
 
-  // 1. Run sonar-scanner inside the VM
   const scanCommand = buildScanCommand({
     sonarUrl,
     sonarToken,
     projectKey,
-    language,
+    language: normalizedLanguage,
     diff,
     jobId: vm.jobId,
   });
@@ -106,16 +127,28 @@ export async function runSonarQubeGate(
     };
   }
 
-  // 2. Poll quality gate status (SonarQube processes asynchronously)
+  const ceTaskId = await readCeTaskId(vm, projectKey);
+  if (!ceTaskId) {
+    return {
+      gate: "sonarqube",
+      status: "error",
+      durationMs: Date.now() - start,
+      summary: "SonarQube scanner did not produce report-task metadata",
+      details: {
+        reasonCode: "missing_report_task",
+        projectKey,
+      },
+    };
+  }
+
   const qualityGateResult = await pollQualityGate(
     vm,
     sonarUrl,
     sonarToken,
-    projectKey,
+    ceTaskId,
     timeoutMs,
   );
 
-  // 3. Fetch new-code metrics + issue list for normalized receipts.
   const detailResult = await fetchNewCodeDetails(
     vm,
     sonarUrl,
@@ -149,18 +182,13 @@ export async function runSonarQubeGate(
       metrics: detailResult.metrics,
       issues: detailResult.issues,
       fetchErrors: detailResult.fetchErrors,
-      language: language.toLowerCase(),
+      language: normalizedLanguage,
     },
   };
 }
 
-// ---------------------------------------------------------------------------
-// PR Analysis Setup
-// ---------------------------------------------------------------------------
-
 async function setupPrAnalysis(vm: VMHandle, diff: DiffContext): Promise<void> {
   try {
-    // Fetch and create the base branch so SonarQube can compare
     await vm.exec(
       `cd /workspace && ` +
       `git fetch origin ${diff.baseCommitSha} 2>&1 && ` +
@@ -173,10 +201,6 @@ async function setupPrAnalysis(vm: VMHandle, diff: DiffContext): Promise<void> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 interface ScanCommandOpts {
   sonarUrl: string;
   sonarToken: string;
@@ -187,21 +211,18 @@ interface ScanCommandOpts {
 }
 
 function buildScanCommand(opts: ScanCommandOpts): string {
-  // SECURITY (H5): Write token to an ephemeral file readable only by root,
-  // then source it for the scanner. This prevents agent code from reading
-  // the token via /proc/self/environ or environment variable inspection.
   const safeToken = opts.sonarToken.replace(/'/g, "'\\''");
   const args = [
     `printf '%s' '${safeToken}' > /tmp/.sonar_token && chmod 600 /tmp/.sonar_token &&`,
-    `SONAR_TOKEN=$(cat /tmp/.sonar_token)`,
     "sonar-scanner",
+    `-Dsonar.token=$(cat /tmp/.sonar_token)`,
     `-Dsonar.host.url=${opts.sonarUrl}`,
     `-Dsonar.projectKey=${opts.projectKey}`,
     "-Dsonar.sources=.",
-    "-Dsonar.qualitygate.wait=false", // We poll ourselves for better control
+    "-Dsonar.qualitygate.wait=false",
+    "-Dsonar.scanner.metadataFilePath=/tmp/sonar-report-task.txt",
   ];
 
-  // PR analysis mode when diff context is available
   if (opts.diff) {
     args.push(
       `-Dsonar.pullrequest.key=${opts.jobId}`,
@@ -211,52 +232,53 @@ function buildScanCommand(opts: ScanCommandOpts): string {
     );
   }
 
-  // Language-specific settings
-  switch (opts.language.toLowerCase()) {
+  switch (opts.language) {
     case "typescript":
     case "javascript":
-      args.push("-Dsonar.language=ts");
       args.push("-Dsonar.typescript.lcov.reportPaths=coverage/lcov.info");
       break;
     case "python":
-      args.push("-Dsonar.language=py");
       args.push("-Dsonar.python.coverage.reportPaths=coverage.xml");
       break;
-    case "java":
-      args.push("-Dsonar.language=java");
-      args.push("-Dsonar.java.binaries=target/classes");
-      break;
     case "go":
-      args.push("-Dsonar.language=go");
       args.push("-Dsonar.go.coverage.reportPaths=coverage.out");
       break;
-    case "ruby":
-      args.push("-Dsonar.language=ruby");
-      break;
-    case "php":
-      args.push("-Dsonar.language=php");
-      break;
-    case "csharp":
-      args.push("-Dsonar.language=cs");
-      break;
-    case "c":
-      args.push("-Dsonar.language=c");
-      break;
-    case "cpp":
-      args.push("-Dsonar.language=cpp");
-      break;
-    case "swift":
-      args.push("-Dsonar.language=swift");
-      break;
+    case "java":
     case "kotlin":
-      args.push("-Dsonar.language=kotlin");
+      args.push("-Dsonar.java.binaries=target/classes,build/classes");
       break;
   }
 
-  // Clean up the token file after scanner finishes
-  args.push("&& rm -f /tmp/.sonar_token");
-
+  args.push("; code=$?; rm -f /tmp/.sonar_token; exit $code");
   return args.join(" ");
+}
+
+async function readCeTaskId(vm: VMHandle, projectKey: string): Promise<string | null> {
+  const result = await vm.exec(
+    "if [ -f /tmp/sonar-report-task.txt ]; then cat /tmp/sonar-report-task.txt; else exit 1; fi",
+    5_000,
+  );
+  if (result.exitCode !== 0) return null;
+
+  const lines = result.stdout.split("\n");
+  const metadataProjectKey = lines
+    .find((line) => line.startsWith("projectKey="))
+    ?.slice("projectKey=".length)
+    .trim();
+  const ceTaskId = lines
+    .find((line) => line.startsWith("ceTaskId="))
+    ?.slice("ceTaskId=".length)
+    .trim();
+
+  if (metadataProjectKey && metadataProjectKey !== projectKey) {
+    logger.warn("Sonar report-task project key mismatch", {
+      jobId: vm.jobId,
+      expectedProjectKey: projectKey,
+      metadataProjectKey,
+    });
+  }
+
+  return ceTaskId || null;
 }
 
 interface QualityGateResult {
@@ -270,34 +292,56 @@ async function pollQualityGate(
   vm: VMHandle,
   sonarUrl: string,
   sonarToken: string,
-  projectKey: string,
+  ceTaskId: string,
   timeoutMs: number,
 ): Promise<QualityGateResult> {
   const pollInterval = 5_000;
   const maxAttempts = Math.min(Math.floor(timeoutMs / pollInterval), 24);
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    // Wait before polling (SonarQube needs time to process)
     if (attempt > 0) {
-      await new Promise((r) => setTimeout(r, pollInterval));
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
     }
 
-    // SECURITY (H5): Use ephemeral file for curl auth to prevent token in environ
     const safeToken = sonarToken.replace(/'/g, "'\\''");
-    const result = await vm.exec(
+    const ceResult = await vm.exec(
       `printf '%s:' '${safeToken}' > /tmp/.sonar_auth && chmod 600 /tmp/.sonar_auth && ` +
-      `curl -s -u "$(cat /tmp/.sonar_auth)" "${sonarUrl}/api/qualitygates/project_status?projectKey=${projectKey}"; ` +
+      `curl -s -u "$(cat /tmp/.sonar_auth)" "${sonarUrl}/api/ce/task?id=${ceTaskId}"; ` +
       `rm -f /tmp/.sonar_auth`,
       15_000,
     );
+    if (ceResult.exitCode !== 0) continue;
 
-    if (result.exitCode !== 0) continue;
+    const ceTask = parseJsonSafe<SonarCeTaskResponse>(ceResult.stdout);
+    const ceStatus = ceTask?.task?.status;
+    if (!ceStatus) continue;
 
-    const parsed = parseJsonSafe<SonarQualityGateResponse>(result.stdout);
+    if (ceStatus === "FAILED" || ceStatus === "CANCELED") {
+      return {
+        passed: false,
+        status: ceStatus,
+        reason: "SonarQube compute engine task failed",
+        conditions: [],
+      };
+    }
+
+    const analysisId = ceTask?.task?.analysisId;
+    if (ceStatus !== "SUCCESS" || !analysisId) {
+      continue;
+    }
+
+    const qualityGateResult = await vm.exec(
+      `printf '%s:' '${safeToken}' > /tmp/.sonar_auth && chmod 600 /tmp/.sonar_auth && ` +
+      `curl -s -u "$(cat /tmp/.sonar_auth)" "${sonarUrl}/api/qualitygates/project_status?analysisId=${analysisId}"; ` +
+      `rm -f /tmp/.sonar_auth`,
+      15_000,
+    );
+    if (qualityGateResult.exitCode !== 0) continue;
+
+    const parsed = parseJsonSafe<SonarQualityGateResponse>(qualityGateResult.stdout);
     if (!parsed?.projectStatus) continue;
 
     const status = parsed.projectStatus.status;
-
     if (status === "OK" || status === "NONE") {
       return {
         passed: true,
@@ -309,8 +353,10 @@ async function pollQualityGate(
 
     if (status === "ERROR") {
       const failedConditions = (parsed.projectStatus.conditions ?? [])
-        .filter((c: QualityCondition) => c.status === "ERROR")
-        .map((c: QualityCondition) => `${c.metricKey}: ${c.actualValue} (threshold: ${c.errorThreshold})`);
+        .filter((condition: QualityCondition) => condition.status === "ERROR")
+        .map((condition: QualityCondition) =>
+          `${condition.metricKey}: ${condition.actualValue} (threshold: ${condition.errorThreshold})`,
+        );
 
       return {
         passed: false,
@@ -319,8 +365,6 @@ async function pollQualityGate(
         conditions: parsed.projectStatus.conditions ?? [],
       };
     }
-
-    // Status might be "IN_PROGRESS" -- keep polling
   }
 
   return {
@@ -381,6 +425,13 @@ async function fetchNewCodeDetails(
   }
 
   return { metrics, issues: issues.slice(0, 500), fetchErrors };
+}
+
+interface SonarCeTaskResponse {
+  task?: {
+    status?: string;
+    analysisId?: string;
+  };
 }
 
 interface SonarQualityGateResponse {

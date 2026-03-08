@@ -12,7 +12,8 @@ describe("runLintGate", () => {
     const vm = mockVM(async () => ({ stdout: "[]", stderr: "", exitCode: 0 }));
     await runLintGate(vm, "typescript", 60_000, null);
     const cmd = (vm.exec as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
-    expect(cmd).toContain("npx eslint .");
+    expect(cmd).toContain("./node_modules/.bin/eslint");
+    expect(cmd).toContain("--format json");
   });
 
   it("TypeScript with diff -> only passes changed .ts/.tsx files", async () => {
@@ -49,7 +50,8 @@ describe("runLintGate", () => {
     const vm = mockVM(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
     await runLintGate(vm, "python", 60_000, null);
     const cmd = (vm.exec as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
-    expect(cmd).toContain("ruff check");
+    expect(cmd).toContain("RUFF");
+    expect(cmd).toContain("check .");
   });
 
   it("Ruby -> runs rubocop", async () => {
@@ -74,14 +76,16 @@ describe("runLintGate", () => {
     await runLintGate(vm, "typescript", 60_000, diff);
     const cmd = (vm.exec as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
     // Falls back to full project since no .ts/.tsx/.js/.jsx changed
-    expect(cmd).toContain("npx eslint .");
+    expect(cmd).toContain("./node_modules/.bin/eslint");
+    expect(cmd).toContain(" . --format json");
   });
 
-  it("Go -> runs golangci-lint", async () => {
+  it("Go -> prefers golangci-lint with gofmt fallback", async () => {
     const vm = mockVM(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
     await runLintGate(vm, "go", 60_000, null);
     const cmd = (vm.exec as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
     expect(cmd).toContain("golangci-lint");
+    expect(cmd).toContain("gofmt");
   });
 
   it("Rust -> runs cargo clippy (full project, not diff-scoped)", async () => {

@@ -60,6 +60,15 @@ export async function runTestGate(
   );
 
   const durationMs = Date.now() - start;
+  const skipSummary = getTestSkipSummary(result.stdout);
+  if (result.exitCode === 0 && skipSummary) {
+    return {
+      gate: "test",
+      status: "skipped",
+      durationMs,
+      summary: skipSummary,
+    };
+  }
 
   // Parse test results
   const parsed = parseTestOutput(language, result.stdout);
@@ -92,6 +101,18 @@ export async function runTestGate(
       rawOutput: truncate(result.stdout, 10_000),
     },
   };
+}
+
+function getTestSkipSummary(output: string): string | null {
+  const firstLine = output.trim().split("\n")[0] ?? "";
+  if (
+    firstLine.includes("No supported Node test runner found")
+    || firstLine.includes("No test runner found")
+    || firstLine.includes("PHPUnit not found")
+  ) {
+    return firstLine;
+  }
+  return null;
 }
 
 /**
@@ -304,8 +325,20 @@ async function executeBddSuite(args: {
   const b64 = Buffer.from(args.suite.gherkinContent).toString("base64");
   await args.vm.exec(`echo '${b64}' | base64 -d > ${featurePath}`, 5_000);
 
+  const scenarios = parseScenarios(args.suite.gherkinContent);
+  const featureName = args.suite.title;
   const command = getBddTestCommand(args.language, featurePath, args.stepDefPaths);
-  if (!command) return;
+  if (!command) {
+    appendSuiteStepResults({
+      state: args.state,
+      scenarios,
+      featureName,
+      visibility: args.visibility,
+      status: "fail",
+      output: `BDD execution is not supported for language "${args.language}" in the worker`,
+    });
+    return;
+  }
 
   const result = await args.vm.exec(
     `cd /workspace && ${command} 2>&1`,
@@ -313,8 +346,18 @@ async function executeBddSuite(args: {
     args.bddExecUser,
   );
 
-  const scenarios = parseScenarios(args.suite.gherkinContent);
-  const featureName = args.suite.title;
+  if (result.exitCode === 127) {
+    appendSuiteStepResults({
+      state: args.state,
+      scenarios,
+      featureName,
+      visibility: args.visibility,
+      status: "fail",
+      output: `Required BDD runner is unavailable for language "${args.language}"`,
+    });
+    return;
+  }
+
   if (result.exitCode === 0) {
     appendSuiteStepResults({
       state: args.state,
@@ -364,7 +407,7 @@ function normalizeStepDefinitionContent(content: string): string {
     .replace(/\\"/g, "\"");
 
   // Step definitions may call require("@cucumber/cucumber") from /run paths.
-  // Resolve via the cucumber runner entrypoint so npx-installed modules are found.
+  // Resolve via the runner entrypoint so project-local modules are found.
   return normalized.replace(
     /require\((['"])@cucumber\/cucumber\1\)/g,
     "require.main.require('@cucumber/cucumber')",
@@ -386,43 +429,36 @@ function getBddTestCommand(
   switch (language.toLowerCase()) {
     case "typescript":
     case "javascript":
-      {
+    {
       const requireArgs = stepDefPaths
         .map((path) => `--require ${shellQuote(path)}`)
         .join(" ");
       return (
-        `if npx --yes @cucumber/cucumber cucumber-js --version &>/dev/null; then ` +
-        `  npx --yes @cucumber/cucumber cucumber-js ${shellQuote(featurePath)} ${requireArgs} --format json 2>&1; ` +
-        `elif npx jest --version &>/dev/null; then ` +
-        `  npx jest --testPathPattern='.*' --json 2>&1; ` +
-        `else npm test 2>&1; fi`
+        "if [ -x ./node_modules/.bin/cucumber-js ]; then " +
+        `  ./node_modules/.bin/cucumber-js ${shellQuote(featurePath)} ${requireArgs} --format json 2>&1; ` +
+        "elif command -v cucumber-js >/dev/null 2>&1; then " +
+        `  cucumber-js ${shellQuote(featurePath)} ${requireArgs} --format json 2>&1; ` +
+        "else exit 127; fi"
       );
-      }
+    }
     case "python":
-      return `if command -v behave &>/dev/null; then behave ${featurePath} --format json 2>&1; else pytest -v 2>&1; fi`;
-    case "ruby":
-      return `bundle exec cucumber ${featurePath} --format json 2>&1`;
-    case "java":
-      return `mvn test -Dcucumber.features=${featurePath} 2>&1`;
-    case "go":
-      return `godog run ${featurePath} --format json 2>&1`;
-    case "rust":
-      return `cargo test --test cucumber -- ${featurePath} 2>&1`;
-    case "php":
-      return `vendor/bin/behat ${featurePath} --format json 2>&1`;
-    case "csharp":
-      return `dotnet test --filter "FeaturePath~${featurePath}" --logger "console;verbosity=detailed" 2>&1`;
-    case "kotlin":
-      return `gradle test -Dcucumber.features=${featurePath} 2>&1`;
-    case "c":
-    case "cpp":
       return (
-        `if [ -d build ]; then ` +
-        `  ctest --test-dir build --output-on-failure -R bdd 2>&1; ` +
-        `else cmake -B build && cmake --build build && ctest --test-dir build --output-on-failure -R bdd 2>&1; fi`
+        `if [ -x ./.venv/bin/behave ]; then ./.venv/bin/behave ${featurePath} --format json 2>&1; ` +
+        `elif [ -x ./venv/bin/behave ]; then ./venv/bin/behave ${featurePath} --format json 2>&1; ` +
+        `elif python -m behave --version >/dev/null 2>&1; then python -m behave ${featurePath} --format json 2>&1; ` +
+        `elif command -v behave >/dev/null 2>&1; then behave ${featurePath} --format json 2>&1; ` +
+        "else exit 127; fi"
       );
-    case "swift":
-      return `swift test --filter BDD 2>&1`;
+    case "ruby":
+      return `if [ -f Gemfile ]; then bundle exec cucumber ${featurePath} --format json 2>&1; elif command -v cucumber >/dev/null 2>&1; then cucumber ${featurePath} --format json 2>&1; else exit 127; fi`;
+    case "java":
+      return `if [ -x ./mvnw ]; then ./mvnw test -Dcucumber.features=${featurePath} 2>&1; elif [ -f pom.xml ]; then mvn test -Dcucumber.features=${featurePath} 2>&1; else exit 127; fi`;
+    case "go":
+      return `if command -v godog >/dev/null 2>&1; then godog run ${featurePath} --format json 2>&1; else exit 127; fi`;
+    case "php":
+      return `if [ -x vendor/bin/behat ]; then vendor/bin/behat ${featurePath} --format json 2>&1; elif command -v behat >/dev/null 2>&1; then behat ${featurePath} --format json 2>&1; else exit 127; fi`;
+    case "kotlin":
+      return `if [ -x ./gradlew ]; then ./gradlew test -Dcucumber.features=${featurePath} 2>&1; elif [ -f build.gradle ] || [ -f build.gradle.kts ]; then gradle test -Dcucumber.features=${featurePath} 2>&1; else exit 127; fi`;
     default:
       return null;
   }
@@ -458,22 +494,30 @@ function getTestCommand(language: string): string | null {
     case "javascript":
       // Detect test runner and use JSON reporter
       return (
-        "if [ -f vitest.config.ts ] || [ -f vitest.config.js ]; then " +
-        "  npx vitest run --reporter=json --outputFile=/tmp/test-result.json 2>&1; " +
+        "if [ -x ./node_modules/.bin/vitest ] && ([ -f vitest.config.ts ] || [ -f vitest.config.js ] || [ -f vitest.config.mts ]); then " +
+        "  ./node_modules/.bin/vitest run --reporter=json --outputFile=/tmp/test-result.json 2>&1; " +
         "  cat /tmp/test-result.json; " +
-        "elif npx jest --version &>/dev/null; then " +
-        "  npx jest --json --outputFile=/tmp/test-result.json 2>&1; " +
+        "elif [ -x ./node_modules/.bin/jest ]; then " +
+        "  ./node_modules/.bin/jest --json --outputFile=/tmp/test-result.json 2>&1; " +
         "  cat /tmp/test-result.json; " +
-        "elif [ -f .mocharc.yml ] || [ -f .mocharc.json ]; then " +
-        "  npx mocha --reporter json 2>&1; " +
-        "else " +
+        "elif [ -x ./node_modules/.bin/mocha ] && ([ -f .mocharc.yml ] || [ -f .mocharc.json ] || [ -f .mocharc.js ]); then " +
+        "  ./node_modules/.bin/mocha --reporter json 2>&1; " +
+        "elif node -e \"const p=require('./package.json');process.exit(p.scripts&&p.scripts.test?0:1)\" >/dev/null 2>&1; then " +
         "  npm test 2>&1; " +
+        "else " +
+        "  echo 'No supported Node test runner found' && exit 0; " +
         "fi"
       );
     case "python":
       return (
-        "if command -v pytest &>/dev/null; then " +
-        "  pytest --tb=short -q --json-report --json-report-file=/tmp/test-result.json 2>&1; " +
+        "if [ -x ./.venv/bin/pytest ]; then " +
+        "  ./.venv/bin/pytest --tb=short -q --json-report --json-report-file=/tmp/test-result.json 2>&1; " +
+        "  cat /tmp/test-result.json; " +
+        "elif [ -x ./venv/bin/pytest ]; then " +
+        "  ./venv/bin/pytest --tb=short -q --json-report --json-report-file=/tmp/test-result.json 2>&1; " +
+        "  cat /tmp/test-result.json; " +
+        "elif python -m pytest --version >/dev/null 2>&1; then " +
+        "  python -m pytest --tb=short -q --json-report --json-report-file=/tmp/test-result.json 2>&1; " +
         "  cat /tmp/test-result.json; " +
         "else " +
         "  python -m unittest discover -v 2>&1; " +
@@ -485,7 +529,9 @@ function getTestCommand(language: string): string | null {
       return "go test -v -json ./... 2>&1";
     case "java":
       return (
-        "if [ -f pom.xml ]; then mvn test -q 2>&1; " +
+        "if [ -x ./mvnw ]; then ./mvnw -q test 2>&1; " +
+        "elif [ -f pom.xml ]; then mvn -q test 2>&1; " +
+        "elif [ -x ./gradlew ]; then ./gradlew test 2>&1; " +
         "elif [ -f build.gradle ] || [ -f build.gradle.kts ]; then gradle test 2>&1; " +
         "else echo 'No test runner found' && exit 0; fi"
       );
@@ -521,7 +567,8 @@ function getTestCommand(language: string): string | null {
       return "swift test 2>&1";
     case "kotlin":
       return (
-        "if [ -f build.gradle.kts ] || [ -f build.gradle ]; then gradle test 2>&1; " +
+        "if [ -x ./gradlew ]; then ./gradlew test 2>&1; " +
+        "elif [ -f build.gradle.kts ] || [ -f build.gradle ]; then gradle test 2>&1; " +
         "else echo 'No test runner found' && exit 0; fi"
       );
     default:
