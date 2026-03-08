@@ -68,12 +68,12 @@ describe("StepBasics", () => {
     render(<StepBasics data={defaultData} onChange={onChange} />);
 
     const titleInput = screen.getByPlaceholderText(
-      "e.g., Add rate limiting to the public API"
+      "e.g., Build a REST API rate limiter"
     );
     expect(titleInput).toBeInTheDocument();
 
     const descriptionTextarea = screen.getByPlaceholderText(
-      "Explain the problem, what done looks like, and anything the solver should avoid..."
+      "Describe the task requirements, constraints, and expected deliverables..."
     );
     expect(descriptionTextarea).toBeInTheDocument();
   });
@@ -84,7 +84,7 @@ describe("StepBasics", () => {
     render(<StepBasics data={defaultData} onChange={onChange} />);
 
     const titleInput = screen.getByPlaceholderText(
-      "e.g., Add rate limiting to the public API"
+      "e.g., Build a REST API rate limiter"
     );
     await user.type(titleInput, "A");
 
@@ -103,25 +103,22 @@ describe("StepBasics", () => {
     };
     render(<StepBasics data={dataWithReward} onChange={onChange} />);
 
-    // "You pay" row
-    expect(screen.getByText("Reward held in escrow")).toBeInTheDocument();
+    expect(screen.getByText("You pay")).toBeInTheDocument();
     expect(screen.getByText("$100.00")).toBeInTheDocument();
 
-    // Platform fee row - 8% of 100 = 8.00
     expect(screen.getByText(/Platform fee/)).toBeInTheDocument();
-    expect(screen.getByText("-$8.00")).toBeInTheDocument();
+    expect(screen.getByText("-$3.00")).toBeInTheDocument();
 
-    // Solver receives row - 100 - 8 = 92.00
-    expect(screen.getByText("Estimated solver payout")).toBeInTheDocument();
-    expect(screen.getByText("$92.00")).toBeInTheDocument();
+    expect(screen.getByText("Solver receives")).toBeInTheDocument();
+    expect(screen.getByText("$97.00")).toBeInTheDocument();
   });
 
   it("hides fee breakdown when reward is 0", () => {
     const onChange = vi.fn();
     render(<StepBasics data={defaultData} onChange={onChange} />);
 
-    expect(screen.queryByText("Reward held in escrow")).not.toBeInTheDocument();
-    expect(screen.queryByText("Estimated solver payout")).not.toBeInTheDocument();
+    expect(screen.queryByText("You pay")).not.toBeInTheDocument();
+    expect(screen.queryByText("Solver receives")).not.toBeInTheDocument();
     expect(screen.queryByText(/Platform fee/)).not.toBeInTheDocument();
   });
 
@@ -132,7 +129,7 @@ describe("StepBasics", () => {
     const usdItem = screen.getByTestId("select-item-USD");
     expect(usdItem).toBeInTheDocument();
     expect(usdItem).toHaveTextContent("USD");
-    expect(screen.queryByTestId("select-item-ETH")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("select-item-USDC")).not.toBeInTheDocument();
+    expect(screen.getByTestId("select-item-ETH")).toHaveTextContent("ETH (Coming Soon)");
+    expect(screen.getByTestId("select-item-USDC")).toHaveTextContent("USDC (Coming Soon)");
   });
 });

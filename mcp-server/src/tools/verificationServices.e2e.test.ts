@@ -3,7 +3,7 @@ import { createServer, Server } from "node:http";
 import { mkdtemp, rm, writeFile, chmod, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { initConvexClient } from "../convex/client";
@@ -27,6 +27,14 @@ vi.mock("../../../worker/src/lib/shellSanitize", () => ({
 }));
 
 const execFileAsync = promisify(execFile);
+const dockerAvailable = (() => {
+  try {
+    execFileSync("docker", ["version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 function createMockServer() {
   const handlers = new Map<string, (args: Record<string, string>) => Promise<{
@@ -60,7 +68,9 @@ async function startHttpServer(app: express.Express): Promise<{ server: Server; 
   return { server, url: `http://127.0.0.1:${addr.port}` };
 }
 
-describe("e2e: redis + sonar/snyk gates + mcp result relay", () => {
+const describeIfDocker = dockerAvailable ? describe : describe.skip;
+
+describeIfDocker("e2e: redis + sonar/snyk gates + mcp result relay", () => {
   let redisContainerName = "";
   const redisPort = 16379;
   let workerServer: Server;
